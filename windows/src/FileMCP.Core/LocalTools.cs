@@ -1631,7 +1631,7 @@ internal sealed partial class LocalTools
     }
 
     private static ToolCallOutput ObjectOutput(JsonObject value) => new(
-        new JsonArray(new JsonObject { ["type"] = "text", ["text"] = value.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) }), value);
+        new JsonArray(new JsonObject { ["type"] = "text", ["text"] = value.ToJsonString() }), value);
 
     private static string GetRequiredString(JsonObject args, string key) => args[key] is JsonValue value && value.TryGetValue<string>(out var result) ? result : throw new FileMcpException($"Missing or invalid argument: {key}");
     private static int GetRequiredInt(JsonObject args, string key) => args[key] is JsonValue value && value.TryGetValue<int>(out var result) ? result : throw new FileMcpException($"Missing or invalid argument: {key}");

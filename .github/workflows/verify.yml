@@ -72,6 +72,7 @@ jobs:
             macos/LocalMCPServer.swift \
             macos/CodexHistory.swift \
             macos/LocalMCPRuntime.swift \
+            macos/LaunchAgentService.swift \
             macos/ChatToComputerMCPApp.swift \
             macos/main.swift
 
