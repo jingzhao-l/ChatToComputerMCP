@@ -643,7 +643,13 @@ internal static partial class Program
 
         var legacy = await SendHttpAsync(port, "POST", "/mcp", AuthHeaders(token), "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}");
         var legacyBody = JsonNode.Parse(HttpBody(legacy))!.AsObject();
-        Assert(legacyBody["result"]!["tools"]!.AsArray().Count == 22, "legacy tools list");
+        var legacyTools = legacyBody["result"]!["tools"]!.AsArray();
+        var legacyNames = legacyTools.Select(tool => tool!["name"]!.GetValue<string>())
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(legacyNames.Count == legacyTools.Count &&
+            new[] { "file_info", "create_directory", "copy_file", "move_file",
+                    "search_code", "repo_overview", "batch_read" }.All(legacyNames.Contains) &&
+            !legacyNames.Contains("run_command"), "legacy tools list contains scoped safe operations");
 
         var modernHeaders = AuthHeaders(token); modernHeaders["MCP-Protocol-Version"] = FileMcpConstants.ModernProtocolVersion; modernHeaders["Mcp-Method"] = "tools/list";
         var modernBody = new JsonObject
@@ -654,7 +660,15 @@ internal static partial class Program
         var modern = await SendHttpAsync(port, "POST", "/mcp", modernHeaders, modernBody.ToJsonString());
         var modernJson = JsonNode.Parse(HttpBody(modern))!.AsObject();
         Assert(modernJson["result"]!["resultType"]!.GetValue<string>() == "complete", "modern result type");
-        Assert(modernJson["result"]!["tools"]!.AsArray().Count == 22, "modern tools list");
+        var modernTools = modernJson["result"]!["tools"]!.AsArray();
+        var modernNames = modernTools.Select(tool => tool!["name"]!.GetValue<string>())
+            .ToHashSet(StringComparer.Ordinal);
+        Assert(modernNames.SetEquals(legacyNames) && modernTools.Count == legacyTools.Count,
+            "modern tools list matches legacy tool names without order-dependent indices");
+        Assert(modernTools.First(tool => tool!["name"]!.GetValue<string>() == "file_info")!
+            ["annotations"]!["readOnlyHint"]!.GetValue<bool>(), "file_info is read-only");
+        Assert(!modernTools.First(tool => tool!["name"]!.GetValue<string>() == "move_file")!
+            ["annotations"]!["readOnlyHint"]!.GetValue<bool>(), "move_file can modify files");
         Assert(modernJson["result"]!["tools"]!.AsArray().Any(tool => tool!["name"]!.GetValue<string>() == "search_code"), "modern ranked search tool");
         Assert(modernJson["result"]!["tools"]!.AsArray().Any(tool => tool!["name"]!.GetValue<string>() == "repo_overview"), "modern repository overview tool");
 
