@@ -1,0 +1,86 @@
+# npm publication — OIDC trusted publishing
+
+ChatToComputerMCP uses npm package **`chat-to-computer-mcp`**, with source-only local native builds. It should be published under the verified maintainer account, not by committing an npm access token to GitHub.
+
+## Trusted Publisher configuration on npmjs.com
+
+After **the first version exists on npm**, open its package settings → **Trusted Publisher** → **GitHub Actions** and configure the following **exact case-sensitive values**:
+
+| npm field | Value |
+|---|---|
+| Organization or user | `jingzhao-l` |
+| Repository | `ChatToComputerMCP` |
+| Workflow filename | `publish-npm.yml` |
+| Environment name | Leave **empty** (current workflow has no environment) |
+| Allowed actions | Enable **Allow npm publish** (direct publishing) |
+
+Do not enter the entire path into the workflow filename field. The file lives at `.github/workflows/publish-npm.yml`. The workflow grants `id-token: write` and runs on a **GitHub-hosted Ubuntu runner**. It uses Node 24 and npm 11+, and publishes **without** `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a stored npm publish secret.
+
+For a private GitHub repository, npm provenance statements are **not** currently generated even when trusted publishing is enabled. Private repository source remains subject to maintainer access permissions; the npm tarball is publicly downloadable if published with public access.
+
+See [official npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) for supported providers and limitations.
+
+## Initial publication
+
+The first version `0.1.0` may be published directly from an authenticated local npm CLI **after** reviewing the exact tarball and verifying the installed app. This first manual publish creates the package that npm needs for later trusted-publisher setup.
+
+```bash
+npm whoami
+npm test
+npm pack --dry-run --json
+npm publish --access public --tag latest
+npm view chat-to-computer-mcp@0.1.0 version
+```
+
+Never paste OTP or account passwords into a chat. If an interactive 2FA prompt is required, satisfy it on the computer.
+
+## Automatic subsequent stable releases
+
+The repository workflow only publishes **stable semantic-version tags**:
+
+```bash
+# After updating package.json and verifying tests:
+git tag -a v0.1.1 -m "ChatToComputerMCP v0.1.1"
+git push origin v0.1.1
+```
+
+The job verifies that:
+
+1. The tag has exactly the form `vMAJOR.MINOR.PATCH`.
+2. The Git ref is on the default branch history.
+3. `package.json` version equals the pushed tag without the `v`.
+4. npm CLI and local installer tests pass.
+5. The package content manifest contains required sources and no generated build artifacts.
+6. The same registry version has not already been published.
+
+It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, followed by a registry read-back. The tag alone does not produce a Mac/Windows installer binary: recipients compile natively from the npm package.
+
+**Do not reuse a published npm version.** If a verification or publishing attempt fails after npm accepted the tarball, inspect registry state before retrying. A new publication requires a new version number.
+
+## Optional GitHub release asset
+
+For a versioned tarball attach `chat-to-computer-mcp-VERSION.tgz` and a SHA-256 checksum to a GitHub release. A GitHub release is **not** equivalent to an npm registry publication.
+
+## Required environment checks and blockers
+
+Before enabling automated tag publication, verify:
+
+- npm Trusted Publisher matches the owner/repo/workflow exactly.
+- GitHub-hosted Actions jobs can actually start. On 2026-11-22 GitHub Verify jobs were blocked before runner assignment by an account billing/spending-limit annotation.
+- macOS and Windows test evidence is reviewable; Windows real-device tests may still be pending.
+- GitHub repository visibility and npm's public package metadata are appropriate for the release; public npm packages expose their packed source even if the GitHub repository is private.
+- No secrets or local credential files are in the packed tarball.
+
+The [security policy](../SECURITY.md) describes source scanning and sensitive paths.
+
+## Why not use self-hosted npm publishing?
+
+npm's OIDC Trusted Publishing currently accepts GitHub-hosted runners; the existing private Mac runner cannot authenticate to npm using that trust relationship. It can run tests, but do **not** move the actual OIDC publish step to it.
+
+## Recovery
+
+- Workflow fails before runners start → inspect GitHub account Billing & plans.
+- Workflow OIDC authentication fails → check npm Trusted Publisher configuration and `id-token: write`.
+- Wrong version/tag → fix `package.json` in a new commit, then create a correct, previously unused tag.
+- Existing npm version → do **not** retry a destructive overwrite. Verify `npm view`, then bump version.
+- Packaging mismatch → stop before publishing; fix the pack allowlist, run tests, create a new tag.

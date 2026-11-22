@@ -79,9 +79,10 @@ jobs:
         run: MCP_EXTENDED_SEARCH_TESTS=1 ./tests/test_swift_runtime.sh
 
       - name: Set up Node for source npm package tests
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
+          package-manager-cache: false
 
       - name: Validate npm local installer
         run: npm test

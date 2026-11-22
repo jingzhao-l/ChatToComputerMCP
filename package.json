@@ -44,7 +44,18 @@
     "windows/assets/*.ico",
     "docs/INSTALL_NPM.md",
     "docs/MULTI_WORKSPACE_SECURITY.md",
-    "docs/GUI_CAPABILITIES.md"
+    "docs/GUI_CAPABILITIES.md",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "docs/ARCHITECTURE.md",
+    "docs/TROUBLESHOOTING.md",
+    "docs/PUBLISHING.md",
+    "docs/ROADMAP.md",
+    "docs/RELEASE_MIGRATION.md",
+    "docs/UPSTREAM_ATTRIBUTION.md",
+    "docs/PROJECT_SCOPE.md"
   ],
   "scripts": {
     "test": "node --test npm/installer.test.mjs",

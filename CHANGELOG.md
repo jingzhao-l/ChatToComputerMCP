@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.0] — 2026-11-22
+
+Initial public npm source-installer release for ChatToComputerMCP:
+
+- Cross-client local workspace gateway, approved multi-root routing and native GUI.
+- Shared 4–16 command capacity and targeted cancellation.
+- Source-only npm package that compiles the native desktop app locally.
+- Optional macOS LaunchAgent with login startup, crash recovery and opt-in auto-connect.
+- macOS native tests and clean-HOME package installation verified; Windows
+  cross-target compilation verified but real-device end-to-end testing pending.
+- Independent derivative of anhnv02/file-mcp, retaining Apache-2.0 attribution.
+
+
 All notable changes will be documented in this file from the first public release onward.
 
 ## Unreleased

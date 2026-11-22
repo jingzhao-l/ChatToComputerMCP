@@ -1,0 +1,164 @@
+name: Publish npm (OIDC)
+
+# Register this exact filename as the npm Trusted Publisher.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Validate tag, source and package
+    if: github.repository == 'jingzhao-l/ChatToComputerMCP'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate stable version and main ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag="$GITHUB_REF_NAME"
+          if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Only stable vMAJOR.MINOR.PATCH tags can publish"
+            exit 1
+          fi
+          version="$(node -p "require('./package.json').version")"
+          test "$tag" = "v$version" || { echo "::error::Version/tag mismatch"; exit 1; }
+          test "$(node -p "require('./package.json').name")" = chat-to-computer-mcp
+          test "$(node -p "require('./package.json').repository.url")" = \
+            git+https://github.com/jingzhao-l/ChatToComputerMCP.git
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::Publish tag not in main history"; exit 1;
+          }
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: npm tests and package allowlist
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm install --global npm@11
+          npm test
+          npm pack --ignore-scripts --dry-run --json > npm-pack-manifest.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const info = JSON.parse(fs.readFileSync('npm-pack-manifest.json','utf8'))[0];
+          const files = new Set(info.files.map(x=>x.path));
+          for(const required of [
+            'package.json','README.md','README.zh-CN.md',
+            'bin/chat-to-computer-mcp.mjs','macos/LaunchAgentService.swift',
+            'macos/ChatToComputerMCPApp.swift',
+            'windows/src/FileMCP.Core/WorkspaceCommandBudget.cs',
+            'vendor/tunnel-client/darwin-arm64/tunnel-client',
+            'docs/PUBLISHING.md','docs/ARCHITECTURE.md','LICENSE'
+          ]) if(!files.has(required)) throw Error('Missing '+required);
+          for(const filename of files)
+            if(filename.includes('/obj/') || filename.includes('/bin/Release/') ||
+               filename.includes('/bin/Debug/') || filename.endsWith('.npmrc') ||
+               filename.endsWith('.pem') || filename.endsWith('.p12') ||
+               filename.endsWith('.pfx') || filename.endsWith('/.env'))
+              throw Error('Unexpected packed file '+filename);
+          console.log('Source package validated: '+info.entryCount+' files');
+          NODE
+
+  macos:
+    name: macOS native quality gate
+    needs: package
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Mac UI, workspaces, commands and MCP/HTTP
+        shell: bash
+        env:
+          MCP_HTTP_FUZZ_ITERATIONS: '20'
+        run: |
+          set -Eeuo pipefail
+          bash tests/test_swift_ui.sh
+          bash tests/test_swift_workspace_scope.sh
+          bash tests/test_swift_agent_tools.sh
+          bash tests/test_swift_runtime.sh
+          bash build_macos_app.sh
+          test -x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP
+
+  windows:
+    name: Windows native quality gate
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Windows build, integration, release and GUI
+        shell: pwsh
+        env:
+          MCP_HTTP_FUZZ_ITERATIONS: '20'
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet build windows/FileMCP.Windows.sln -c Release -warnaserror
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
+          ./tests/test_windows_runtime.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows runtime tests failed" }
+          ./build_windows_app.ps1 -Architecture x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows release build failed" }
+          ./tests/test_windows_app.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows GUI smoke failed" }
+
+  publish:
+    name: Publish using npm Trusted Publisher
+    needs: [package, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Use OIDC-capable npm
+        run: npm install --global npm@11
+      - name: Refuse immutable version reuse
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "chat-to-computer-mcp@$version" version --json >/dev/null 2>&1; then
+            echo "::error::Version already exists on npm"; exit 1
+          fi
+      - name: Publish without long-lived npm token
+        run: npm publish --access public --tag latest --ignore-scripts
+      - name: Verify registry read-back
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          version="$(node -p "require('./package.json').version")"
+          for retry in 1 2 3 4 5 6 7 8; do
+            found="$(npm view "chat-to-computer-mcp@$version" version 2>/dev/null || true)"
+            if [ "$found" = "$version" ]; then exit 0; fi
+            sleep 4
+          done
+          echo "::error::npm read-back failed"; exit 1

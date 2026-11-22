@@ -1,6 +1,15 @@
 # Security Policy
 
-FileMCP exposes powerful local capabilities: file access, Git operations, and optional shell command execution. Security reports are therefore treated as high priority.
+ChatToComputerMCP exposes powerful local capabilities: file access, Git operations, and optional shell command execution. Security reports are therefore treated as high priority.
+
+## Important limits
+
+- Verified per-client identity and per-client permissions are not implemented.
+  Shared tunnel authorization must not be treated as per-conversation isolation.
+- Shell commands inherit the user's operating-system permissions; a cwd guard
+  prevents accidental collisions but does not create a security sandbox.
+- Windows real-device validation is pending even where cross-target compilation succeeds.
+- Only the currently supported release line receives security updates.
 
 ## Supported versions
 
@@ -10,7 +19,7 @@ Security fixes are applied to the latest release and the current `main` branch. 
 
 Do not open a public issue containing exploit details, secrets, tokens, private file contents, or sensitive logs.
 
-Use [GitHub private vulnerability reporting](https://github.com/anhnv02/file-mcp/security/advisories/new) when it is enabled. If that page is unavailable, do not post exploit details in a public issue; arrange a private channel with the repository maintainer before sharing details. Maintainers must enable and verify private reporting before announcing a public release.
+Use [GitHub private vulnerability reporting](https://github.com/jingzhao-l/ChatToComputerMCP/security/advisories/new) when it is enabled. If that page is unavailable, do not post exploit details in a public issue; arrange a private channel with the repository maintainer before sharing details. Maintainers must enable and verify private reporting before announcing a public release.
 
 Include, when relevant:
 
@@ -27,14 +36,14 @@ Include, when relevant:
 - On macOS, active HTTP sockets are capped at 32. A complete request must arrive within 15 seconds; response writes have a separate 15-second deadline. These absolute deadlines do not reset when a slow client sends another byte. Shutdown cancels all tracked connections. The Windows HTTP implementation has not received these macOS-specific resource-limit changes.
 - Cloudflare OAuth uses public-client DCR, authorization-code grants with PKCE S256, explicit resource binding and exact registered callback matching. Authorization requires the app's independent 256-bit login code; that code never appears in the MCP endpoint or authorization page. Authorization codes last 60 seconds, access tokens one hour and rotating refresh tokens seven days. Refresh-token replay revokes the affected token family. Registrations, pending requests and token records are bounded; registration and login attempts are rate-limited.
 - OAuth grant records are stored as token hashes in macOS Keychain. Restart preserves valid sessions. Changing workspace, enabled permissions, issuer or login code invalidates previous grants. Resetting the login code or all settings revokes the stored sessions. The OAuth authorization page uses a random form request identifier, explicit credential entry, frame restrictions and a same-origin referrer policy that suppresses cross-origin referrers while preserving the browser Origin on authorization form submissions. Responses disable caching.
-- Legacy Cloudflare URL-secret compatibility is off by default and requires a warning before enabling. Its secret is separate from the OAuth login code. A copied URL grants all enabled MCP capabilities and may be captured by external client/proxy logs; FileMCP cannot redact third-party systems. Prefer OAuth.
-- The bundled tunnel health/admin listener is also loopback-only. FileMCP rejects public/LAN health bind addresses and passes the validated address explicitly to tunnel startup.
+- Legacy Cloudflare URL-secret compatibility is off by default and requires a warning before enabling. Its secret is separate from the OAuth login code. A copied URL grants all enabled MCP capabilities and may be captured by external client/proxy logs; ChatToComputerMCP cannot redact third-party systems. Prefer OAuth.
+- The bundled tunnel health/admin listener is also loopback-only. ChatToComputerMCP rejects public/LAN health bind addresses and passes the validated address explicitly to tunnel startup.
 - Built-in filesystem and safe-mode Git tools enforce application-level containment, not an operating-system sandbox.
 - macOS containment must account for symbolic links; Windows containment must account for case-insensitive paths, symbolic links, junctions, and other reparse points.
 - On macOS, Git push and Codex-history writing require independent Workspace permissions, both disabled by default. Disabled tools are neither advertised nor callable. `git_push` can transmit repository contents to a remote server and use allowed SSH identities. `save_conversation_to_codex` intentionally writes supplied messages to Codex history outside the shared root; it does not execute imported conversations. Windows retains its existing tool-permission model.
 - Enabling shell tools (`run_command` and command sessions) intentionally grants shell execution with the current OS user's permissions. Only the command working directory is constrained to the shared root; the command itself can access anything that user account can access.
 - Git safe mode validates worktree/Git/common/object/config metadata, alternates, embedded repositories, and config includes; suppresses hooks/filters/external diffs/templates/signing; resets credential helpers; and disables SSH config-driven `ProxyCommand`/`ProxyJump`. ssh-agent/default SSH identities can still participate in an allowed SSH push.
-- FileMCP-generated tunnel profiles live in an app-owned profile directory. `tunnel-client` receives an allowlisted child environment so ambient tunnel configuration cannot silently replace the local MCP target, health policy, or raw HTTP logging policy.
+- ChatToComputerMCP-generated tunnel profiles live in an app-owned profile directory. `tunnel-client` receives an allowlisted child environment so ambient tunnel configuration cannot silently replace the local MCP target, health policy, or raw HTTP logging policy.
 - Runtime API keys belong in the platform credential store (macOS Keychain or Windows Credential Manager), never the plain settings file.
 
 ## Sensitive areas

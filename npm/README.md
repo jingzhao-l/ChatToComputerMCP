@@ -1,6 +1,6 @@
 # npm source installer
 
-After the first public npm registry release, users can compile and install
+For an existing public npm registry release, users can compile and install
 the desktop application in one command:
 
     npx --yes chat-to-computer-mcp@latest install
@@ -20,5 +20,5 @@ not an opaque executable downloader.
   mode refuses an active original local.filemcp launchd service.
 * No original Keychain, proxy, tunnel profile, or old launchagent is overwritten.
 
-The package must actually be published before the @latest npx command works.
-Registry publication requires a separately configured npm account.
+The @latest npx command requires a real npm registry version. Automatic future
+releases use the GitHub Actions OIDC workflow; see docs/PUBLISHING.md.

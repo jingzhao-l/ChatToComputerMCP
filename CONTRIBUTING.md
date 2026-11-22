@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions are welcome. Because this project can read and mutate local files and optionally execute commands, changes should preserve the existing security boundaries rather than bypass them for convenience.
+Contributions to ChatToComputerMCP are welcome. Because this project can read and mutate local files and optionally execute commands, changes should preserve the existing security boundaries rather than bypass them for convenience.
 
 ## Development requirements
 
@@ -86,3 +86,15 @@ When updating `vendor/ripgrep`:
 ## Pull requests
 
 Describe the behavior changed, security impact, affected platforms, and exact verification commands/results. Keep unrelated refactors out of security-sensitive patches so review remains auditable.
+
+
+## npm packaging and trusted publishing
+
+- For changes to the CLI or package, run `npm test` and inspect `npm pack --dry-run --json`.
+- Never add a `preinstall` or `postinstall` script that automatically executes a native build,
+  downloads binaries, grants permissions or launches a background process.
+- Stable releases must advance `package.json` and pass macOS/Windows native verification.
+- GitHub releases and npm versions are separate: a tag or GitHub tarball is not npm publication.
+- The trusted release workflow is `.github/workflows/publish-npm.yml`,
+  with GitHub OIDC and no npm publish token in repository secrets.
+- Do not bypass Windows real-device tests or the GitHub billing gate to publish a new stable tag.

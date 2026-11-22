@@ -4,7 +4,7 @@ The npm package contains the open-source application source and vendored,
 pinned tool binaries as the GitHub repository. It compiles the native app
 **on the user's computer** rather than downloading a prebuilt application.
 
-## After npm publication
+## Quick installation from npm
 
 On macOS with Xcode Command Line Tools, or Windows with .NET 8 SDK:
 
@@ -74,5 +74,6 @@ is private, users require access.
 - The installer never exports, resets, or migrates existing credentials.
 - It never modifies local.filemcp or the existing production proxy.
 
-As of this revision, npm registry publication is pending npm account
-authentication. The npm latest command cannot work until publication.
+Before installing, confirm the package and version on the npm registry with
+`npm view chat-to-computer-mcp version`. Do not confuse the GitHub
+source prerelease with a published npm release.
