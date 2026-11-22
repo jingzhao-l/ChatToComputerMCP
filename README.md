@@ -9,8 +9,8 @@
   <a href="./README.zh-CN.md"><strong>简体中文</strong></a>
 </p>
 
-<p align="center"><strong>Give AI conversations a permission-controlled path to your computer.</strong><br>
-One local gateway · Multiple AI clients · Multiple workspaces · Native desktop controls.</p>
+<p align="center"><strong>Connect ChatGPT and other cloud AI chats to your local computer.</strong><br>
+Free, open-source MCP alternative to paid computer-access plugins · Multiple workspaces · 4–16 concurrent commands.</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/chat-to-computer-mcp"><img alt="npm version" src="https://img.shields.io/npm/v/chat-to-computer-mcp?logo=npm&color=cb3837"></a>
@@ -46,9 +46,13 @@ One local gateway · Multiple AI clients · Multiple workspaces · Native deskto
 
 ## 💡 About
 
-Cloud AI chats often understand what needs doing in a repository, but cannot access the machine where the work lives. Multiple conversations then compete for one desktop, one working directory, or one long-running command.
+**ChatGPT can plan a task in the cloud—but how does it actually work on your Mac or Windows computer?** ChatToComputerMCP closes that gap. It is a **free, open-source local-computer MCP bridge** built for cloud-based AI chat conversations, especially **ChatGPT**, and other compatible MCP clients such as **Claude**.
 
-**ChatToComputerMCP** is a **local-first Model Context Protocol (MCP) gateway** that provides approved filesystem, search, Git and optional shell tools to compatible cloud AI clients. It is **not** a new AI model, a hosted computer, or an IDE replacement.
+Instead of needing a separate paid computer-access plugin for common development workflows, connect ChatToComputerMCP and let your AI chat **inspect and edit approved local files, search code, use Git, and (when you opt in) run terminal commands**. For these workflows, it is an open-source alternative to the paid **Remote Desktop Commander** connector. It is **not** a feature-for-feature replacement for its entire desktop-control or system-management toolset, nor an official ChatGPT plugin.
+
+**Designed for multiple conversations, not just one:** approve multiple independent workspaces and allow **4–16 simultaneous command jobs** (default 8), with per-directory conflict protection and targeted task cancellation. This is bounded command concurrency—not unlimited parallelism, complete per-client identity isolation, or a remote GUI desktop.
+
+**ChatToComputerMCP runs locally on your own computer.** It is not an AI model, a hosted computer, or an IDE replacement.
 
 ```text
 ChatGPT / Claude / another compatible MCP client
@@ -70,6 +74,7 @@ ChatGPT / Claude / another compatible MCP client
 
 | Capability | What it does |
 |---|---|
+| **Paid-plugin alternative** | Use ChatGPT or another compatible cloud AI chat with your own open-source local tools for common file, Git and shell workflows—without a separate paid computer-access plugin. |
 | **Multiple workspaces** | One default workspace plus up to 12 user-approved, named, non-overlapping roots. |
 | **Scoped MCP operations** | `list_workspaces` discovers approved scopes; `workspace_call` selects one explicitly. |
 | **Concurrent commands** | One shared configurable 4–16 command budget (default 8); overlapping cwd trees are rejected. |
@@ -251,6 +256,8 @@ ChatToComputerMCP gives compatible AI conversations an approved local execution 
 ## ❓ FAQ
 
 **Does it replace ChatGPT or Claude?** No. It offers local tools to a compatible MCP client.
+
+**Can it replace the paid Remote Desktop Commander connector?** For common local file management, code search, Git and opt-in command workflows, it can be a free, open-source alternative. It does not promise every Remote Desktop Commander feature, identical UI controls or the same client integrations. Some cloud MCP services may have their own charges.
 
 **Can multiple AI chats run commands at once?** Yes, in disjoint working directories within the shared limit. This is not complete isolation from the host OS.
 

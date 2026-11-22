@@ -6,8 +6,8 @@
 
 <p align="center"><a href="./README.md"><strong>English</strong></a> · <a href="./README.zh-CN.md"><strong>简体中文</strong></a></p>
 
-<p align="center"><strong>让云端 AI 对话真正连接你的电脑，同时由你掌握本地权限。</strong><br>
-一个本机网关 · 多个 AI 会话 · 多个工作区 · 原生桌面控制界面</p>
+<p align="center"><strong>让 ChatGPT 等云端聊天 AI 直接连接并使用你的本地电脑。</strong><br>
+免费开源的本机 MCP 工具 · 付费电脑访问插件的替代选择 · 多工作区 · 4–16 路命令并发</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/chat-to-computer-mcp"><img alt="npm 版本" src="https://img.shields.io/npm/v/chat-to-computer-mcp?logo=npm&color=cb3837"></a>
@@ -41,9 +41,13 @@
 
 ## 💡 项目介绍
 
-云端 AI 聊天应用能理解代码，却未必能够访问实际保存代码的电脑。多个 AI 会话同时工作时，还可能争用桌面、命令进程或同一个目录。
+**ChatGPT 在云端能分析和规划任务，但怎样才能真正操作你自己的 Mac 或 Windows 电脑？** 这就是 ChatToComputerMCP 要解决的问题：它是面向 **ChatGPT 云端聊天对话**，同时兼容 Claude 等支持 MCP 的 AI 客户端的**免费开源本机电脑连接工具**。
 
-**ChatToComputerMCP** 是运行在用户电脑上的 **MCP（Model Context Protocol）工作区网关**。它向兼容的 AI 客户端提供经过用户批准的文件、搜索、Git 和可选 Shell 工具。**它不是一个新大模型，也不是托管云电脑，更不会取代现有 IDE。**
+通过 ChatToComputerMCP，AI 可以在你批准的目录内**读取、搜索和编辑本地文件，操作 Git 仓库，并在明确授权后执行终端命令**。针对这类常见开发和文件操作，它可以作为 ChatGPT 付费插件 **@Remote Desktop Commander** 的开源替代选择，**不需要为了这些本机工具能力再购买一个同类付费插件**。但它**不是** Remote Desktop Commander 所有远程桌面、系统管理功能的逐项复刻，也不是 ChatGPT 官方插件。
+
+**专为多 AI 会话并发而设计：**你可以批准多个独立工作区，让不同聊天会话同时执行 **4–16 个命令任务**（默认 8），并通过目录冲突保护和定向取消避免相互干扰。这里指有上限的命令并发，并非无限并行、已实现逐客户端加密身份隔离，或完整远程桌面 GUI 控制。
+
+**程序运行在用户自己的电脑上**，不是新大模型、托管云电脑或 IDE 替代品。
 
 ```text
 ChatGPT / Claude / 其他兼容 MCP 的客户端
@@ -65,6 +69,7 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 
 | 能力 | 说明 |
 |---|---|
+| **付费插件替代选择** | 让 ChatGPT 等兼容的云端 AI 对话使用开源本地文件、Git 与可选 Shell 工具，不必额外购买同类电脑访问插件。 |
 | **多个工作区** | 一个默认工作区，另可添加最多 12 个命名、互不重叠的工作区。 |
 | **按工作区调用工具** | `list_workspaces` 查看已批准的工作区；`workspace_call` 显式选择执行范围。 |
 | **多 AI 并发命令** | 总容量可设为 **4–16**，默认 **8**；拒绝重叠目录的冲突命令。 |
@@ -237,6 +242,8 @@ ChatToComputerMCP 解决的是**云端 AI 对话如何经授权操作本地电�
 ## ❓ 常见问题
 
 **它会替代 ChatGPT、Claude 吗？** 不会。它是本地工具网关。
+
+**能代替付费的 @Remote Desktop Commander 吗？** 对于常见的本地文件管理、代码搜索、Git 和授权后执行终端命令等工作流，可以作为免费的开源替代选择；但不保证与该插件的所有功能、GUI 控制或客户端接入方式完全一致，外部云端 MCP 服务也可能有其自身费用。
 
 **多个 AI 会话能同时执行命令吗？** 可以，在独立工作目录、共享容量和权限约束下运行；不是完全的系统级隔离。
 
