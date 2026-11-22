@@ -1,6 +1,68 @@
 import Foundation
 
 extension LocalMCPServer {
+    static func verifyDurableCommandReceipts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ctcmcp-server-receipts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let path = root.appendingPathComponent("journal/receipts.json")
+        let ledger = try CommandReceiptLedger(fileURL: path)
+        let token = String(repeating: "a", count: 64)
+
+        func server(_ store: CommandReceiptLedger) throws -> LocalMCPServer {
+            try LocalMCPServer(port: 18963, allowedDirectory: workspace.path,
+                gitUserName: "Test", gitUserEmail: "test@example.invalid",
+                enableCommands: true, receiptLedger: store,
+                localAuthToken: token, log: { _ in })
+        }
+        func call(_ instance: LocalMCPServer, name: String, args: [String: Any]) throws -> [String: Any] {
+            let result = instance.callTool(id: 1,
+                params: ["name": name, "arguments": args], modern: false)
+            let split = Data("\r\n\r\n".utf8)
+            guard let range = result.range(of: split) else {
+                fatalError("Missing HTTP separator")
+            }
+            let body = result.subdata(in: range.upperBound..<result.count)
+            let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            return json["result"] as! [String: Any]
+        }
+
+        let first = try server(ledger)
+        let arguments: [String: Any] = [
+            "request_id": "idempotency-restart",
+            "command": "printf executed > ran-once.txt",
+            "timeout_seconds": 10
+        ]
+        let launched = try call(first, name: "start_command", args: arguments)
+        precondition(launched["isError"] as? Bool == false)
+        let started = launched["structuredContent"] as! [String: Any]
+        let sessionID = started["session_id"] as! String
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            let result = try call(first, name: "read_command_output",
+                args: ["session_id": sessionID])
+            let status = result["structuredContent"] as! [String: Any]
+            if status["state"] as? String == "exited" { break }
+            Thread.sleep(forTimeInterval: 0.04)
+        }
+        first.stop()
+
+        let secondLedger = try CommandReceiptLedger(fileURL: path)
+        let second = try server(secondLedger)
+        defer { second.stop() }
+        let duplicate = try call(second, name: "start_command", args: arguments)
+        precondition(duplicate["isError"] as? Bool == true,
+                     "Old request ID may never re-execute after server restart")
+        let marker = workspace.appendingPathComponent("ran-once.txt")
+        let markerValue = try String(contentsOf: marker, encoding: .utf8)
+        precondition(markerValue == "executed")
+        precondition(secondLedger.summary()["exited"] == 1 ||
+                     secondLedger.summary()["interrupted"] == 1)
+        print("PASS: server-scoped command receipt rejects replay after runtime restart")
+    }
+
     static func verifyApprovedWorkspaces() throws {
         let temp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("chat-to-computer-scope-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }

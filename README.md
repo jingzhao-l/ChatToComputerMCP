@@ -190,7 +190,7 @@ The Windows client provides its own native WPF settings and task controls; its a
 - Commands run with the **user's OS privileges**; cwd collision checks do **not** confine absolute paths.
 - Sessions expose IDs, bounded output and target-specific cancellation.
 
-**This version does not yet provide cryptographically verified per-conversation identity or durable subprocess reattachment across an application crash.** Both are explicit roadmap items.
+**This version does not yet provide cryptographically verified per-conversation identity or durable subprocess reattachment across an application crash.** The current Mac development build records private durable request-ID receipts to prevent replay after restart; an interrupted receipt requires checking actual effects, NOT assuming the process resumed. Both identity and true reattachment remain roadmap items.
 
 ## 🔧 MCP tool examples
 
@@ -230,13 +230,13 @@ Read [SECURITY.md](SECURITY.md) and [Architecture](docs/ARCHITECTURE.md) before 
 
 | Check | macOS | Windows |
 |---|---|---|
-| Native source build | **Passed** | **.NET 8 Windows-targeting build passed** |
-| Multiple workspaces | **Scoped tests passed** | Implemented; Windows runtime test pending |
-| Command capacity/cancel | **8/12/16 and MCP regressions passed** | Implemented; Windows runtime test pending |
-| Native GUI | **150 layout-state checks passed** | WPF compiled; real UI acceptance pending |
+| Native source build | **Passed** | **Windows x64 runner build passed** |
+| Multiple workspaces | **Scoped tests passed** | **Windows x64 integration passed** |
+| Command capacity/cancel | **8/12/16 and MCP regressions passed** | **Windows x64 integration passed** |
+| Native GUI | **150 layout-state checks passed** | **Windows x64 WPF smoke passed** |
 | npm tarball → installed app | **Clean-HOME local Swift build passed** | Clean Windows install pending |
 
-Cross-compiling Windows projects on Mac does **not** prove Windows execution. The current [roadmap](docs/ROADMAP.md) lists the remaining release gates.
+The Windows x64 CI actually ran on a GitHub-hosted Windows runner. ARM64 packages were built but not run on native ARM64 hardware; device-specific upgrade and restart acceptance remains unverified at the owner's direction. The current [roadmap](docs/ROADMAP.md) lists the remaining release gates.
 
 ## 🛠 Build and test
 

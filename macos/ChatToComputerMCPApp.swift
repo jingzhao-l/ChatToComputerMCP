@@ -486,6 +486,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         "Overview", "Workspaces", "Connection", "Tasks", "Activity"
     ], trackingMode: .selectOne, target: nil, action: nil)
     private let tasksSummaryLabel = NSTextField(wrappingLabelWithString: "Connect to view running commands")
+    private let receiptWarningLabel = NSTextField(wrappingLabelWithString:
+        "Connect to view local interrupted-task receipts.")
     private let taskPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let taskDetailsLabel = NSTextField(wrappingLabelWithString: "No running tasks")
     private let refreshTasksButton = NSButton(title: "Refresh tasks", target: nil, action: nil)
@@ -1158,6 +1160,10 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         taskHelp.preferredMaxLayoutWidth = Layout.contentWidth
         tasksSummaryLabel.font = .systemFont(ofSize: 13, weight: .medium)
         tasksSummaryLabel.maximumNumberOfLines = 3
+        receiptWarningLabel.textColor = .secondaryLabelColor
+        receiptWarningLabel.font = .systemFont(ofSize: 12)
+        receiptWarningLabel.maximumNumberOfLines = 3
+        receiptWarningLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         taskPicker.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         taskPicker.addItem(withTitle: "No command sessions")
         taskPicker.target = self
@@ -1182,7 +1188,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         taskActions.spacing = 10
         taskActions.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let taskStack = NSStackView(views: [
-            taskTitle, taskHelp, tasksSummaryLabel, taskPicker,
+            taskTitle, taskHelp, tasksSummaryLabel, receiptWarningLabel, taskPicker,
             taskDetailsLabel, taskActions])
         taskStack.orientation = .vertical
         taskStack.alignment = .leading
@@ -1461,6 +1467,21 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     @objc private func openConnection() { tabs.selectTabViewItem(withIdentifier: "config") }
 
     @objc private func refreshDesktopTasks() {
+        runtime.fetchDesktopReceiptSummary { [weak self] summary in
+            guard let self else { return }
+            guard let summary else {
+                self.receiptWarningLabel.stringValue =
+                    "Connect to inspect durable task receipts; no tasks are automatically resumed."
+                self.receiptWarningLabel.textColor = .secondaryLabelColor
+                return
+            }
+            let interrupted = summary["interrupted", default: 0]
+            self.receiptWarningLabel.stringValue = interrupted > 0
+                ? "\(interrupted) prior command\(interrupted == 1 ? "" : "s") interrupted or unconfirmed. Inspect actual effects before intentional retry; no command was restarted automatically."
+                : "No unconfirmed prior command receipts. Finished command IDs remain protected from automatic replay."
+            self.receiptWarningLabel.textColor = interrupted > 0
+                ? .systemOrange : .secondaryLabelColor
+        }
         runtime.fetchDesktopCommands { [weak self] entries in
             guard let self else { return }
             self.desktopTaskList = entries

@@ -91,6 +91,7 @@ jobs:
           set -Eeuo pipefail
           bash tests/test_swift_ui.sh
           bash tests/test_swift_workspace_scope.sh
+          bash tests/test_swift_receipt_ledger.sh
           bash tests/test_swift_agent_tools.sh
           bash tests/test_swift_runtime.sh
           bash build_macos_app.sh

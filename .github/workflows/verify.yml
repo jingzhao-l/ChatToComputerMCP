@@ -71,6 +71,7 @@ jobs:
             macos/Ripgrep.swift \
             macos/LocalMCPServer.swift \
             macos/CodexHistory.swift \
+            macos/CommandReceiptLedger.swift \
             macos/LocalMCPRuntime.swift \
             macos/LaunchAgentService.swift \
             macos/ChatToComputerMCPApp.swift \
@@ -98,6 +99,9 @@ jobs:
 
       - name: Multi-workspace scope and security regression
         run: bash tests/test_swift_workspace_scope.sh
+
+      - name: Durable command receipts and crash-safety regression
+        run: bash tests/test_swift_receipt_ledger.sh
 
       - name: Coding tool regression tests
         run: bash tests/test_swift_agent_tools.sh

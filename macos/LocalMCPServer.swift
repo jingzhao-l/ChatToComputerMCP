@@ -246,6 +246,8 @@ private final class LocalTools {
     private let resolver: SafePathResolver
     private let sessionLock = NSLock()
     private let globalBudget: WorkspaceCommandBudget?
+    private let receiptLedger: CommandReceiptLedger?
+    private let workspaceScopeID: String
     private var globalSynchronousLeases: [UUID: UUID] = [:]
     // Bounded concurrency across independent working directories. These are
     // cooperative collision checks, not a shell sandbox (commands can use
@@ -313,9 +315,13 @@ private final class LocalTools {
         enableCodexHistory: Bool = false,
         ripgrep: Ripgrep = Ripgrep(),
         globalBudget: WorkspaceCommandBudget? = nil,
-        maxConcurrentCommands: Int? = nil
+        maxConcurrentCommands: Int? = nil,
+        receiptLedger: CommandReceiptLedger? = nil,
+        workspaceScopeID: String = "default"
     ) {
         self.globalBudget = globalBudget
+        self.receiptLedger = receiptLedger
+        self.workspaceScopeID = workspaceScopeID
         let configured = maxConcurrentCommands ?? Int(
             ProcessInfo.processInfo.environment["FILEMCP_MAX_CONCURRENT_COMMANDS"] ?? "") ?? 8
         self.maxActiveCommandSessions = min(16, max(4, configured))
@@ -3047,6 +3053,7 @@ final class LocalMCPServer {
     private let bearerToken: String?
     private let oauth: LocalMCPOAuthServer?
     private let tools: LocalTools
+    private let receiptLedger: CommandReceiptLedger?
     private let workspaceDefinitions: [WorkspaceDefinition]
     private let workspaceTools: [String: LocalTools]
     private let log: (String) -> Void
@@ -3073,6 +3080,7 @@ final class LocalMCPServer {
         enableCommands: Bool,
         additionalWorkspaces: [WorkspaceDefinition] = [],
         maxConcurrentCommands: Int? = nil,
+        receiptLedger: CommandReceiptLedger? = nil,
         enableGitPush: Bool = false,
         enableCodexHistory: Bool = false,
         localAuthToken: String,
@@ -3111,6 +3119,7 @@ final class LocalMCPServer {
         self.bearerToken = bearerToken
         self.oauth = oauth
         self.log = log
+        self.receiptLedger = receiptLedger
         let resolver = try SafePathResolver(rootPath: allowedDirectory)
         let configuredLimit = maxConcurrentCommands ?? Int(
             ProcessInfo.processInfo.environment["FILEMCP_MAX_CONCURRENT_COMMANDS"] ?? "") ?? 8
@@ -3122,7 +3131,8 @@ final class LocalMCPServer {
             enableCommands: enableCommands,
             enableGitPush: enableGitPush,
             enableCodexHistory: enableCodexHistory,
-            globalBudget: commandBudget, maxConcurrentCommands: configuredLimit
+            globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
+            receiptLedger: receiptLedger, workspaceScopeID: "default"
         )
         // Canonical roots may not overlap, even through symlinks. This rejects
         // accidental cross-workspace access and ambiguous command isolation.
@@ -3155,11 +3165,16 @@ final class LocalMCPServer {
                 resolver: scoped, gitUserName: gitUserName, gitUserEmail: gitUserEmail,
                 enableCommands: enableCommands, enableGitPush: enableGitPush,
                 enableCodexHistory: enableCodexHistory, globalBudget: commandBudget,
-                maxConcurrentCommands: configuredLimit
+                maxConcurrentCommands: configuredLimit,
+                receiptLedger: receiptLedger, workspaceScopeID: workspace.id
             )
         }
         self.workspaceDefinitions = additionalWorkspaces
         self.workspaceTools = approved
+    }
+
+    func desktopReceiptSummary() -> [String: Int] {
+        receiptLedger?.summary() ?? [:]
     }
 
     func desktopCommandSnapshots() -> [DesktopCommandSnapshot] {
@@ -4061,12 +4076,15 @@ private final class CommandSession {
     private var state = "running"
     private var stopReason: String?
     private var exitCode: Int32?
+    private let onFinish: ((String, Int32) -> Void)?
     private var chunks: [(Int, String)] = []
     private var bytes = 0
     private var sequence = 0
 
-    init(requestID: String, command: String, cwd: String, timeout: Int) {
-        self.requestID = requestID; self.command = command; self.cwd = cwd; self.timeout = timeout
+    init(requestID: String, command: String, cwd: String, timeout: Int,
+         onFinish: ((String, Int32) -> Void)? = nil) {
+        self.requestID = requestID; self.command = command; self.cwd = cwd
+        self.timeout = timeout; self.onFinish = onFinish
     }
 
     var active: Bool {
@@ -4099,10 +4117,15 @@ private final class CommandSession {
     }
 
     private func finish(_ code: Int32) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         exitCode = code
         state = stopReason ?? "exited"
+        let terminalState = state
         deadline?.cancel(); deadline = nil
+        lock.unlock()
+        // Do disk I/O outside the per-session lock to avoid blocking output
+        // readers and cancellation while persisting a terminal receipt.
+        onFinish?(terminalState, code)
     }
 
     func cancel(reason: String = "cancelled", synchronously: Bool = false) {
@@ -4478,12 +4501,36 @@ private extension LocalTools {
         // Evicted retry keys remain tombstoned for this runtime: never execute an old retry twice.
         guard !usedRequestIDs.contains(key) else { throw MCPServerError.operationFailed("request_id expired; use a new ID only for an intentional new execution") }
         guard usedRequestIDs.count < 4096 else { throw MCPServerError.operationFailed("Runtime command quota reached; reconnect to start a fresh runtime") }
-        let session = CommandSession(requestID: key, command: command, cwd: cwd.path, timeout: timeout)
+        let ledger = receiptLedger
+        let scopeID = workspaceScopeID
+        let session = CommandSession(
+            requestID: key, command: command, cwd: cwd.path, timeout: timeout,
+            onFinish: { [weak ledger] state, code in
+                do { try ledger?.finish(scopeID: scopeID, requestID: key,
+                                        state: state, exitCode: code) }
+                catch {
+                    NSLog("ChatToComputerMCP command receipt completion could not persist: %@",
+                          error.localizedDescription)
+                }
+            })
         try globalBudget?.admit(session, cwd: cwd.path)
+        var reserved = false
         do {
+            try ledger?.reserve(scopeID: scopeID, requestID: key)
+            reserved = ledger != nil
             try session.launch(shell: preferredShell())
         } catch {
             globalBudget?.forget(session)
+            if reserved {
+                // A failed launch is still a durable tombstone: the caller
+                // must use an intentional new request ID, never auto-retry.
+                do { try ledger?.finish(scopeID: scopeID, requestID: key,
+                                        state: "launch_failed", exitCode: nil) }
+                catch {
+                    NSLog("ChatToComputerMCP launch failure receipt could not persist: %@",
+                          error.localizedDescription)
+                }
+            }
             throw error
         }
         usedRequestIDs.insert(key)

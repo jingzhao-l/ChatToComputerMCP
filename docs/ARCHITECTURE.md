@@ -48,7 +48,7 @@ Long-running sessions carry IDs, output cursors, completion states, bounded outp
 **Important limitations**
 
 1. A cwd guard is cooperative. A user-privileged shell may still open absolute paths or spawn unrestricted child processes.
-2. The current active session list is in the local runtime, not an authenticated cross-restart task supervisor. An app crash may interrupt running commands.
+2. The active session list is still in-process, not an authenticated cross-restart supervisor. macOS now persists private command receipts BEFORE launching; incomplete ones are marked interrupted on restart, and their IDs cannot be silently replayed. The journal intentionally contains no command text, output or full workspace path. This is safe idempotency metadata, not actual process reattachment.
 3. Caller-provided MCP `clientInfo` is not proof of a security identity. No per-client cryptographically verified scope grants are promised.
 
 ## Native applications

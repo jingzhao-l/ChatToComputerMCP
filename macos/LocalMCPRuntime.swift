@@ -149,6 +149,13 @@ final class LocalMCPRuntime {
         }
     }
 
+    func fetchDesktopReceiptSummary(_ completion: @escaping ([String: Int]?) -> Void) {
+        queue.async { [weak self] in
+            let summary = self?.server?.desktopReceiptSummary()
+            DispatchQueue.main.async { completion(summary) }
+        }
+    }
+
     func cancelDesktopCommand(workspaceID: String, sessionID: String,
                               completion: @escaping (String?) -> Void) {
         queue.async { [weak self] in
@@ -247,6 +254,11 @@ final class LocalMCPRuntime {
                     pairingSecret: configuration.cloudflarePathSecret, policy: policy, permissionDescription: permissions,
                     persistedState: configuration.cloudflareOAuthState, persist: configuration.saveCloudflareOAuthState)
             } else { oauth = nil }
+            // Separate ChatToComputerMCP App Support path; never read or
+            // mutate production FileMCP process data or its Keychain.
+            let commandReceiptLedger = configuration.enableCommands
+                ? try CommandReceiptLedger(fileURL: CommandReceiptLedger.applicationStoreURL())
+                : nil
             let server = try LocalMCPServer(
                 port: configuration.port,
                 allowedDirectory: configuration.allowedDirectory,
@@ -255,6 +267,7 @@ final class LocalMCPRuntime {
                 enableCommands: configuration.enableCommands,
                 additionalWorkspaces: configuration.additionalWorkspaces,
                 maxConcurrentCommands: configuration.maxConcurrentCommands,
+                receiptLedger: commandReceiptLedger,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
                 localAuthToken: localAuthToken,

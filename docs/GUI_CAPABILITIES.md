@@ -24,7 +24,8 @@ persistent selected tab and light/dark appearances.
 ## Next UX milestones
 
 - Authenticated client identities, distinct permission approvals and audit.
-- Durable jobs, command output retention, progress and recovery across restart.
+- Mac Tasks now displays prior interrupted/unconfirmed command receipt counts and cautions against automatic replay. It is not full process recovery.
+- Durable jobs, command output retention, progress and actual process reattachment after restart.
 - Native Windows parity for workspaces, task management and permissions.
 - Keyboard, VoiceOver, multi-display and screenshot regression expansion.
 
@@ -38,6 +39,6 @@ LaunchAgent without touching local.filemcp.
 
 Windows Settings now includes additional named folder approvals and a shared
 4–16 command cap. Windows Tasks lists scoped sessions and supports targeted
-cancellation. The native Windows implementation is compiled with a Windows
-targeting pack on Mac; final Windows GUI/real-process acceptance must run on a
-Windows runner or PC.
+cancellation. Windows x64 integration and WPF smoke have now passed on a GitHub-hosted
+Windows runner (run 45028574644). Native ARM64 execution and complete upgrade
+and restart scenarios remain unverified; ARM64 packages build successfully.
