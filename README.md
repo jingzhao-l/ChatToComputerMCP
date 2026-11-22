@@ -20,7 +20,9 @@ licensed under **Apache-2.0**. Original licenses and notices remain intact.
 - Outbound OpenAI Secure MCP Tunnel; Cloudflare alternative on macOS.
 - macOS multi-command sessions in disjoint cwd trees, configurable
   FILEMCP_MAX_CONCURRENT_COMMANDS (default 8, clamp 4–16), independent job
-  tracking, cancellation, output cursors and conflict rejection.
+  tracking, cancellation, output cursors and conflict rejection. The read-only
+  command_capacity_status tool reports occupied and available command slots
+  without exposing other clients' command text, directories or session IDs.
 - Managed macOS launchd auto-connect and startup after visible window,
   allowing a legitimate Keychain authorization flow.
 

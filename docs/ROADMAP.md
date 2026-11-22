@@ -11,7 +11,7 @@
 - [x] Mac concurrent command slots configurable 4..16 (default 8)
 - [x] Cross-cwd parallel requests and overlap admission checks
 - [x] Independent cancellation and bounded command output
-- [ ] Read-only live capacity/active-job diagnostics
+- [x] Read-only live capacity/active-job diagnostics (no cross-client paths or commands)
 - [ ] Per-client authenticated session ownership and disconnect recovery
 - [ ] Fair scheduling, durable task recovery and cancellation receipts
 

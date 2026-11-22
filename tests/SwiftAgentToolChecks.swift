@@ -32,7 +32,8 @@ func runAgentToolChecks(rootPath: String) throws {
     check(!restricted.hasTool(named: "git_push") && !restricted.hasTool(named: "save_conversation_to_codex"))
     rejects("disabled Git push") { _ = try call(restricted, "git_push") }
     rejects("disabled Codex history") { _ = try call(restricted, "save_conversation_to_codex", ["title": "disabled", "messages": [["role": "user", "content": "test"]]]) }
-    check(safe.toolDefinitions.count == 22 && full.toolDefinitions.count == 26)
+    check(safe.toolDefinitions.count == 22 && full.toolDefinitions.count == 27)
+    check(!safe.hasTool(named: "command_capacity_status") && full.hasTool(named: "command_capacity_status"))
     check(safe.hasTool(named: "apply_patch") && !safe.hasTool(named: "start_command") && !safe.hasTool(named: "read_command_output"))
     rejects("disabled commands") { _ = try call(safe, "start_command", ["request_id": "disabled", "command": "true"]) }
     try write("nested/code.txt", "héllo 👋\r\nkeep\r\n")
@@ -121,6 +122,11 @@ func runAgentToolChecks(rootPath: String) throws {
     rejects("future cursor") { _ = try call(full, "read_command_output", ["session_id": id, "cursor": 99999]) }
     // Exercise the actual configured limit (default 8; 4...16 supported).
     let maxParallel = min(16, max(4, Int(ProcessInfo.processInfo.environment["FILEMCP_MAX_CONCURRENT_COMMANDS"] ?? "") ?? 8))
+    let initialCapacity = try call(full, "command_capacity_status")
+    check(initialCapacity["max_concurrent_commands"] as? Int == maxParallel)
+    check(initialCapacity["active_total"] as? Int == 0)
+    check(initialCapacity["available_slots"] as? Int == maxParallel)
+    check(initialCapacity["accepting_new_commands"] as? Bool == true)
     let parallelNames = (0..<maxParallel).map { String(format: "worktree-%02d", $0) }
     for name in parallelNames + ["worktree-overcap", "worktree-free"] {
         try write("\(name)/sample.txt", "original")
@@ -135,6 +141,10 @@ func runAgentToolChecks(rootPath: String) throws {
         parallel[name] = result["session_id"] as? String
     }
     check(parallel.count == maxParallel)
+    let capacityAtLimit = try call(full, "command_capacity_status")
+    check(capacityAtLimit["active_long_running"] as? Int == maxParallel)
+    check(capacityAtLimit["active_synchronous"] as? Int == 0)
+    check(capacityAtLimit["available_slots"] as? Int == 0)
     rejects("session beyond configured concurrency cap") {
         _ = try call(full, "start_command", ["request_id": "parallel-overcap", "command": "true", "cwd": "worktree-overcap"])
     }
@@ -204,6 +214,9 @@ func runAgentToolChecks(rootPath: String) throws {
     check(["sync-a", "sync-b"].allSatisfy({
         FileManager.default.fileExists(atPath: root.appendingPathComponent($0 + "/started").path)
     }))
+    let synchronousCapacity = try call(full, "command_capacity_status")
+    check(synchronousCapacity["active_synchronous"] as? Int == 2)
+    check(synchronousCapacity["active_total"] as? Int == 2)
     rejects("synchronous command blocks same-directory edits") {
         _ = try call(full, "edit_file", ["relative_path": "sync-a/sample.txt", "old_text": "before", "new_text": "unsafe"])
     }

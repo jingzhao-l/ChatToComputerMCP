@@ -566,6 +566,7 @@ private final class LocalTools {
         case "apply_patch": return objectOutput(try applyPatch(arguments))
         case "workspace_context": return objectOutput(try workspaceContext(path: string(arguments, "path", default: "")))
         case "start_command": return objectOutput(try startCommand(arguments))
+        case "command_capacity_status": return objectOutput(commandCapacityStatus())
         case "read_command_output":
             return objectOutput(try findSession(requiredString(arguments, "session_id")).snapshot(cursor: int(arguments, "cursor", default: 0)))
         case "cancel_command":
@@ -3942,6 +3943,10 @@ private extension LocalTools {
                 "required": ["path", "before_sha256", "after_sha256", "before_bytes", "after_bytes", "change_count", "changed"],
                 "additionalProperties": false,
             ]]
+        case "capacity":
+            add(["max_concurrent_commands", "active_long_running", "active_synchronous",
+                 "active_total", "available_slots"], "integer")
+            add(["accepting_new_commands"], "boolean")
         case "context":
             add(["workspace_root", "cwd", "scope"], "string")
             add(["shell_commands_enabled", "top_level_truncated"], "boolean")
@@ -3999,7 +4004,9 @@ private extension LocalTools {
                      properties: ["session_id": stringProperty("ID returned by start_command."), "cursor": ["type": "integer", "minimum": 0, "default": 0]],
                      required: ["session_id"], readOnly: true, output: .object(agentOutputSchema("command"))),
                 tool(name: "cancel_command", description: "Request termination of the command and its descendants. Poll read_command_output until it reports a terminal state. Repeated cancellation is safe.",
-                     properties: ["session_id": stringProperty("ID returned by start_command.")], required: ["session_id"], readOnly: false, destructive: true, output: .object(agentOutputSchema("command")))
+                     properties: ["session_id": stringProperty("ID returned by start_command.")], required: ["session_id"], readOnly: false, destructive: true, output: .object(agentOutputSchema("command"))),
+                tool(name: "command_capacity_status", description: "Read the current command capacity and slot utilization without revealing commands, working directories, or session identifiers. Available only when command execution is enabled.",
+                     properties: [:], required: [], readOnly: true, output: .object(agentOutputSchema("capacity")))
             ]
         }
         return definitions
@@ -4265,6 +4272,24 @@ private extension LocalTools {
         sessionLock.lock(); defer { sessionLock.unlock() }
         guard let session = sessions.first(where: { $0.id == id }) else { throw MCPServerError.notFound("Unknown or expired command session") }
         return session
+    }
+
+    // Read-only summary: never expose other clients' command text, cwd, or
+    // session identifiers. This tool is only advertised when commands are enabled.
+    private func commandCapacityStatus() -> [String: Any] {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        let longRunning = sessions.filter { $0.active }.count
+        let synchronous = synchronousCommandPaths.count
+        let total = longRunning + synchronous
+        return [
+            "max_concurrent_commands": maxActiveCommandSessions,
+            "active_long_running": longRunning,
+            "active_synchronous": synchronous,
+            "active_total": total,
+            "available_slots": max(0, maxActiveCommandSessions - total),
+            "accepting_new_commands": !sessionsStopped,
+        ]
     }
 
     private func activeCommandPathsUnderLock() -> [String] {
