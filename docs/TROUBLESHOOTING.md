@@ -63,6 +63,14 @@ Default `enable` starts after future user login and restarts abnormal exits. `--
 
 ## Release and automated publishing
 
+**Manual npm publish returns EOTP**
+
+Being logged in is not enough for a package publish requiring 2FA. Run the
+publish interactively and approve the genuine npm browser challenge, or use
+`npm stage publish --access public` and then approve the package under the
+npmjs.com Staged Packages tab. Do not send a one-time password through chat,
+disable 2FA or use a bypass token.
+
 **OIDC publish says “Unable to authenticate”**
 
 Verify the npm package's Trusted Publisher owner, repository and exact `publish-npm.yml` filename; select **Allow npm publish**. GitHub-hosted runners are required, not self-hosted. See [Publishing](PUBLISHING.md).

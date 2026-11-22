@@ -34,6 +34,28 @@ npm view chat-to-computer-mcp@0.1.0 version
 
 Never paste OTP or account passwords into a chat. If an interactive 2FA prompt is required, satisfy it on the computer.
 
+### First-publication alternative: npm staged publishing
+
+If noninteractive `npm publish` returns `EOTP`, **do not remove 2FA or store a
+bypass token**. npm supports staging even for a package that does not yet
+exist:
+
+```bash
+npm whoami
+npm test
+npm stage publish --access public --tag latest --ignore-scripts
+npm stage list chat-to-computer-mcp
+```
+
+Then, on **npmjs.com → Staged Packages**, review `chat-to-computer-mcp@0.1.0`
+and approve it with the site's real 2FA ceremony. The stage is **not** a live
+installable release. npm may display a publicly visible `0.0.0-stage`
+placeholder for a first-time staged package. Only after approval and a
+successful `npm view chat-to-computer-mcp@0.1.0 version` read-back should
+the package be described as published.
+
+See [npm staged publishing](https://docs.npmjs.com/staged-publishing/).
+
 ## Automatic subsequent stable releases
 
 The repository workflow only publishes **stable semantic-version tags**:
