@@ -33,10 +33,10 @@ public partial class MainWindow : Window
         PreviewKeyDown += OnPreviewKeyDown;
 
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("Open ThreadQuay", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
-        menu.Items.Add("About ThreadQuay", null, (_, _) => Dispatcher.Invoke(ShowAbout));
+        menu.Items.Add("Open ChatToComputer", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
+        menu.Items.Add("About ChatToComputer", null, (_, _) => Dispatcher.Invoke(ShowAbout));
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Quit ThreadQuay", null, (_, _) => Dispatcher.Invoke(async () => await QuitAsync()));
+        menu.Items.Add("Quit ChatToComputer", null, (_, _) => Dispatcher.Invoke(async () => await QuitAsync()));
         _trayIcon = new Forms.NotifyIcon
         {
             Text = "FileMCP",
@@ -234,7 +234,7 @@ public partial class MainWindow : Window
         System.Windows.MessageBox.Show(
             this,
             "FileMCP 0.4.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
-            "About ThreadQuay",
+            "About ChatToComputer",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
     }

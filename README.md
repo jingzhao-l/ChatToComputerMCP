@@ -1,8 +1,8 @@
-# ThreadQuay
+# ChatToComputer
 
 **Bring cloud AI conversations to your local development workspaces.**
 
-ThreadQuay is a local-first, cross-client MCP workspace gateway designed so
+ChatToComputer is a local-first, cross-client MCP workspace gateway designed so
 multiple ChatGPT, Claude, and other compatible AI conversations can collaborate
 with a computer without taking over one another's work. The initial codebase is
 derived from [anhnv02/file-mcp](https://github.com/anhnv02/file-mcp),
@@ -48,6 +48,6 @@ not replace a live production service while AI sessions remain active.
 - [Original FileMCP README](docs/FILEMCP_UPSTREAM_README.md)
 - [Apache-2.0 license](LICENSE) and [security model](SECURITY.md)
 
-ThreadQuay is independent, not an official OpenAI product and not endorsed
+ChatToComputer is independent, not an official OpenAI product and not endorsed
 by the original FileMCP maintainers. Reusable improvements will be offered
 upstream in focused contributions.

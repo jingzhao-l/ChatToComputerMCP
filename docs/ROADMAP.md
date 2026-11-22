@@ -1,4 +1,4 @@
-# ThreadQuay roadmap
+# ChatToComputer roadmap
 
 ## R0: Source independence
 - [x] Copy original tracked code and preserve local Git history

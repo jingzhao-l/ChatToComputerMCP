@@ -1,7 +1,7 @@
 <Window x:Class="FileMCP.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ThreadQuay" Width="560" Height="510" MinWidth="560" MinHeight="510"
+        Title="ChatToComputer" Width="560" Height="510" MinWidth="560" MinHeight="510"
         WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
         Icon="Assets/filemcp.ico">
     <Window.Resources>
@@ -128,7 +128,7 @@
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" VerticalAlignment="Center" Foreground="Gray"
                        Text="Closing the window keeps FileMCP running in the system tray."/>
-            <Button Grid.Column="1" Content="Quit ThreadQuay" Click="Quit_Click"/>
+            <Button Grid.Column="1" Content="Quit ChatToComputer" Click="Quit_Click"/>
         </Grid>
     </Grid>
 </Window>

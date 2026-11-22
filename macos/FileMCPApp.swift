@@ -1,7 +1,7 @@
 import AppKit
 import Security
 
-private let appName = "ThreadQuay"
+private let appName = "ChatToComputer"
 
 private enum Layout {
     static let windowWidth: CGFloat = 620

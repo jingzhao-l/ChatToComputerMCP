@@ -1,4 +1,4 @@
-# ThreadQuay product vision
+# ChatToComputer product vision
 
 ## Goal
 Cloud AI chat applications (including ChatGPT and Claude where they support
@@ -16,8 +16,8 @@ without needing a standalone agent CLI to be the user-facing chat interface.
   claims of native ChatGPT or Claude integration.
 
 ## Product boundaries
-ThreadQuay is a local host gateway, not an LLM service or AI companion.
+ChatToComputer is a local host gateway, not an LLM service or AI companion.
 A conversation's agent identity belongs to its client and is not determined
-by ThreadQuay's product name. Future extensions should support workspace
+by ChatToComputer's product name. Future extensions should support workspace
 admission, fair scheduling, process ownership, observability and approval
 rather than unrestricted shell access.
