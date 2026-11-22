@@ -1,0 +1,21 @@
+# Provenance and attribution
+
+Original project: https://github.com/anhnv02/file-mcp
+Original base: e2372eea7c2af7f1db82b5676f065d6d495006ef
+Combined source before publication: 599ebb4464b509cc4f43d8cf1e5cc5a96e2a19ea
+Managed startup fix: 5fc7d6d9339e74b3cb382302d1990c1d790eed3e
+Mac command concurrency source: a0299cac4c5581aab1b2f8cdd2b79f355fefba01
+Configurable capacity source: d397ce9939e16f82713b91d78e1b7b63472aef5a
+
+Upstream PR contribution: https://github.com/anhnv02/file-mcp/pull/3
+
+The full inherited Git ancestry remains locally at
+/Volumes/Eng-Dev/ThreadQuay, branch main at source SHA 599ebb4.
+During initial private GitHub publication, the remote rejected inherited
+historical pack objects with a 'did not receive expected object' error.
+The private publication branch therefore imports the same tracked files as
+a new snapshot on a repository bootstrap history. It DOES NOT claim that
+its new import SHA equals the historical source SHA.
+
+Original Apache-2.0 license and vendored dependency notices are preserved.
+No author credit is removed by the independent project branding.
