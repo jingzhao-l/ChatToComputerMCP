@@ -55,7 +55,9 @@
     "docs/ROADMAP.md",
     "docs/RELEASE_MIGRATION.md",
     "docs/UPSTREAM_ATTRIBUTION.md",
-    "docs/PROJECT_SCOPE.md"
+    "docs/PROJECT_SCOPE.md",
+    "docs/CONNECT_CHATGPT.md",
+    "docs/CONNECT_CHATGPT.zh-CN.md"
   ],
   "scripts": {
     "test": "node --test npm/installer.test.mjs",

@@ -22,6 +22,12 @@ The new package deliberately does not replace an active `local.filemcp` LaunchAg
 
 ## Connection
 
+For a step-by-step setup of the OpenAI Platform Tunnel ID, restricted runtime
+API key, ChatGPT workspace association and custom Plugin creation, start with
+[Connect ChatGPT](CONNECT_CHATGPT.md) or
+[简体中文：配置 ChatGPT Tunnel](CONNECT_CHATGPT.zh-CN.md).
+
+
 **MCP endpoint unreachable**
 
 Verify the selected tunnel provider, profile and credentials, then check the local runtime's connection status and Activity logs. Health listeners should be loopback-only. Remote MCP tools may require connection setup inside the client application.

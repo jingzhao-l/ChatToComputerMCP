@@ -63,6 +63,16 @@ Until npm Registry publication, install a prebuilt tarball:
 A tarball can be attached to a GitHub release. When the GitHub repository
 is private, users require access.
 
+## Connect to ChatGPT after installation
+
+Installing the application does not create the OpenAI Secure MCP Tunnel or
+register the ChatGPT Plugin automatically. Follow the
+[complete ChatGPT connection guide](CONNECT_CHATGPT.md) (or
+[简体中文教程](CONNECT_CHATGPT.zh-CN.md)) for creating the tunnel,
+associating the ChatGPT workspace, obtaining a restricted runtime Platform
+API key, connecting from the native GUI and validating a real read-only MCP
+tool call.
+
 ## Safety and support
 
 - macOS local compile needs Swift and Apple SDK development tools.

@@ -25,6 +25,7 @@
 - [项目介绍](#-项目介绍)
 - [功能一览](#-功能一览)
 - [快速开始](#-快速开始)
+- [配置 ChatGPT Secure MCP Tunnel](#-配置-chatgpt-secure-mcp-tunnel)
 - [安装与命令](#-安装与命令)
 - [多工作区和界面](#-多工作区和界面)
 - [技术架构](#-技术架构)
@@ -99,13 +100,27 @@ npx --yes chat-to-computer-mcp@latest open
 
 ### 3. 选取工作区并连接
 
-在 **Workspaces（工作区）** 里选取默认目录、添加其他授权文件夹，检查可执行操作；在 **Connection（连接）** 里配置 MCP 隧道，然后从兼容的 AI 客户端建立连接。
+在 **Workspaces（工作区）** 里选取默认目录、添加其他授权文件夹并检查权限，然后按下面的[ChatGPT Tunnel 连接流程](#-配置-chatgpt-secure-mcp-tunnel)创建 Tunnel ID、运行时 API Key，在应用里连接，并把它添加到 ChatGPT。
 
 ### 4. 直接在 AI 对话中工作
 
 例如：*“列出已批准的工作区，到第二个仓库里定位并修复失败的测试。”*
 
 > 能否在 ChatGPT、Claude 等具体客户端使用，取决于该客户端是否开放兼容的 MCP 接入方式。安装本项目不会私下替你配置第三方账户。
+
+## 🔌 配置 ChatGPT Secure MCP Tunnel
+
+**这是 ChatGPT 推荐的私有连接方案。** ChatToComputerMCP 自动管理本机 MCP 服务和内置 `tunnel-client`，不需要对公网开放入站端口，也不用自己再安装或启动一个 tunnel-client。
+
+1. **在 OpenAI Platform 创建 Tunnel：**打开 [Platform Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)，创建或选择已有 Secure MCP Tunnel，将它关联到**准备使用插件的 ChatGPT 工作区**。复制 `tunnel_…` 开头的真实 ID。创建需要 **Tunnels Read + Manage**。
+2. **准备独立的运行时 API Key：**在 **OpenAI Platform** 创建权限受限的密钥，赋予 **Tunnels Read + Use**。**ChatGPT 订阅不等于 Platform API Key**；ChatGPT 工作区也必须允许添加自定义 MCP 插件。不要在聊天、截图或仓库中透露密钥。
+3. **配置本机应用：**进入 ChatToComputerMCP 的 **Connection（连接）** 页面，选择 **OpenAI Secure MCP Tunnel**，填写 **Tunnel ID** 和 **Runtime API key**，再点击 **Save connection → Connect**。确认显示 **Connected**。应用会使用系统凭据管理器保存密钥并自动管理 Tunnel 客户端。
+4. **在 ChatGPT 添加插件：**打开 [ChatGPT Plugins](https://chatgpt.com/plugins) → **+ → Add custom MCP server**，在 **Connection** 选择 **Tunnel**，选中或填入**相同的 Tunnel ID**。确认身份验证和风险提示，创建后检查发现的 MCP 工具。
+5. **测试真实工具调用：**新建 ChatGPT 对话，输入 `@` 选择插件，要求它**只读列出默认工作区的文件**。检查 ChatGPT 是否获得工具结果、本机 **Activity** 是否留下对应记录。
+
+**注意：**使用 Secure MCP Tunnel 时，不要把 `http://127.0.0.1:8008/mcp` 当作 ChatGPT 插件的公网地址，它只能在你自己的电脑上访问。ChatGPT 找不到 Tunnel 时，优先检查**目标 ChatGPT 工作区关联**和 **Tunnels Read + Use** 权限。
+
+**详细操作教程：**[简体中文版](docs/CONNECT_CHATGPT.zh-CN.md) · [English](docs/CONNECT_CHATGPT.md)，包含完整的权限、常见故障与 Mac Cloudflare + OAuth 备选方案。官方参考：[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) · [ChatGPT 自定义插件接入](https://developers.openai.com/plugins/deploy/connect-chatgpt)。
 
 ## 📦 安装与命令
 
@@ -257,6 +272,7 @@ ChatToComputerMCP 解决的是**云端 AI 对话如何经授权操作本地电�
 
 | 文档 | 内容 |
 |---|---|
+| [ChatGPT Tunnel 中文教程](docs/CONNECT_CHATGPT.zh-CN.md) / [English](docs/CONNECT_CHATGPT.md) | Tunnel 创建、API Key、插件接入与验收 |
 | [npm 安装](docs/INSTALL_NPM.md) | 环境、CLI、保活 |
 | [系统架构](docs/ARCHITECTURE.md) | 客户端、连接和命令执行 |
 | [工作区安全](docs/MULTI_WORKSPACE_SECURITY.md) | 授权、路由与边界 |

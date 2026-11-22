@@ -29,6 +29,7 @@ Free, open-source MCP alternative to paid computer-access plugins · Multiple wo
 - [About](#-about)
 - [At a glance](#-at-a-glance)
 - [Quick start](#-quick-start)
+- [Connect ChatGPT with Secure MCP Tunnel](#-connect-chatgpt-with-secure-mcp-tunnel)
 - [Installation and CLI](#-installation-and-cli)
 - [Workspace workflow](#-workspace-workflow)
 - [Desktop experience](#-desktop-experience)
@@ -104,13 +105,27 @@ npx --yes chat-to-computer-mcp@latest open
 
 ### 3. Approve a workspace and connect
 
-Use the desktop **Workspaces** page to select a default directory, add approved folders, and review tool permissions. Under **Connection**, configure a supported MCP tunnel and connect it from a compatible AI client.
+Use the desktop **Workspaces** page to select a default directory, add approved folders and review tool permissions. Next follow **[Connect ChatGPT with Secure MCP Tunnel](#-connect-chatgpt-with-secure-mcp-tunnel)** to create a Tunnel ID and runtime key, connect the app, and add the server in ChatGPT.
 
 ### 4. Work from your AI chat
 
 For example: *“Show my approved workspaces, open the second repository and investigate its failing tests.”* The connected client can then use the scoped tools you approved.
 
 > Installing the app does not secretly configure ChatGPT, Claude or other third-party clients. MCP connector availability and authorization depend on the individual client.
+
+## 🔌 Connect ChatGPT with Secure MCP Tunnel
+
+**This is the recommended connection path for ChatGPT.** ChatToComputerMCP runs the private MCP server locally and bundles `tunnel-client`, so you do **not** need to open a public inbound port or install a second tunnel process.
+
+1. **Create a Tunnel:** In [OpenAI Platform → Tunnel settings](https://platform.openai.com/settings/organization/tunnels), create/reuse a Secure MCP Tunnel and associate it with the **ChatGPT workspace** where you will use it. Copy the `tunnel_…` ID. Creating requires **Tunnels Read + Manage**.
+2. **Create a restricted runtime API key:** Use the **OpenAI Platform**, not your ChatGPT subscription, to create a key with **Tunnels Read + Use**. Your ChatGPT workspace must independently allow custom MCP Plugins. Keep this API key private.
+3. **Connect the native app:** In ChatToComputerMCP **Connection**, choose **OpenAI Secure MCP Tunnel**, enter the **Tunnel ID** and **Runtime API key**, then **Save connection → Connect**. Wait for **Connected**. The app securely stores the key in the OS credential store and manages the bundled tunnel client itself.
+4. **Add it in ChatGPT:** Open [ChatGPT Plugins](https://chatgpt.com/plugins) → **+ → Add custom MCP server**, select **Connection: Tunnel** and choose/paste the **same Tunnel ID**. Review the authentication/risk warnings, create the Plugin, and verify its discovered tools.
+5. **Test a tool call:** Start a new ChatGPT chat, select the Plugin with `@` and ask it to **list the files in your approved default workspace without modifying them**. Check that **Activity** in the local app records the actual call.
+
+**Important:** Do not paste `http://127.0.0.1:8008/mcp` into ChatGPT for the Tunnel route—it is only the local server address. If your Tunnel is missing from ChatGPT, check its **ChatGPT workspace association** and your **Tunnels Read + Use** role.
+
+**Full illustrated-by-steps guides:** [English connection guide](docs/CONNECT_CHATGPT.md) · [中文连接教程](docs/CONNECT_CHATGPT.zh-CN.md). The full guides cover permissions, Platform vs ChatGPT accounts, Cloudflare Tunnel (macOS), OAuth and troubleshooting. Official references: [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [Connect an MCP Plugin in ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt).
 
 ## 📦 Installation and CLI
 
@@ -271,6 +286,7 @@ ChatToComputerMCP gives compatible AI conversations an approved local execution 
 
 | Guide | Focus |
 |---|---|
+| [Connect ChatGPT](docs/CONNECT_CHATGPT.md) / [中文教程](docs/CONNECT_CHATGPT.zh-CN.md) | Tunnel setup, Platform API key, ChatGPT Plugins and verification |
 | [Install from npm](docs/INSTALL_NPM.md) | System requirements, CLI, background service |
 | [Architecture](docs/ARCHITECTURE.md) | Client, tunnel, host runtime and workspace scopes |
 | [Multi-workspace security](docs/MULTI_WORKSPACE_SECURITY.md) | Permission and path guarantees |
