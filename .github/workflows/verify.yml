@@ -78,6 +78,19 @@ jobs:
       - name: Integration tests
         run: MCP_EXTENDED_SEARCH_TESTS=1 ./tests/test_swift_runtime.sh
 
+      - name: Set up Node for source npm package tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate npm local installer
+        run: npm test
+
+      - name: Verify npm source package contents
+        run: |
+          npm pack --dry-run --json > npm-pack-manifest.json
+          node -e 'const p=require("./npm-pack-manifest.json")[0]; if (!p.files.some(f=>f.path==="bin/chat-to-computer-mcp.mjs")) throw Error("missing CLI"); if (!p.files.some(f=>f.path==="macos/LaunchAgentService.swift")) throw Error("missing launchagent");'
+
       - name: UI state regression tests
         run: bash tests/test_swift_ui.sh
 

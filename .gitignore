@@ -30,3 +30,9 @@ shared/
 # Do not include local signed release bundles in source
 signed/
 signed-window-first/
+
+# npm package output and global installation dependencies
+*.tgz
+node_modules/
+# The root bin/ contains the published CLI; nested build bin/ remain ignored.
+!/bin/

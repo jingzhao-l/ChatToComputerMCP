@@ -53,6 +53,7 @@ echo "Compiling full Swift macOS app ..."
     "$ROOT/macos/LocalMCPServer.swift" \
     "$ROOT/macos/CodexHistory.swift" \
     "$ROOT/macos/LocalMCPRuntime.swift" \
+    "$ROOT/macos/LaunchAgentService.swift" \
     "$ROOT/macos/ChatToComputerMCPApp.swift" \
     "$ROOT/macos/main.swift"
 

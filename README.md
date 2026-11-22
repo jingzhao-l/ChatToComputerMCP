@@ -50,6 +50,7 @@ not replace a live production service while AI sessions remain active.
 - [Product vision and safety](docs/PROJECT_SCOPE.md)
 - [Multi-workspace routing and security](docs/MULTI_WORKSPACE_SECURITY.md)
 - [Native GUI capabilities](docs/GUI_CAPABILITIES.md)
+- [Install from npm and optional macOS background service](docs/INSTALL_NPM.md)
 - [Engineering roadmap](docs/ROADMAP.md)
 - [Credential-preserving migration](docs/RELEASE_MIGRATION.md)
 - [Source provenance](docs/UPSTREAM_ATTRIBUTION.md)
@@ -70,3 +71,17 @@ credential target keys, user preference domains, tunnel profile locks, and
 OpenAI local-auth header names are deliberately retained as binary/protocol
 compatibility layers until a signed migration can preserve existing users'
 credentials without an outage.
+
+
+## Source installer
+
+The npm package name is chat-to-computer-mcp. The CLI compiles macOS Swift
+or Windows .NET source locally into a versioned per-user release, leaving
+running FileMCP installations untouched. After npm Registry publication:
+
+    npx --yes chat-to-computer-mcp@latest install
+
+Until npm authentication and publication are complete, install from the
+versioned npm tarball (see docs/INSTALL_NPM.md). A Mac login LaunchAgent is
+optional, with crash-only restart by default, explicit always-on and optional
+auto-connect. Mac GUI offers a non-disruptive next-login toggle.

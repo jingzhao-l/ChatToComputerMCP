@@ -1,0 +1,13 @@
+# Untracked/generated output must never ship in the source package.
+windows/**/bin/
+windows/**/obj/
+**/bin/Debug/
+**/bin/Release/
+**/obj/Debug/
+**/obj/Release/
+*.tgz
+*.log
+node_modules/
+.npmrc
+.env
+.env.*

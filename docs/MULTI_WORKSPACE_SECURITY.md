@@ -44,5 +44,6 @@ through the matching workspace_call context.
   approved roots; changing the set invalidates previous scope consent.
 - A working-directory guard is NOT an OS sandbox: shell commands may still
   access other folders with absolute paths.
-- Windows currently retains single-directory runtime semantics and does not
-  advertise multi-workspace support until tested parity is implemented.
+- Windows now supports explicit scoped routing and a shared 4–16 command
+  budget. A real Windows regression/GUI acceptance remains mandatory before
+  claiming cross-platform release readiness.

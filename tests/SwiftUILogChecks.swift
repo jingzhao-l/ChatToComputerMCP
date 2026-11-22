@@ -306,6 +306,14 @@ extension MainViewController {
             WorkspaceDefinition(id: "nested", name: "Nested", path: first.path))
         precondition((try? controller.validateApprovedWorkspacePaths()) == nil)
         precondition(controller.cancelTaskButton.isEnabled == false)
-        print("PASS: approved-workspace picker, safe root validation, task controls and 12-command GUI setting")
+        controller.loginStartCheckbox.state = .on
+        controller.loginItemOptionsChanged()
+        precondition(controller.loginAutoConnectCheckbox.isEnabled &&
+                     controller.loginAlwaysCheckbox.isEnabled)
+        controller.loginStartCheckbox.state = .off
+        controller.loginItemOptionsChanged()
+        precondition(!controller.loginAutoConnectCheckbox.isEnabled &&
+                     !controller.loginAlwaysCheckbox.isEnabled)
+        print("PASS: workspace controls, capacity, targeted task UI and optional LaunchAgent switch")
     }
 }

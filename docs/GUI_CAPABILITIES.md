@@ -27,3 +27,17 @@ persistent selected tab and light/dark appearances.
 - Durable jobs, command output retention, progress and recovery across restart.
 - Native Windows parity for workspaces, task management and permissions.
 - Keyboard, VoiceOver, multi-display and screenshot regression expansion.
+
+
+## Portable install and Windows parity
+
+Mac Workspaces now provides optional LaunchAgent login/keep-alive controls.
+No background service is enabled implicitly by local npm compile or manual GUI
+launch. The CLI can enable/disable the dedicated local.chat-to-computer-mcp
+LaunchAgent without touching local.filemcp.
+
+Windows Settings now includes additional named folder approvals and a shared
+4–16 command cap. Windows Tasks lists scoped sessions and supports targeted
+cancellation. The native Windows implementation is compiled with a Windows
+targeting pack on Mac; final Windows GUI/real-process acceptance must run on a
+Windows runner or PC.

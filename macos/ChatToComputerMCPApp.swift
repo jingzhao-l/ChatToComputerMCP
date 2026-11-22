@@ -452,6 +452,11 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let workspaceSelectedPath = NSTextField(wrappingLabelWithString: "Default workspace")
     private let workspaceCountLabel = NSTextField(labelWithString: "1 approved workspace")
     private let commandCapacityMenu = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let loginStartCheckbox = NSButton(checkboxWithTitle: "Open on sign-in (optional)", target: nil, action: nil)
+    private let loginAutoConnectCheckbox = NSButton(checkboxWithTitle: "Reconnect automatically after login", target: nil, action: nil)
+    private let loginAlwaysCheckbox = NSButton(checkboxWithTitle: "Always keep running (even after Quit)", target: nil, action: nil)
+    private let applyLoginSettingsButton = NSButton(title: "Apply login settings", target: nil, action: nil)
+    private let loginItemStatusLabel = NSTextField(wrappingLabelWithString: "Background service is not configured")
     private let addWorkspaceButton = NSButton(title: "Add folders…", target: nil, action: nil)
     private let removeWorkspaceButton = NSButton(title: "Remove", target: nil, action: nil)
     private let renameWorkspaceButton = NSButton(title: "Rename…", target: nil, action: nil)
@@ -515,6 +520,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     override func viewDidLoad() {
         super.viewDidLoad()
         buildUI()
+        refreshLoginItemStatus()
         // Credential loading is deferred until AppDelegate has displayed the
         // window; otherwise macOS Keychain prompts can block initial activation.
         applyAppearance((loadsSavedConfiguration ? UserDefaults.standard.string(forKey: Self.appearanceKey) : nil)
@@ -1015,6 +1021,25 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         workspaceSafety.textColor = .secondaryLabelColor
         workspaceSafety.preferredMaxLayoutWidth = Layout.contentWidth
         workspaceSafety.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        let loginItemTitle = NSTextField(labelWithString: "Background service (optional)")
+        loginItemTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        let loginItemHelp = NSTextField(wrappingLabelWithString:
+            "LaunchAgent is optional. When enabled, this Mac launches ChatToComputerMCP at the next sign-in and restarts it if it crashes. Always-on additionally relaunches it after normal Quit. Auto-connect uses existing approved credentials; it is off by default. Changes here take effect after the next sign-in, not immediately.")
+        loginItemHelp.font = .systemFont(ofSize: 11)
+        loginItemHelp.textColor = .secondaryLabelColor
+        loginItemHelp.preferredMaxLayoutWidth = Layout.contentWidth
+        loginItemHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        for box in [loginStartCheckbox, loginAutoConnectCheckbox, loginAlwaysCheckbox] {
+            box.target = self
+            box.action = #selector(loginItemOptionsChanged)
+        }
+        applyLoginSettingsButton.bezelStyle = .rounded
+        applyLoginSettingsButton.target = self
+        applyLoginSettingsButton.action = #selector(applyLoginItemSettings)
+        loginItemStatusLabel.font = .systemFont(ofSize: 11)
+        loginItemStatusLabel.textColor = .secondaryLabelColor
+        loginItemStatusLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+
         let settingsForm = NSStackView(views: [
             workspaceTitle,
             workspaceHelp,
@@ -1030,6 +1055,13 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             enableGitPushCheckbox,
             enableCodexHistoryCheckbox,
             extraPermissionsHelp,
+            loginItemTitle,
+            loginItemHelp,
+            loginStartCheckbox,
+            loginAutoConnectCheckbox,
+            loginAlwaysCheckbox,
+            applyLoginSettingsButton,
+            loginItemStatusLabel,
             advancedToggleButton,
             advancedSettingsGroup,
         ])
@@ -2572,6 +2604,50 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateCloudflareActionStates()
         updateConnectionPresentation()
         updateWindowHeight()
+    }
+
+    private func refreshLoginItemStatus() {
+        let settings = ChatToComputerLaunchAgent.settings()
+        loginStartCheckbox.state = settings.enabled ? .on : .off
+        loginAutoConnectCheckbox.state = settings.autoConnect ? .on : .off
+        loginAlwaysCheckbox.state = settings.always ? .on : .off
+        loginItemOptionsChanged()
+        loginItemStatusLabel.stringValue = settings.enabled
+            ? "Configured for next login. " +
+                (ChatToComputerLaunchAgent.isLoaded ? "LaunchAgent is currently loaded." : "LaunchAgent is not loaded in this session.")
+            : "Not configured. The app will only open when launched manually."
+    }
+
+    @objc private func loginItemOptionsChanged() {
+        let enabled = loginStartCheckbox.state == .on
+        loginAutoConnectCheckbox.isEnabled = enabled
+        loginAlwaysCheckbox.isEnabled = enabled
+        applyLoginSettingsButton.isEnabled = true
+    }
+
+    @objc private func applyLoginItemSettings() {
+        let enabled = loginStartCheckbox.state == .on
+        if enabled && loginAutoConnectCheckbox.state == .on {
+            let confirm = NSAlert()
+            confirm.messageText = "Enable automatic tunnel connection at sign-in?"
+            confirm.informativeText = "This uses saved credentials after login and should not share a profile with another active FileMCP instance. Do not proceed until that installation is disabled or configured with a separate profile."
+            confirm.addButton(withTitle: "Continue")
+            confirm.addButton(withTitle: "Cancel")
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        }
+        do {
+            try ChatToComputerLaunchAgent.setNextLogin(
+                enabled: enabled,
+                autoConnect: loginAutoConnectCheckbox.state == .on,
+                always: loginAlwaysCheckbox.state == .on)
+            refreshLoginItemStatus()
+            showFeedback(enabled
+                ? "Login item saved. It will take effect at your next sign-in. No running app was restarted."
+                : "Login item removed for future logins. Existing running processes were not stopped.")
+        } catch {
+            showError(error.localizedDescription)
+            refreshLoginItemStatus()
+        }
     }
 
     @objc private func workspaceOptionsChanged() {

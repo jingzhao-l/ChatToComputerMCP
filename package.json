@@ -1,0 +1,66 @@
+{
+  "name": "chat-to-computer-mcp",
+  "version": "0.1.0",
+  "description": "MCP gateway for approved local workspaces and concurrent AI conversations",
+  "license": "Apache-2.0",
+  "author": "ChatToComputerMCP contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jingzhao-l/ChatToComputerMCP.git"
+  },
+  "homepage": "https://github.com/jingzhao-l/ChatToComputerMCP",
+  "bugs": {
+    "url": "https://github.com/jingzhao-l/ChatToComputerMCP/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "win32"
+  ],
+  "bin": {
+    "chat-to-computer-mcp": "./bin/chat-to-computer-mcp.mjs"
+  },
+  "files": [
+    "bin/",
+    "macos/",
+    "vendor/",
+    "assets/branding/chat-to-computer-mcp/",
+    "assets/branding/render_chat_to_computer_mcp_icon.swift",
+    "build_macos_app.sh",
+    "build_macos_icon.sh",
+    "build_windows_app.ps1",
+    "LICENSE",
+    "README.md",
+    "npm/README.md",
+    "windows/FileMCP.Windows.sln",
+    "windows/src/FileMCP.Core/*.cs",
+    "windows/src/FileMCP.Core/*.csproj",
+    "windows/src/FileMCP.App/*.cs",
+    "windows/src/FileMCP.App/*.xaml",
+    "windows/src/FileMCP.App/*.csproj",
+    "windows/src/FileMCP.App/*.manifest",
+    "windows/assets/*.ico",
+    "docs/INSTALL_NPM.md",
+    "docs/MULTI_WORKSPACE_SECURITY.md",
+    "docs/GUI_CAPABILITIES.md"
+  ],
+  "scripts": {
+    "test": "node --test npm/installer.test.mjs",
+    "pack:check": "npm pack --dry-run --json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "mcp",
+    "chatgpt",
+    "claude",
+    "local",
+    "workspaces",
+    "macos",
+    "windows",
+    "concurrent"
+  ]
+}
