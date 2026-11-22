@@ -38,14 +38,15 @@ internal sealed partial class LocalTools
     private readonly bool _enableCommands;
     private readonly string? _safeGitEmptyFile;
     private readonly string? _safeGitHooksDirectory;
-    private readonly SemaphoreSlim _toolSlots = new(8, 8);
+    private readonly WorkspaceCommandBudget _commandBudget;
+    private readonly SemaphoreSlim _toolSlots = new(16, 16);
     private readonly SemaphoreSlim _serializedSlot = new(1, 1);
-    private readonly SemaphoreSlim _commandSlots = new(2, 2);
+    private readonly SemaphoreSlim _commandSlots = new(16, 16);
     private readonly SemaphoreSlim _gitSlots = new(3, 3);
     private readonly SemaphoreSlim _codexHistorySlot = new(1, 1);
     private static readonly HashSet<string> SerializedToolNames = new(StringComparer.Ordinal)
     {
-        "write_file", "delete_file", "delete_directory", "run_command", "edit_file", "apply_patch", "workspace_context", "start_command",
+        "write_file", "delete_file", "delete_directory", "edit_file", "apply_patch", "workspace_context", "start_command",
         "git_init", "git_status", "git_log", "git_diff", "git_add", "git_commit", "git_push",
     };
     private static readonly HashSet<string> BatchReadToolNames = new(StringComparer.Ordinal)
@@ -79,9 +80,12 @@ internal sealed partial class LocalTools
         ".csproj", ".fsproj", ".sln", ".vbproj", ".xcodeproj", ".xcworkspace",
     ];
 
-    public LocalTools(string allowedDirectory, string gitUserName, string gitUserEmail, bool enableCommands, Ripgrep? ripgrep = null)
+    public LocalTools(string allowedDirectory, string gitUserName, string gitUserEmail,
+        bool enableCommands, Ripgrep? ripgrep = null, WorkspaceCommandBudget? sharedBudget = null)
     {
         _resolver = new SafePathResolver(allowedDirectory);
+        _commandBudget = sharedBudget ?? new WorkspaceCommandBudget(
+            int.TryParse(Environment.GetEnvironmentVariable("FILEMCP_MAX_CONCURRENT_COMMANDS"), out var limit) ? limit : 8);
         _ripgrep = ripgrep ?? new Ripgrep();
         _gitUserName = gitUserName;
         _gitUserEmail = gitUserEmail;
@@ -91,6 +95,9 @@ internal sealed partial class LocalTools
             (_safeGitEmptyFile, _safeGitHooksDirectory) = PrepareSafeGitResources();
         }
     }
+
+    internal string WorkspaceRoot => _resolver.Root;
+    internal System.Text.Json.Nodes.JsonObject CommandCapacityStatus() => _commandBudget.Status();
 
     public JsonArray ToolDefinitions
     {
@@ -223,6 +230,14 @@ internal sealed partial class LocalTools
                     ("stop_on_error", BooleanProperty(false))),
                 ["operations"], true, output: BatchReadOutputSchema()));
             foreach (var definition in AgentToolDefinitions()) tools.Add(definition);
+            if (_enableCommands) tools.Add(Tool("command_capacity_status", "Read global command capacity without viewing other clients' paths or command contents.",
+                Props(), [], true, output: ObjectSchema(new[] {
+                    ("max_concurrent_commands", "integer"),
+                    ("active_long_running", "integer"),
+                    ("active_synchronous", "integer"),
+                    ("active_total", "integer"),
+                    ("available_slots", "integer"),
+                    ("accepting_new_commands", "boolean") })));
             return tools;
         }
     }
@@ -255,6 +270,7 @@ internal sealed partial class LocalTools
                 "start_command" => ObjectOutput(StartCommand(arguments)),
                 "read_command_output" => ObjectOutput(FindSession(GetRequiredString(arguments, "session_id")).Snapshot(GetInt(arguments, "cursor", 0))),
                 "cancel_command" => ObjectOutput(CancelCommand(GetRequiredString(arguments, "session_id"))),
+                "command_capacity_status" => ObjectOutput(_commandBudget.Status()),
                 "write_file" => StringOutput(WriteFile(
                     GetRequiredString(arguments, "relative_path"),
                     GetRequiredString(arguments, "content"),
@@ -1563,8 +1579,14 @@ internal sealed partial class LocalTools
         var workdir = _resolver.Resolve(cwd);
         if (!Directory.Exists(workdir)) throw new FileMcpException($"No such working directory: {(string.IsNullOrEmpty(cwd) ? "." : cwd)}");
         await _commandSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Guid? sharedLease = null;
         try
         {
+            // Coordinate command admission with scoped mutations; independent
+            // cwd commands do not hold this slot while their processes run.
+            await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try { sharedLease = _commandBudget.AcquireSynchronous(workdir); }
+            finally { _serializedSlot.Release(); }
             var result = await ProcessRunner.RunAsync(PowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], workdir,
                 Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>().ToDictionary(e => (string)e.Key, e => (string?)e.Value ?? "", StringComparer.OrdinalIgnoreCase),
                 timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, cancellationToken).ConfigureAwait(false);
@@ -1577,7 +1599,10 @@ internal sealed partial class LocalTools
             }
             return FormatProcessResult(result);
         }
-        finally { _commandSlots.Release(); }
+        finally {
+            if (sharedLease is Guid id) _commandBudget.Release(id);
+            _commandSlots.Release();
+        }
     }
 
     private static string PowerShellPath()

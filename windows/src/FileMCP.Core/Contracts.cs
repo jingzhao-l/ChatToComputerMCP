@@ -43,6 +43,10 @@ public static class FileMcpConstants
     public const int MaxHttpRequestBodyBytes = 8_000_000;
 }
 
+public sealed record ApprovedWorkspace(string Id, string Name, string Path);
+public sealed record DesktopCommandInfo(string WorkspaceId, string WorkspaceName,
+    string SessionId, string RequestId, string Cwd, string State, bool Active);
+
 public sealed record LocalMcpConfiguration(
     string TunnelId,
     string ApiKey,
@@ -52,7 +56,9 @@ public sealed record LocalMcpConfiguration(
     string HealthAddress,
     string GitUserName,
     string GitUserEmail,
-    bool EnableCommands);
+    bool EnableCommands,
+    IReadOnlyList<ApprovedWorkspace>? AdditionalWorkspaces = null,
+    int MaxConcurrentCommands = 8);
 
 public enum LocalMcpRuntimeStatus
 {
@@ -82,9 +88,11 @@ public sealed class FileMcpSettings
     public string Profile { get; set; } = "filemcp";
     public int Port { get; set; } = 8008;
     public string AllowedDirectory { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "FileMCP");
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ChatToComputerMCP");
     public string HealthAddress { get; set; } = "127.0.0.1:0";
     public string GitUserName { get; set; } = "";
     public string GitUserEmail { get; set; } = "";
     public bool EnableCommands { get; set; }
+    public int MaxConcurrentCommands { get; set; } = 8;
+    public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];
 }

@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Windows.Controls;
 using System.Drawing;
 using System.IO;
 using System.Windows;
@@ -16,6 +18,11 @@ public partial class MainWindow : Window
     private readonly LocalMcpRuntime _runtime = new();
     private readonly Forms.NotifyIcon _trayIcon;
     private FileMcpSettings _settings;
+    private readonly List<ApprovedWorkspace> _workspaces = [];
+    private sealed record TaskRow(DesktopCommandInfo Task)
+    {
+        public string Display => Task.WorkspaceName + " · " + Task.RequestId + " · " + Task.State;
+    }
     private bool _quitting;
     private string _logBuffer = "";
     private const int MaxLogCharacters = 500_000;
@@ -33,10 +40,10 @@ public partial class MainWindow : Window
         PreviewKeyDown += OnPreviewKeyDown;
 
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("Open ChatToComputer", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
-        menu.Items.Add("About ChatToComputer", null, (_, _) => Dispatcher.Invoke(ShowAbout));
+        menu.Items.Add("Open ChatToComputerMCP", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
+        menu.Items.Add("About ChatToComputerMCP", null, (_, _) => Dispatcher.Invoke(ShowAbout));
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Quit ChatToComputer", null, (_, _) => Dispatcher.Invoke(async () => await QuitAsync()));
+        menu.Items.Add("Quit ChatToComputerMCP", null, (_, _) => Dispatcher.Invoke(async () => await QuitAsync()));
         _trayIcon = new Forms.NotifyIcon
         {
             Text = "ChatToComputerMCP",
@@ -68,6 +75,156 @@ public partial class MainWindow : Window
         GitNameBox.Text = settings.GitUserName;
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
+        _workspaces.Clear();
+        _workspaces.AddRange(settings.AdditionalWorkspaces ?? []);
+        RefreshWorkspaceList();
+        var capacity = settings.MaxConcurrentCommands == 0 ? 8 : Math.Clamp(settings.MaxConcurrentCommands, 4, 16);
+        foreach (var item in CommandCapacityBox.Items.OfType<ComboBoxItem>())
+            if (int.TryParse(item.Content?.ToString(), out var count) && count == capacity)
+                CommandCapacityBox.SelectedItem = item;
+    }
+
+    private int SelectedCommandCapacity() =>
+        int.TryParse((CommandCapacityBox.SelectedItem as ComboBoxItem)?.Content?.ToString(), out var count)
+            ? Math.Clamp(count, 4, 16) : 8;
+
+    private void RefreshWorkspaceList()
+    {
+        WorkspaceListBox.ItemsSource = null;
+        WorkspaceListBox.ItemsSource = _workspaces.ToArray();
+        WorkspaceNameBox.Text = "";
+    }
+
+    private void WorkspaceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        WorkspaceNameBox.Text = (WorkspaceListBox.SelectedItem as ApprovedWorkspace)?.Name ?? "";
+    }
+
+    private void AddWorkspaces_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new OpenFolderDialog {
+            Title = "Choose additional approved workspaces",
+            Multiselect = true,
+            InitialDirectory = Directory.Exists(DirectoryBox.Text) ? DirectoryBox.Text
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        };
+        if (picker.ShowDialog(this) != true) return;
+        var before = _workspaces.ToList();
+        foreach (var folder in picker.FolderNames)
+        {
+            _workspaces.Add(new ApprovedWorkspace(Guid.NewGuid().ToString("N"),
+                Path.GetFileName(Path.TrimEndingDirectorySeparator(folder)), folder));
+        }
+        if (!ValidateApprovedFolders())
+        {
+            _workspaces.Clear();
+            _workspaces.AddRange(before);
+            return;
+        }
+        RefreshWorkspaceList();
+        AppendLog("Additional workspace approval added. Save and reconnect to apply.\n");
+    }
+
+    private void RemoveWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
+        if (System.Windows.MessageBox.Show(this,
+            "Remove approval of " + workspace.Name + "? This never deletes files.",
+            "Revoke workspace access", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+        _workspaces.Remove(workspace);
+        RefreshWorkspaceList();
+        AppendLog("Workspace approval removed. Save and reconnect to apply.\n");
+    }
+
+    private void RenameWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
+        var name = WorkspaceNameBox.Text.Trim();
+        if (name.Length is < 1 or > 64) { ShowError("Workspace name must be 1–64 characters."); return; }
+        var index = _workspaces.IndexOf(workspace);
+        _workspaces[index] = workspace with { Name = name };
+        RefreshWorkspaceList();
+    }
+
+    private void RevealWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
+        if (!Directory.Exists(workspace.Path)) { ShowError("The selected workspace folder is missing."); return; }
+        Process.Start(new ProcessStartInfo {
+            FileName = "explorer.exe", Arguments = "/select,\"" + workspace.Path + "\"",
+            UseShellExecute = true
+        });
+    }
+
+    private bool ValidateApprovedFolders()
+    {
+        if (_workspaces.Count > 12) { ShowError("At most 12 additional workspaces can be approved."); return false; }
+        var roots = new List<string>();
+        var ids = new HashSet<string>(StringComparer.Ordinal) { "default" };
+        foreach (var workspace in new[] {
+            new ApprovedWorkspace("default", "Default", DirectoryBox.Text.Trim())
+        }.Concat(_workspaces))
+        {
+            if (string.IsNullOrWhiteSpace(workspace.Name) || workspace.Name.Length > 64 ||
+                string.IsNullOrWhiteSpace(workspace.Path) ||
+                !Directory.Exists(workspace.Path) ||
+                !ids.Add(workspace.Id) && workspace.Id != "default")
+            {
+                ShowError("Every approved workspace must have a unique ID, name and existing folder.");
+                return false;
+            }
+            var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspace.Path));
+            if (roots.Any(root =>
+                string.Equals(root, folder, StringComparison.OrdinalIgnoreCase) ||
+                folder.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                root.StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
+            {
+                ShowError("Approved workspace roots must not overlap.");
+                return false;
+            }
+            roots.Add(folder);
+        }
+        // The server independently checks canonical paths including junctions.
+        return true;
+    }
+
+    private void RefreshTasks_Click(object sender, RoutedEventArgs e) => RefreshTasks();
+
+    private void RefreshTasks()
+    {
+        try
+        {
+            var tasks = _runtime.DesktopCommandSnapshots();
+            TaskListBox.ItemsSource = tasks.Select(task => new TaskRow(task)).ToArray();
+            TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
+                "Synchronous commands count toward total capacity but are not individually cancellable here.";
+            TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
+            CancelTaskButton.IsEnabled = false;
+        }
+        catch (Exception ex) { TasksSummaryText.Text = ex.Message; }
+    }
+
+    private void TaskSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (TaskListBox.SelectedItem is not TaskRow row) {
+            CancelTaskButton.IsEnabled = false; return;
+        }
+        TaskDetailText.Text = row.Task.WorkspaceName + " · " + row.Task.Cwd + " · " + row.Task.State;
+        CancelTaskButton.IsEnabled = row.Task.Active &&
+            _runtime.State.Status == LocalMcpRuntimeStatus.Running;
+    }
+
+    private void CancelTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskListBox.SelectedItem is not TaskRow row || !row.Task.Active) return;
+        if (System.Windows.MessageBox.Show(this,
+            "Stop only " + row.Task.RequestId + " in " + row.Task.WorkspaceName + "?",
+            "Cancel command", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+        try { _runtime.CancelDesktopCommand(row.Task.WorkspaceId, row.Task.SessionId); }
+        catch (Exception ex) { ShowError(ex.Message); }
+        RefreshTasks();
     }
 
     private void UpdateApiKeyStatus()
@@ -102,7 +259,8 @@ public partial class MainWindow : Window
             var configuration = new LocalMcpConfiguration(
                 TunnelIdBox.Text.Trim(), apiKey, ProfileBox.Text.Trim(), checked((ushort)_settings.Port),
                 DirectoryBox.Text.Trim(), HealthAddressBox.Text.Trim(), GitNameBox.Text.Trim(), GitEmailBox.Text.Trim(),
-                EnableCommandsCheckBox.IsChecked == true);
+                EnableCommandsCheckBox.IsChecked == true,
+                _workspaces.ToArray(), SelectedCommandCapacity());
             await _runtime.StartAsync(configuration);
         }
         catch (Exception ex) { ShowError(ex.Message); }
@@ -177,6 +335,7 @@ public partial class MainWindow : Window
     private bool ValidateSettings()
     {
         if (DirectoryBox.Text.Trim().Length == 0) { MainTabs.SelectedItem = SettingsTab; ShowError("Choose a shared directory."); return false; }
+        if (!ValidateApprovedFolders()) { MainTabs.SelectedItem = SettingsTab; return false; }
         if (!LocalMcpRuntime.IsValidProfileName(ProfileBox.Text.Trim())) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters)."); return false; }
         if (!int.TryParse(PortBox.Text.Trim(), out var port) || port is < 1 or > 65535) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("MCP port must be between 1 and 65535."); return false; }
         if (LocalMcpRuntime.NormalizeHealthAddress(HealthAddressBox.Text.Trim()) is null) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535."); return false; }
@@ -199,6 +358,8 @@ public partial class MainWindow : Window
         _settings.GitUserName = GitNameBox.Text.Trim();
         _settings.GitUserEmail = GitEmailBox.Text.Trim();
         _settings.EnableCommands = EnableCommandsCheckBox.IsChecked == true;
+        _settings.AdditionalWorkspaces = _workspaces.ToList();
+        _settings.MaxConcurrentCommands = SelectedCommandCapacity();
     }
 
     private void UpdateRuntimeState(LocalMcpRuntimeState state)
@@ -215,6 +376,15 @@ public partial class MainWindow : Window
             case LocalMcpRuntimeStatus.Stopping:
                 ConnectButton.Content = "Disconnecting…"; ConnectButton.IsEnabled = false; break;
         }
+        var editable = state.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed;
+        WorkspaceListBox.IsEnabled = editable;
+        WorkspaceNameBox.IsEnabled = editable;
+        CommandCapacityBox.IsEnabled = editable;
+        AddWorkspaceButton.IsEnabled = editable;
+        RenameWorkspaceButton.IsEnabled = editable;
+        RemoveWorkspaceButton.IsEnabled = editable;
+        RevealWorkspaceButton.IsEnabled = editable;
+        if (state.Status == LocalMcpRuntimeStatus.Running) RefreshTasks();
         if (state.Status == LocalMcpRuntimeStatus.Failed && !string.IsNullOrEmpty(state.Error)) ShowError(state.Error);
     }
 
@@ -234,7 +404,7 @@ public partial class MainWindow : Window
         System.Windows.MessageBox.Show(
             this,
             "ChatToComputerMCP 0.4.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
-            "About ChatToComputer",
+            "About ChatToComputerMCP",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
     }

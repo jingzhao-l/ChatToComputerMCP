@@ -21,8 +21,11 @@ public sealed class SettingsStore
             var settings = JsonSerializer.Deserialize<FileMcpSettings>(File.ReadAllText(_path), JsonOptions) ?? new FileMcpSettings();
             if (settings.Port is < 1 or > 65535) settings.Port = 8008;
             if (string.IsNullOrWhiteSpace(settings.Profile)) settings.Profile = "filemcp";
-            if (string.IsNullOrWhiteSpace(settings.AllowedDirectory)) settings.AllowedDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "FileMCP");
+            if (string.IsNullOrWhiteSpace(settings.AllowedDirectory)) settings.AllowedDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ChatToComputerMCP");
             if (string.IsNullOrWhiteSpace(settings.HealthAddress)) settings.HealthAddress = "127.0.0.1:0";
+            settings.MaxConcurrentCommands = settings.MaxConcurrentCommands == 0 ? 8
+                : Math.Clamp(settings.MaxConcurrentCommands, 4, 16);
+            settings.AdditionalWorkspaces ??= [];
             return settings;
         }
         catch (JsonException ex) { throw new FileMcpException("Could not read FileMCP settings: " + ex.Message); }

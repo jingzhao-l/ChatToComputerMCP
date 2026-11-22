@@ -44,6 +44,7 @@ internal static partial class Program
             await TestCodexHistoryAsync(root);
             await TestGitSafetyAsync(root);
             await TestHttpAndMcpAsync(root);
+            await TestWorkspaceScopeAsync(root);
             await TestRuntimeAsync(root);
             Console.WriteLine($"windows-core-tests: ok ({_assertions} assertions)");
             return 0;
@@ -73,9 +74,13 @@ internal static partial class Program
             TunnelId = "tunnel_" + new string('a', 32), Profile = "windows-test", Port = 18080,
             AllowedDirectory = Path.Combine(root, "workspace"), HealthAddress = "127.0.0.1:0",
             GitUserName = "FileMCP Test", GitUserEmail = "filemcp@example.invalid", EnableCommands = true,
+            MaxConcurrentCommands = 12,
+            AdditionalWorkspaces = [new ApprovedWorkspace("extra", "Additional", Path.Combine(root, "extra"))],
         };
         store.Save(settings); var loaded = store.Load();
         Assert(loaded.TunnelId == settings.TunnelId && loaded.Profile == settings.Profile && loaded.EnableCommands, "settings roundtrip");
+        Assert(loaded.MaxConcurrentCommands == 12 && loaded.AdditionalWorkspaces.Count == 1 &&
+            loaded.AdditionalWorkspaces[0].Id == "extra", "workspace and capacity settings persisted");
         Assert(!File.ReadAllText(Path.Combine(settingsDir, "settings.json")).Contains("apiKey", StringComparison.OrdinalIgnoreCase), "settings contain no API key");
 
         var target = "FileMCP/tests/" + Guid.NewGuid().ToString("N");
@@ -120,7 +125,7 @@ internal static partial class Program
         var safe = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid", false);
         var full = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid", true);
         Assert(safe.ToolDefinitions.Count == 22 && safe.HasTool("save_conversation_to_codex") && safe.HasTool("search_code") && safe.HasTool("repo_overview") && safe.HasTool("batch_read") && !safe.HasTool("run_command"), "safe tool count");
-        Assert(full.ToolDefinitions.Count == 26 && full.HasTool("save_conversation_to_codex") && full.HasTool("search_code") && full.HasTool("repo_overview") && full.HasTool("batch_read") && full.HasTool("run_command"), "full tool count");
+        Assert(full.ToolDefinitions.Count == 27 && full.HasTool("save_conversation_to_codex") && full.HasTool("search_code") && full.HasTool("repo_overview") && full.HasTool("batch_read") && full.HasTool("run_command"), "full tool count");
 
         await safe.CallAsync("write_file", Obj(("relative_path", "docs/note.txt"), ("content", "alpha\nbeta\ngamma\n")));
         var read = await safe.CallAsync("read_file", Obj(("relative_path", "docs/note.txt")));

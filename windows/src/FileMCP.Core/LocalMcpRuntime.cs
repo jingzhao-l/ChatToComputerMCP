@@ -57,6 +57,15 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
 
     public LocalMcpRuntimeState State { get { lock (_stateGate) return _state; } }
 
+    public IReadOnlyList<DesktopCommandInfo> DesktopCommandSnapshots() =>
+        _server?.DesktopCommandSnapshots() ?? [];
+
+    public void CancelDesktopCommand(string workspaceID, string sessionID)
+    {
+        if (_server is null) throw new FileMcpException("No connected local server");
+        _server.CancelDesktopCommand(workspaceID, sessionID);
+    }
+
     public async Task StartAsync(LocalMcpConfiguration configuration)
     {
         await _serial.WaitAsync().ConfigureAwait(false);
@@ -72,7 +81,9 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                 var healthAddress = ValidateConfiguration(configuration);
                 _profileLock = new ProfileLock(configuration.Profile); _profileLock.Acquire();
                 var localAuthToken = MakeLocalAuthToken();
-                _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName, configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog);
+                _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
+                    configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
+                    configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
 
                 var tunnelClient = TunnelClientPath(); var profileDirectory = TunnelProfileDirectory();

@@ -340,15 +340,38 @@ internal sealed partial class LocalTools
                     throw new FileMcpException("request_id already used with different arguments");
                 return existing.Snapshot(0);
             }
-            if (_sessions.Any(session => session.Active)) throw new FileMcpException("A command session is active; finish or cancel it before starting another");
+            if (_commandBudget.HasActivityUnderRoot(cwd) &&
+                _sessions.Any(session => session.Active && session.Cwd == cwd))
+                throw new FileMcpException("Another active command occupies this working directory");
             if (_usedRequestIds.Contains(key)) throw new FileMcpException("request_id expired; use a new ID only for an intentional new execution");
             if (_usedRequestIds.Count >= 4096) throw new FileMcpException("Runtime command quota reached; reconnect to start a fresh runtime");
             var session = new CommandSession(key, command, cwd, timeout);
-            session.Launch(PowerShellPath());
+            _commandBudget.Admit(session, cwd);
+            try { session.Launch(PowerShellPath()); }
+            catch { _commandBudget.Forget(session); throw; }
             _usedRequestIds.Add(key); _sessions.Add(session);
-            if (_sessions.Count > 8) { _sessions[0].Dispose(); _sessions.RemoveAt(0); }
+            if (_sessions.Count > 8) {
+                var old = _sessions.FirstOrDefault(item => !item.Active);
+                if (old is not null) { old.Dispose(); _sessions.Remove(old); }
+            }
             return session.Snapshot(0);
         }
+    }
+
+    internal IReadOnlyList<DesktopCommandInfo> DesktopCommandSnapshots(string workspaceID, string workspaceName)
+    {
+        lock (_sessionGate)
+        {
+            return _sessions.Select(session => new DesktopCommandInfo(
+                workspaceID, workspaceName, session.Id, session.RequestId,
+                session.Cwd, session.Snapshot(0)["state"]?.GetValue<string>() ?? "unknown",
+                session.Active)).ToArray();
+        }
+    }
+
+    internal void CancelDesktopCommand(string sessionID)
+    {
+        FindSession(sessionID).Cancel();
     }
 
     private CommandSession FindSession(string id)
@@ -365,7 +388,8 @@ internal sealed partial class LocalTools
     private void EnsureNoActiveCommand()
     {
         lock (_sessionGate)
-            if (_sessions.Any(session => session.Active)) throw new FileMcpException("Command session is active; finish or cancel it before file mutations or Git operations");
+            if (_commandBudget.HasActivityUnderRoot(_resolver.Root))
+                throw new FileMcpException("Command session is active in this workspace; finish it before modifying files or Git state");
     }
 
     public void StopCommandSessions()
