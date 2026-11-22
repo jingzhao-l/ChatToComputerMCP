@@ -3,7 +3,7 @@
 This document describes which remote clients have independently verified
 identities and which connections are intentionally shared.
 
-## What v0.2.0 actually provides
+## What v0.2.1 actually provides
 
 Cloudflare OAuth clients authenticate with **server-issued bearer tokens**
 bound to a locally approved OAuth client ID. A client-supplied display name is

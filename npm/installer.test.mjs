@@ -21,13 +21,23 @@ test('installer is explicit; never auto-starts or creates a launchagent',()=>{
   assert.match(before.stdout,/Installed: no/);
   const noApp=invoke(['launchagent','enable'],tmp);
   assert.notEqual(noApp.status,0);
-  assert.match(noApp.stderr,/Run install first/);
-  assert.equal(fs.existsSync(path.join(tmp,'Library','LaunchAgents',
-    'local.chat-to-computer-mcp.plist')),false);
+  const plist=path.join(tmp,'Library','LaunchAgents',
+    'local.chat-to-computer-mcp.plist');
+  assert.equal(fs.existsSync(plist),false);
   const disabled=invoke(['launchagent','disable'],tmp);
-  assert.equal(disabled.status,0,disabled.stderr);
-  const after=invoke(['status'],tmp);
-  assert.match(after.stdout,/LaunchAgent: disabled, not loaded/);
+  if(process.platform==='darwin') {
+    assert.match(noApp.stderr,/Run install first/);
+    assert.equal(disabled.status,0,disabled.stderr);
+    const after=invoke(['status'],tmp);
+    assert.match(after.stdout,/LaunchAgent: disabled, not loaded/);
+  } else {
+    // Linux is used only for the GitHub OIDC package gate. It must reject
+    // macOS-only launchd commands without modifying the computer.
+    assert.match(noApp.stderr,/LaunchAgent is available only on macOS/);
+    assert.notEqual(disabled.status,0);
+    assert.match(disabled.stderr,/LaunchAgent is available only on macOS/);
+  }
+  assert.equal(fs.existsSync(plist),false);
  } finally {fs.rmSync(tmp,{recursive:true,force:true});}
 });
 test('CLI help and version are stable',()=>{

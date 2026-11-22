@@ -44,7 +44,7 @@ Windows runner (run 45028574644). Native ARM64 execution and complete upgrade
 and restart scenarios remain unverified; ARM64 packages build successfully.
 
 
-## Expanded native controls in 0.2.0
+## Expanded native controls in 0.2.1
 
 - macOS Tasks: retain selection after refresh, inspect bounded stdout/stderr
   and exit codes, reveal the owning folder and explicitly copy command output.

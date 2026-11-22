@@ -1,6 +1,12 @@
 # Changelog
 
-## [0.2.0] — 2026-11-22
+## [0.2.1] — 2026-11-22
+
+The v0.2.0 Git tag was retained for audit but its npm publish workflow
+stopped at the Linux package-test gate **before publication**. Version 0.2.1
+supersedes that unpublished release candidate without rewriting tag history.
+The cross-platform npm LaunchAgent test now verifies unsupported Linux
+behavior instead of applying macOS-only assertions.
 
 - Added safe no-shell file operations on macOS and Windows: file_info,
   create_directory, copy_file and move_file. File copies/moves refuse overwrite
@@ -15,7 +21,7 @@
 - macOS crash-safe command receipt journal (from 0.1.0 development main)
   persists idempotency tombstones and warns about interrupted work; it is not
   cross-restart process reattachment.
-- Aligned macOS and Windows app/server/package version identifiers with 0.2.0,
+- Aligned macOS and Windows app/server/package version identifiers with 0.2.1,
   and expanded native regression tests and security/GUI documentation.
 
 

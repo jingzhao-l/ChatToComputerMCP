@@ -19,7 +19,7 @@ $TunnelClient = Join-Path $Root "vendor/tunnel-client/$VendorTag/tunnel-client.e
 $ThirdParty = Join-Path $Root "vendor/tunnel-client/$VendorTag/THIRD-PARTY-LICENSES.txt"
 $Ripgrep = Join-Path $Root "vendor/ripgrep/$VendorTag/rg.exe"
 $PublishDir = Join-Path $Root "dist/windows-$Architecture/ChatToComputerMCP"
-$ZipPath = Join-Path $Root "dist/ChatToComputerMCP-v0.2.0-windows-$Architecture.zip"
+$ZipPath = Join-Path $Root "dist/ChatToComputerMCP-v0.2.1-windows-$Architecture.zip"
 
 foreach ($Required in @(
     $TunnelClient,

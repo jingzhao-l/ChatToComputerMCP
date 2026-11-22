@@ -105,3 +105,12 @@ npm's OIDC Trusted Publishing currently accepts GitHub-hosted runners; the exist
 - Wrong version/tag → fix `package.json` in a new commit, then create a correct, previously unused tag.
 - Existing npm version → do **not** retry a destructive overwrite. Verify `npm view`, then bump version.
 - Packaging mismatch → stop before publishing; fix the pack allowlist, run tests, create a new tag.
+
+
+## Historical unpublished release tag
+
+The immutable v0.2.0 Git tag failed the Linux package-test gate before npm
+publication. It was not force-moved or reused. The complete 0.2.x feature
+release therefore proceeds as v0.2.1 after correcting cross-platform tests,
+with normal stable-tag OIDC verification. This illustrates why CI green on
+main and actual npm Registry read-back are both release gates.
