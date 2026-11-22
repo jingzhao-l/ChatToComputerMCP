@@ -34,27 +34,26 @@ npm view chat-to-computer-mcp@0.1.0 version
 
 Never paste OTP or account passwords into a chat. If an interactive 2FA prompt is required, satisfy it on the computer.
 
-### First-publication alternative: npm staged publishing
+### Direct-publication verification
 
-If noninteractive `npm publish` returns `EOTP`, **do not remove 2FA or store a
-bypass token**. npm supports staging even for a package that does not yet
-exist:
+The first release was submitted using regular interactive `npm publish`
+and npm's official browser-based 2FA ceremony, not `npm stage publish`.
+
+After accepting a package, npm may scan it for malware. During processing the
+registry can temporarily show a `0.0.0-stage` placeholder while the intended
+version isn't installable. If `npm stage list chat-to-computer-mcp` is empty,
+that placeholder does NOT indicate an intentionally staged release.
+
+**Do not upload the same version again** during this transition. Confirm:
 
 ```bash
-npm whoami
-npm test
-npm stage publish --access public --tag latest --ignore-scripts
-npm stage list chat-to-computer-mcp
+npm view chat-to-computer-mcp@0.1.0 version
+npm dist-tag ls chat-to-computer-mcp
 ```
 
-Then, on **npmjs.com → Staged Packages**, review `chat-to-computer-mcp@0.1.0`
-and approve it with the site's real 2FA ceremony. The stage is **not** a live
-installable release. npm may display a publicly visible `0.0.0-stage`
-placeholder for a first-time staged package. Only after approval and a
-successful `npm view chat-to-computer-mcp@0.1.0 version` read-back should
-the package be described as published.
-
-See [npm staged publishing](https://docs.npmjs.com/staged-publishing/).
+Only when `0.1.0` is actually available and `latest` points to it is the
+first release publicly installable. Subsequent stable tags use OIDC as below.
+See [npm publish-time scanning](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/).
 
 ## Automatic subsequent stable releases
 

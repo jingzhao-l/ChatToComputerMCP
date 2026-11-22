@@ -65,11 +65,17 @@ Default `enable` starts after future user login and restarts abnormal exits. `--
 
 **Manual npm publish returns EOTP**
 
-Being logged in is not enough for a package publish requiring 2FA. Run the
-publish interactively and approve the genuine npm browser challenge, or use
-`npm stage publish --access public` and then approve the package under the
-npmjs.com Staged Packages tab. Do not send a one-time password through chat,
-disable 2FA or use a bypass token.
+Being logged in is not enough for a publish requiring 2FA. Run the regular
+`npm publish` command interactively and complete npm's browser challenge.
+Do not send an OTP through chat, disable 2FA or use a bypass token.
+
+**The CLI reports success but npm only shows `0.0.0-stage`**
+
+A first-time direct publish may still be processing in npm's malware scanning
+queue. Check `npm stage list chat-to-computer-mcp`. If it is empty, do not
+interpret the placeholder as a manual stage awaiting approval. Check that
+version `0.1.0` becomes installable and `latest` points at it; don't upload
+the same version again while processing.
 
 **OIDC publish says “Unable to authenticate”**
 
