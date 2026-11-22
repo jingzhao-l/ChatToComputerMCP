@@ -5,7 +5,10 @@ func runOAuthPersistenceChecks() throws {
     let issuer = "https://mcp.example.com"
     let pairing = String(repeating: "p", count: 64)
     var durable: Data?
-    let oauth = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing, policy: "workspace-A|files", permissionDescription: "File access", persist: { durable = $0 })
+    let approved = [WorkspaceDefinition(id: "second", name: "Second repository", path: "/tmp/user-approved-second")]
+    let oauth = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing,
+        policy: "workspace-A|files", permissionDescription: "File access",
+        approvedWorkspaces: approved, persist: { durable = $0 })
     func response(_ server: LocalMCPOAuthServer, _ method: String, _ path: String, _ values: [String: String] = [:], json: Bool = false) -> LocalOAuthResponse {
         var components = URLComponents()
         components.queryItems = values.map { URLQueryItem(name: $0.key, value: $0.value) }
@@ -41,11 +44,84 @@ func runOAuthPersistenceChecks() throws {
     let access = tokens["access_token"] as! String
     let refresh = tokens["refresh_token"] as! String
     precondition(oauth.accepts("Bearer " + access))
+    let firstIdentity = oauth.verifiedClient(forAuthorization: "Bearer " + access)!
+    precondition(firstIdentity.id == client &&
+                 firstIdentity.approvedWorkspaceIDs == ["default"])
+    precondition(oauth.verifiedClient(forAuthorization: "Bearer forged-credential") == nil)
+
+    // A second, genuinely approved OAuth client can be granted ONE extra
+    // workspace by the local pairing page. Its self-reported client name is
+    // never considered an authorization claim.
+    let otherClient = object(response(oauth, "POST", "/oauth/register", json: true))["client_id"] as! String
+    let secondPage = response(oauth, "GET", "/oauth/authorize", [
+        "response_type": "code", "client_id": otherClient,
+        "redirect_uri": "https://chatgpt.com/connector_platform_oauth_redirect",
+        "resource": issuer + "/mcp", "scope": "mcp",
+        "code_challenge_method": "S256", "code_challenge": challenge
+    ])
+    let secondHTML = String(decoding: secondPage.body, as: UTF8.self)
+    precondition(secondHTML.contains("scope:second") &&
+                 secondHTML.contains("Default workspace only"))
+    let otherMatch = expression.firstMatch(in: secondHTML,
+        range: NSRange(secondHTML.startIndex..., in: secondHTML))!
+    let secondRequestID = String(secondHTML[Range(otherMatch.range(at: 1), in: secondHTML)!])
+    let scopeForgery = response(oauth, "POST", "/oauth/authorize", [
+        "request_id": secondRequestID, "pairing_code": pairing,
+        "workspace_scope": "scope:unapproved"
+    ])
+    precondition(scopeForgery.status == 403)
+    let secondApproval = response(oauth, "POST", "/oauth/authorize", [
+        "request_id": secondRequestID, "pairing_code": pairing,
+        "workspace_scope": "scope:second"
+    ])
+    precondition(secondApproval.status == 302)
+    let codeB = URLComponents(string: secondApproval.headers["Location"]!)!.queryItems!
+        .first { $0.name == "code" }!.value!
+    let exchangedB = response(oauth, "POST", "/oauth/token", [
+        "grant_type": "authorization_code", "client_id": otherClient,
+        "redirect_uri": "https://chatgpt.com/connector_platform_oauth_redirect",
+        "code": codeB, "code_verifier": verifier, "resource": issuer + "/mcp"
+    ])
+    precondition(exchangedB.status == 200)
+    let accessB = object(exchangedB)["access_token"] as! String
+    let secondIdentity = oauth.verifiedClient(forAuthorization: "Bearer " + accessB)!
+    precondition(secondIdentity.id == otherClient &&
+                 secondIdentity.approvedWorkspaceIDs == ["default", "second"])
+    precondition(!firstIdentity.approvedWorkspaceIDs.contains("second"))
     let saved = durable!
     let savedText = String(decoding: saved, as: UTF8.self)
     precondition(!savedText.contains(access) && !savedText.contains(refresh) && !savedText.contains(pairing))
-    let restored = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing, policy: "workspace-A|files", permissionDescription: "File access", persistedState: saved)
+    let restored = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing,
+        policy: "workspace-A|files", permissionDescription: "File access",
+        approvedWorkspaces: approved, persistedState: saved)
     precondition(restored.accepts("Bearer " + access), "a process restart should preserve an approved session")
+    precondition(restored.verifiedClient(forAuthorization: "Bearer " + accessB)?
+        .approvedWorkspaceIDs == ["default", "second"],
+        "verified per-client workspace scopes survive restart")
+    precondition(restored.desktopApprovedClients().count == 2)
+    try restored.revokeDesktopClient(otherClient)
+    precondition(restored.verifiedClient(forAuthorization: "Bearer " + accessB) == nil,
+                 "locally revoked client token cannot authorize future requests")
+    precondition(restored.verifiedClient(forAuthorization: "Bearer " + access) != nil,
+                 "revoking client B must preserve client A")
+    precondition(restored.desktopApprovedClients().count == 1)
+    do {
+        try restored.revokeDesktopClient(otherClient)
+        preconditionFailure("Repeated revocation incorrectly succeeded")
+    } catch { }
+
+    // Pre-upgrade stores lack the newly added workspace choice property.
+    // Such clients default to the least-privileged default workspace only.
+    var oldFormat = try JSONSerialization.jsonObject(with: saved) as! [String: Any]
+    var oldClients = oldFormat["clients"] as! [String: [String: Any]]
+    for id in oldClients.keys { oldClients[id]?.removeValue(forKey: "allowedWorkspaceIDs") }
+    oldFormat["clients"] = oldClients
+    let legacy = try LocalMCPOAuthServer(
+        issuer: issuer, pairingSecret: pairing, policy: "workspace-A|files",
+        permissionDescription: "File access", approvedWorkspaces: approved,
+        persistedState: JSONSerialization.data(withJSONObject: oldFormat))
+    precondition(legacy.verifiedClient(forAuthorization: "Bearer " + accessB)?
+        .approvedWorkspaceIDs == ["default"], "old store must not accidentally grant extra workspaces")
     let changedPermissions = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing, policy: "workspace-A|files+shell", permissionDescription: "Shell access", persistedState: saved)
     precondition(!changedPermissions.accepts("Bearer " + access), "new permissions require fresh consent")
     let changedWorkspace = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing, policy: "workspace-B|files", permissionDescription: "File access", persistedState: saved)

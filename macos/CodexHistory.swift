@@ -505,7 +505,7 @@ private final class CodexAppServerClient {
         let result = try request(
             method: "initialize",
             params: [
-                "clientInfo": ["name": "filemcp", "version": "0.4.0"],
+                "clientInfo": ["name": "chat-to-computer-mcp", "version": "0.2.0"],
                 "capabilities": ["experimentalApi": true],
             ],
             timeoutSeconds: 15

@@ -86,6 +86,12 @@ npm 包在你的电脑上编译应用。需要 Node.js 20+；Mac 需安装 Swift
 
 Cloudflare 方式**不需要 OpenAI Tunnel ID 和对应运行时 API Key**。不推荐启用“把密钥放进 MCP URL”的兼容模式：获得完整 URL 的人可能直接调用已开放工具。
 
+**客户端独立授权：**Cloudflare OAuth 授权页现在会让用户选择该客户端
+能够访问的已批准工作区，默认仅授权默认工作区。Mac Connection 界面
+可以查看或撤销客户端的 OAuth 令牌。OpenAI Secure MCP Tunnel 的共享
+连接认证头仍不能独立认证每个 ChatGPT 对话。
+
+
 官方参考：[Cloudflare Tunnel 文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)。
 
 ## 常见故障

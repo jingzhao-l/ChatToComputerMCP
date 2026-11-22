@@ -34,6 +34,30 @@ internal static partial class Program
         try
         {
             Assert(safe.HasTool("edit_file") && safe.HasTool("workspace_context") && !safe.HasTool("start_command"), "agent tool permissions");
+            await Call(safe, "create_directory", Obj(("relative_path", "created/sub")));
+            Assert(Directory.Exists(Path.Combine(root, "created", "sub")), "create_directory makes nested folders");
+            File.WriteAllText(Path.Combine(root, "created", "source.txt"), "safe original");
+            var fileInfo = await Call(safe, "file_info", Obj(("relative_path", "created/source.txt")));
+            Assert(fileInfo["kind"]!.GetValue<string>() == "file" &&
+                fileInfo["size_bytes"]!.GetValue<long>() == 13, "file_info reads bounded file metadata");
+            await Call(safe, "copy_file", Obj(("source_path", "created/source.txt"),
+                ("destination_path", "created/sub/copy.txt")));
+            Assert(File.ReadAllText(Path.Combine(root, "created", "sub", "copy.txt")) == "safe original", "copy_file");
+            await AssertThrowsAsync(() => Call(safe, "copy_file",
+                Obj(("source_path", "created/source.txt"), ("destination_path", "created/sub/copy.txt"))),
+                "exists", "copy_file refuses overwrite");
+            await Call(safe, "move_file", Obj(("source_path", "created/sub/copy.txt"),
+                ("destination_path", "created/renamed.txt")));
+            Assert(File.Exists(Path.Combine(root, "created", "renamed.txt")) &&
+                !File.Exists(Path.Combine(root, "created", "sub", "copy.txt")), "move_file");
+            await AssertThrowsAsync(() => Call(safe, "move_file",
+                Obj(("source_path", "created/renamed.txt"), ("destination_path", "created/source.txt"))),
+                "exists", "move_file refuses overwrite");
+            await AssertThrowsAsync(() => Call(safe, "create_directory", Obj(("relative_path", "../escape"))),
+                "outside", "create_directory containment");
+            await AssertThrowsAsync(() => Call(safe, "copy_file",
+                Obj(("source_path", "../outside.txt"), ("destination_path", "created/escape.txt"))),
+                "outside", "copy_file containment");
             var file = Path.Combine(root, "nested", "code.txt");
             File.WriteAllText(file, "héllo 👋\r\nkeep\r\n", new UTF8Encoding(false));
             var edit = Obj(("relative_path", "nested/code.txt"), ("old_text", "héllo 👋"), ("new_text", "xin chào"), ("dry_run", true));

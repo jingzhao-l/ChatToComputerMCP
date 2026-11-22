@@ -80,6 +80,8 @@ ChatGPT / Claude / another compatible MCP client
 | **Scoped MCP operations** | `list_workspaces` discovers approved scopes; `workspace_call` selects one explicitly. |
 | **Concurrent commands** | One shared configurable 4–16 command budget (default 8); overlapping cwd trees are rejected. |
 | **Task controls** | Command IDs, bounded output, status and targeted cancellation. |
+| **Safe everyday file tools** | Metadata lookup, folder creation, file copy and move/rename without Shell access; refuse destination overwrite. |
+| **Verified OAuth scopes (Mac)** | Cloudflare OAuth clients can be approved for specific roots, own their command sessions and be revoked in the GUI. Private OpenAI Tunnel remains shared. |
 | **Native GUI** | Mac: Overview, Workspaces, Connection, Tasks, Activity. Windows: connection, workspace and task management. |
 | **Connection providers** | OpenAI Secure MCP Tunnel on Mac/Windows; Cloudflare alternative on Mac. |
 | **Local installation** | npm ships native source and pinned vendor binaries; installation **compiles locally**. |
@@ -190,7 +192,7 @@ The Windows client provides its own native WPF settings and task controls; its a
 - Commands run with the **user's OS privileges**; cwd collision checks do **not** confine absolute paths.
 - Sessions expose IDs, bounded output and target-specific cancellation.
 
-**This version does not yet provide cryptographically verified per-conversation identity or durable subprocess reattachment across an application crash.** The current Mac development build records private durable request-ID receipts to prevent replay after restart; an interrupted receipt requires checking actual effects, NOT assuming the process resumed. Both identity and true reattachment remain roadmap items.
+**Current boundary:** Mac Cloudflare OAuth can verify server-issued client tokens, enforce individually approved scopes and task ownership, and revoke clients through the native GUI. **OpenAI Secure MCP Tunnel continues to use shared local credentials; it does not prove the identity of an individual ChatGPT conversation.** Mac durable receipts prevent accidental command replay but do not reattach orphaned processes after restart. See [Verified client access](docs/VERIFIED_CLIENT_ACCESS.md).
 
 ## 🔧 MCP tool examples
 
@@ -290,6 +292,7 @@ ChatToComputerMCP gives compatible AI conversations an approved local execution 
 | [Install from npm](docs/INSTALL_NPM.md) | System requirements, CLI, background service |
 | [Architecture](docs/ARCHITECTURE.md) | Client, tunnel, host runtime and workspace scopes |
 | [Multi-workspace security](docs/MULTI_WORKSPACE_SECURITY.md) | Permission and path guarantees |
+| [Verified OAuth clients](docs/VERIFIED_CLIENT_ACCESS.md) | Client scopes, command ownership, token revocation and tunnel limits |
 | [GUI capabilities](docs/GUI_CAPABILITIES.md) | Native controls |
 | [Publishing](docs/PUBLISHING.md) | npm OIDC, version tags and release procedure |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Build, connection and permissions |

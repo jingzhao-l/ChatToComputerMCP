@@ -1,6 +1,161 @@
 import Foundation
 
 extension LocalMCPServer {
+    static func verifyOAuthRevocationCancelsOwnedJobs() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ctcmcp-revoke-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let issuer = "https://mcp.example.com"
+        let pairing = String(repeating: "p", count: 64)
+        let oauth = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing,
+            policy: "test", permissionDescription: "Files and commands")
+        let registerJSON = Data(
+            #"{"redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"]}"#.utf8)
+        let registration = oauth.handle(method: "POST", path: "/oauth/register",
+            query: "", contentType: "application/json", body: registerJSON)!
+        let registered = try JSONSerialization.jsonObject(
+            with: registration.body) as! [String: Any]
+        let clientID = registered["client_id"] as! String
+        let redirect = "https://chatgpt.com/connector_platform_oauth_redirect"
+        let fields = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "redirect_uri", value: redirect),
+            URLQueryItem(name: "resource", value: issuer + "/mcp"),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "code_challenge", value: String(repeating: "a", count: 43))
+        ]
+        var query = URLComponents()
+        query.queryItems = fields
+        let page = oauth.handle(method: "GET", path: "/oauth/authorize",
+            query: query.percentEncodedQuery!, contentType: nil, body: Data())!
+        let html = String(decoding: page.body, as: UTF8.self)
+        let pattern = try NSRegularExpression(
+            pattern: "name=\\\"request_id\\\" value=\\\"([^\\\"]+)\\\"")
+        let match = pattern.firstMatch(in: html,
+            range: NSRange(html.startIndex..., in: html))!
+        let requestID = String(html[Range(match.range(at: 1), in: html)!])
+        var form = URLComponents()
+        form.queryItems = [
+            URLQueryItem(name: "request_id", value: requestID),
+            URLQueryItem(name: "pairing_code", value: pairing)
+        ]
+        let approved = oauth.handle(method: "POST", path: "/oauth/authorize",
+            query: "", contentType: "application/x-www-form-urlencoded",
+            body: Data(form.percentEncodedQuery!.utf8))!
+        precondition(approved.status == 302)
+        let server = try LocalMCPServer(port: 18965, allowedDirectory: base.path,
+            gitUserName: "Test", gitUserEmail: "test@example.invalid",
+            enableCommands: true, localAuthToken: String(repeating: "a", count: 64),
+            oauth: oauth, log: { _ in })
+        defer { server.stop() }
+        let client = VerifiedOAuthClient(id: clientID, approvedWorkspaceIDs: ["default"])
+        func call(_ name: String, _ args: [String: Any]) throws -> [String: Any] {
+            let reply = server.callTool(id: 1,
+                params: ["name": name, "arguments": args], modern: false,
+                verifiedClient: client)
+            let boundary = reply.range(of: Data("\r\n\r\n".utf8))!
+            let object = try JSONSerialization.jsonObject(
+                with: reply.subdata(in: boundary.upperBound..<reply.count)) as! [String: Any]
+            return object["result"] as! [String: Any]
+        }
+        let start = try call("start_command", [
+            "request_id": "revoke-owned-job", "command": "sleep 20",
+            "timeout_seconds": 30])
+        precondition(start["isError"] as? Bool == false)
+        let sessionID = (start["structuredContent"] as! [String: Any])["session_id"] as! String
+        try server.revokeDesktopOAuthClient(clientID)
+        precondition(oauth.desktopApprovedClients().isEmpty)
+        let stop = try call("read_command_output", ["session_id": sessionID])
+        let state = (stop["structuredContent"] as! [String: Any])["state"] as? String
+        precondition(["cancelled", "stopping"].contains(state))
+        print("PASS: locally revoked OAuth client has its outstanding job cancelled")
+    }
+
+    static func verifyAuthenticatedClientIsolation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ctcmcp-client-auth-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaultRoot = root.appendingPathComponent("default")
+        let secondRoot = root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: defaultRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        try "local-only".write(to: defaultRoot.appendingPathComponent("default.txt"),
+                               atomically: true, encoding: .utf8)
+        try "other-data".write(to: secondRoot.appendingPathComponent("second.txt"),
+                              atomically: true, encoding: .utf8)
+        let second = WorkspaceDefinition(id: "second", name: "Second", path: secondRoot.path)
+        let server = try LocalMCPServer(
+            port: 18964, allowedDirectory: defaultRoot.path,
+            gitUserName: "Test", gitUserEmail: "test@example.invalid",
+            enableCommands: true, additionalWorkspaces: [second],
+            localAuthToken: String(repeating: "a", count: 64), log: { _ in })
+        defer { server.stop() }
+        let alice = VerifiedOAuthClient(id: "oauth-client-alice",
+            approvedWorkspaceIDs: ["default"])
+        let bob = VerifiedOAuthClient(id: "oauth-client-bob",
+            approvedWorkspaceIDs: ["default", "second"])
+
+        func call(_ name: String, _ args: [String: Any] = [:],
+                  _ client: VerifiedOAuthClient) throws -> [String: Any] {
+            let response = server.callTool(id: 1,
+                params: ["name": name, "arguments": args], modern: false,
+                verifiedClient: client)
+            let separator = Data("\r\n\r\n".utf8)
+            guard let boundary = response.range(of: separator) else {
+                fatalError("No HTTP response separator")
+            }
+            let body = response.subdata(in: boundary.upperBound..<response.count)
+            let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            return json["result"] as! [String: Any]
+        }
+
+        func checkCall(_ name: String, _ args: [String: Any],
+                       _ client: VerifiedOAuthClient, expectedError: Bool,
+                       _ explanation: String) throws {
+            let response = try call(name, args, client)
+            precondition(response["isError"] as? Bool == expectedError, explanation)
+        }
+
+        let aliceList = try call("list_workspaces", [:], alice)
+        let aliceScopes = (aliceList["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
+        precondition(aliceScopes.count == 1 && aliceScopes[0]["id"] as? String == "default")
+        let bobList = try call("list_workspaces", [:], bob)
+        let bobScopes = (bobList["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
+        precondition(bobScopes.count == 2, "Owner-granted client can list its approved second root")
+        let scopedArgs: [String: Any] = ["workspace_id": "second",
+            "tool_name": "read_file", "arguments": ["relative_path": "second.txt"]]
+        try checkCall("workspace_call", scopedArgs, alice, expectedError: true,
+                      "Unapproved client cannot use another workspace")
+        try checkCall("workspace_call", scopedArgs, bob, expectedError: false,
+                      "Appropriate scoped grant can read its approved workspace")
+
+        let started = try call("start_command", [
+            "request_id": "owned-command",
+            "command": "printf owner-ready; sleep 20",
+            "timeout_seconds": 25
+        ], alice)
+        precondition(started["isError"] as? Bool == false)
+        let sessionID = (started["structuredContent"] as! [String: Any])["session_id"] as! String
+        try checkCall("read_command_output", ["session_id": sessionID],
+                      bob, expectedError: true,
+                      "One OAuth client cannot read another client's output")
+        try checkCall("cancel_command", ["session_id": sessionID],
+                      bob, expectedError: true,
+                      "One OAuth client cannot cancel another client's process")
+        try checkCall("start_command", [
+            "request_id": "owned-command", "command": "printf owner-ready; sleep 20",
+            "timeout_seconds": 25
+        ], bob, expectedError: true,
+            "A second OAuth client cannot reuse the first client's request ID")
+        try checkCall("read_command_output", ["session_id": sessionID],
+                      alice, expectedError: false, "Owner may read output")
+        try checkCall("cancel_command", ["session_id": sessionID],
+                      alice, expectedError: false, "Owner may cancel task")
+        print("PASS: per-OAuth-client authorized scopes, session ownership, cancellation and request-ID collision isolation")
+    }
+
     static func verifyDurableCommandReceipts() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ctcmcp-server-receipts-\(UUID().uuidString)")

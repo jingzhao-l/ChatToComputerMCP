@@ -4,8 +4,12 @@ ChatToComputerMCP exposes powerful local capabilities: file access, Git operatio
 
 ## Important limits
 
-- Verified per-client identity and per-client permissions are not implemented.
-  Shared tunnel authorization must not be treated as per-conversation isolation.
+- Mac Cloudflare OAuth now verifies server-issued access tokens and enforces
+  locally approved client scopes and command ownership. The client-provided
+  MCP clientInfo/display name is never treated as a security principal.
+- OpenAI Secure MCP Tunnel still uses a shared local authentication header,
+  so it cannot verify individual conversations. Do not claim per-conversation
+  isolation in that connection mode.
 - Shell commands inherit the user's operating-system permissions; a cwd guard
   prevents accidental collisions but does not create a security sandbox.
 - Windows real-device validation is pending even where cross-target compilation succeeds.

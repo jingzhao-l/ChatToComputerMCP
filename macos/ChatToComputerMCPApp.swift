@@ -443,6 +443,13 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let openAIKeyRow = NSStackView()
     private let cloudflareKeyRow = NSStackView()
     private let cloudflareTokenStatusLabel = NSTextField(labelWithString: "")
+    private let oauthClientSection = NSStackView()
+    private let oauthClientPicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let oauthClientScopeLabel = NSTextField(wrappingLabelWithString:
+        "Connect using Cloudflare OAuth to view approved clients.")
+    private let oauthClientRefreshButton = NSButton(title: "Refresh clients", target: nil, action: nil)
+    private let oauthClientRevokeButton = NSButton(title: "Revoke client", target: nil, action: nil)
+    private var desktopOAuthClients: [DesktopOAuthClient] = []
     private let deleteCloudflareTokenButton = NSButton(title: "Delete token", target: nil, action: nil)
     private let profileField = NSTextField()
     private let portField = NSTextField()
@@ -493,6 +500,11 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let refreshTasksButton = NSButton(title: "Refresh tasks", target: nil, action: nil)
     private let cancelTaskButton = NSButton(title: "Cancel selected", target: nil, action: nil)
     private let openTaskActivityButton = NSButton(title: "View activity log", target: nil, action: nil)
+    private let revealTaskFolderButton = NSButton(title: "Reveal folder", target: nil, action: nil)
+    private let copyTaskOutputButton = NSButton(title: "Copy output", target: nil, action: nil)
+    private let taskOutputLabel = NSTextField(labelWithString: "Selected task output")
+    private let taskOutputView = NSTextView()
+    private let taskOutputScroll = NSScrollView()
     private var desktopTaskList: [DesktopCommandSnapshot] = []
     private let themeButton = NSButton()
     private static let appearanceKey = "interfaceAppearance"
@@ -871,6 +883,41 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         activeConnectionSummary.preferredMaxLayoutWidth = Layout.contentWidth
         activeConnectionSummary.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         activeConnectionSummary.isHidden = true
+        let oauthTitle = NSTextField(labelWithString: "Authorized OAuth clients")
+        oauthTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        let oauthHelp = NSTextField(wrappingLabelWithString:
+            "Cloudflare OAuth only. Client names are self-reported; access is bound to server-issued tokens. Choose a connection to inspect its approved workspace scopes or revoke all its tokens.")
+        oauthHelp.font = .systemFont(ofSize: 11)
+        oauthHelp.textColor = .secondaryLabelColor
+        oauthHelp.preferredMaxLayoutWidth = Layout.contentWidth
+        oauthHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        oauthClientPicker.addItem(withTitle: "No approved clients")
+        oauthClientPicker.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        oauthClientPicker.target = self
+        oauthClientPicker.action = #selector(selectedOAuthClientChanged)
+        oauthClientPicker.setAccessibilityLabel("Approved OAuth clients")
+        oauthClientScopeLabel.textColor = .secondaryLabelColor
+        oauthClientScopeLabel.font = .systemFont(ofSize: 11)
+        oauthClientScopeLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        for button in [oauthClientRefreshButton, oauthClientRevokeButton] {
+            button.target = self
+            button.bezelStyle = .rounded
+        }
+        oauthClientRefreshButton.action = #selector(refreshOAuthClientList)
+        oauthClientRevokeButton.action = #selector(revokeSelectedOAuthClient)
+        oauthClientRevokeButton.isEnabled = false
+        let oauthButtons = NSStackView(views: [oauthClientRefreshButton, oauthClientRevokeButton])
+        oauthButtons.orientation = .horizontal
+        oauthButtons.spacing = 8
+        oauthClientSection.orientation = .vertical
+        oauthClientSection.alignment = .leading
+        oauthClientSection.spacing = 8
+        oauthClientSection.detachesHiddenViews = true
+        for view in [oauthTitle, oauthHelp, oauthClientPicker, oauthClientScopeLabel, oauthButtons] {
+            oauthClientSection.addArrangedSubview(view)
+        }
+        oauthClientSection.isHidden = true
+
         let connectionTitle = NSTextField(labelWithString: "Connection")
         connectionTitle.font = .systemFont(ofSize: 22, weight: .semibold)
         let connectionRoot = NSStackView(views: [
@@ -882,6 +929,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             primaryActions,
             divider,
             keyManagementRow,
+            oauthClientSection,
         ])
         connectionRoot.orientation = .vertical
         connectionRoot.alignment = .leading
@@ -1173,7 +1221,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         taskDetailsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         taskDetailsLabel.maximumNumberOfLines = 3
         taskDetailsLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
-        for button in [refreshTasksButton, cancelTaskButton, openTaskActivityButton] {
+        for button in [refreshTasksButton, cancelTaskButton, openTaskActivityButton,
+                       revealTaskFolderButton, copyTaskOutputButton] {
             button.bezelStyle = .rounded
             button.target = self
             button.setAccessibilityLabel(button.title)
@@ -1182,14 +1231,31 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         cancelTaskButton.action = #selector(cancelSelectedDesktopTask)
         cancelTaskButton.isEnabled = false
         openTaskActivityButton.action = #selector(showActivity)
+        revealTaskFolderButton.action = #selector(revealSelectedTaskFolder)
+        revealTaskFolderButton.isEnabled = false
+        copyTaskOutputButton.action = #selector(copySelectedTaskOutput)
+        copyTaskOutputButton.toolTip = "Output may contain secrets. Copy only when you intend to share it."
+        copyTaskOutputButton.isEnabled = false
+        taskOutputLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        taskOutputView.isEditable = false
+        taskOutputView.isSelectable = true
+        taskOutputView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        taskOutputView.string = "Choose a task to inspect its bounded stdout/stderr."
+        taskOutputView.textContainerInset = NSSize(width: 8, height: 8)
+        taskOutputScroll.hasVerticalScroller = true
+        taskOutputScroll.drawsBackground = false
+        taskOutputScroll.documentView = taskOutputView
+        taskOutputScroll.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        taskOutputScroll.heightAnchor.constraint(equalToConstant: 160).isActive = true
         let taskActions = NSStackView(views: [
-            refreshTasksButton, cancelTaskButton, openTaskActivityButton])
+            refreshTasksButton, cancelTaskButton, revealTaskFolderButton,
+            copyTaskOutputButton, openTaskActivityButton])
         taskActions.orientation = .horizontal
         taskActions.spacing = 10
         taskActions.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let taskStack = NSStackView(views: [
             taskTitle, taskHelp, tasksSummaryLabel, receiptWarningLabel, taskPicker,
-            taskDetailsLabel, taskActions])
+            taskDetailsLabel, taskActions, taskOutputLabel, taskOutputScroll])
         taskStack.orientation = .vertical
         taskStack.alignment = .leading
         taskStack.spacing = 13
@@ -1460,11 +1526,74 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         tabs.selectTabViewItem(at: navigation.selectedSegment)
         if tabs.selectedTabViewItem?.identifier as? String == "tasks" {
             refreshDesktopTasks()
+        } else if tabs.selectedTabViewItem?.identifier as? String == "config",
+                  selectedProvider == .cloudflare {
+            refreshOAuthClientList()
         }
     }
 
     @objc private func openWorkspace() { tabs.selectTabViewItem(withIdentifier: "settings") }
     @objc private func openConnection() { tabs.selectTabViewItem(withIdentifier: "config") }
+
+    @objc private func refreshOAuthClientList() {
+        runtime.fetchDesktopOAuthClients { [weak self] entries in
+            guard let self else { return }
+            let previousID = self.desktopOAuthClients.indices.contains(
+                self.oauthClientPicker.indexOfSelectedItem)
+                ? self.desktopOAuthClients[self.oauthClientPicker.indexOfSelectedItem].id : nil
+            self.desktopOAuthClients = entries
+            self.oauthClientPicker.removeAllItems()
+            if entries.isEmpty {
+                self.oauthClientPicker.addItem(withTitle: "No approved clients (or not connected)")
+            } else {
+                for entry in entries {
+                    let suffix = String(entry.id.prefix(8))
+                    self.oauthClientPicker.addItem(withTitle: entry.displayName + " · " + suffix)
+                }
+            }
+            self.oauthClientPicker.selectItem(at:
+                entries.firstIndex { $0.id == previousID } ?? 0)
+            self.selectedOAuthClientChanged()
+        }
+    }
+
+    @objc private func selectedOAuthClientChanged() {
+        let index = oauthClientPicker.indexOfSelectedItem
+        guard desktopOAuthClients.indices.contains(index) else {
+            oauthClientScopeLabel.stringValue =
+                "No clients to manage. Complete an OAuth pairing from a ChatGPT/Claude client first."
+            oauthClientRevokeButton.isEnabled = false
+            return
+        }
+        let entry = desktopOAuthClients[index]
+        let scopes = entry.approvedWorkspaces.map { scopeID in
+            additionalWorkspaces.first { $0.id == scopeID }?.name
+                ?? (scopeID == "default" ? "Default workspace" : scopeID)
+        }.joined(separator: ", ")
+        oauthClientScopeLabel.stringValue =
+            "Approved: " + scopes + ". Name is self-reported; identity is verified from its bearer token."
+        oauthClientRevokeButton.isEnabled = runtime.state == .running
+    }
+
+    @objc private func revokeSelectedOAuthClient() {
+        let index = oauthClientPicker.indexOfSelectedItem
+        guard desktopOAuthClients.indices.contains(index) else { return }
+        let entry = desktopOAuthClients[index]
+        let alert = NSAlert()
+        alert.messageText = "Revoke this OAuth client?"
+        alert.informativeText = entry.displayName +
+            " — this revokes its current access and refresh tokens. It must pair again to reconnect."
+        alert.addButton(withTitle: "Revoke access")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        oauthClientRevokeButton.isEnabled = false
+        runtime.revokeDesktopOAuthClient(entry.id) { [weak self] error in
+            guard let self else { return }
+            if let error { self.showFeedback(error, isError: true) }
+            else { self.showFeedback("OAuth client tokens revoked. Re-pairing is required.") }
+            self.refreshOAuthClientList()
+        }
+    }
 
     @objc private func refreshDesktopTasks() {
         runtime.fetchDesktopReceiptSummary { [weak self] summary in
@@ -1484,6 +1613,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         }
         runtime.fetchDesktopCommands { [weak self] entries in
             guard let self else { return }
+            let previousID = self.desktopTaskList.indices.contains(self.taskPicker.indexOfSelectedItem)
+                ? self.desktopTaskList[self.taskPicker.indexOfSelectedItem].sessionID : nil
             self.desktopTaskList = entries
             let active = entries.filter(\.active).count
             self.tasksSummaryLabel.stringValue = active == 0
@@ -1497,7 +1628,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                     self.taskPicker.addItem(withTitle: "\(entry.workspaceName) · \(entry.requestID) · \(entry.state)")
                 }
             }
-            self.taskPicker.selectItem(at: 0)
+            let preferred = entries.firstIndex { $0.sessionID == previousID } ?? 0
+            self.taskPicker.selectItem(at: preferred)
             self.selectedTaskChanged()
         }
     }
@@ -1507,12 +1639,56 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         guard desktopTaskList.indices.contains(index) else {
             taskDetailsLabel.stringValue = "Select Refresh tasks while connected to review live sessions."
             cancelTaskButton.isEnabled = false
+            revealTaskFolderButton.isEnabled = false
+            copyTaskOutputButton.isEnabled = false
+            taskOutputView.string = "No selected command output."
             return
         }
         let task = desktopTaskList[index]
         taskDetailsLabel.stringValue = "Workspace: \(task.workspaceName)\\nFolder: \(task.cwd)\\nState: \(task.state)"
         taskDetailsLabel.toolTip = task.cwd
         cancelTaskButton.isEnabled = task.active && runtime.state == .running
+        revealTaskFolderButton.isEnabled = FileManager.default.fileExists(atPath: task.cwd)
+        copyTaskOutputButton.isEnabled = false
+        taskOutputView.string = "Loading bounded command output…"
+        runtime.fetchDesktopCommandOutput(workspaceID: task.workspaceID,
+                                          sessionID: task.sessionID) { [weak self] result, error in
+            guard let self else { return }
+            let current = self.taskPicker.indexOfSelectedItem
+            guard self.desktopTaskList.indices.contains(current),
+                  self.desktopTaskList[current].sessionID == task.sessionID else {
+                return
+            }
+            if let error {
+                self.taskOutputView.string = "Unable to retrieve output: " + error
+                self.copyTaskOutputButton.isEnabled = false
+                return
+            }
+            let output = result?["output"] as? String ?? ""
+            let truncated = result?["truncated"] as? Bool ?? false
+            let exit = result?["exit_code"]
+            let exitLabel = (exit as? Int).map(String.init) ?? "pending"
+            self.taskDetailsLabel.stringValue = "Workspace: \(task.workspaceName)\nFolder: \(task.cwd)\nState: \(result?["state"] as? String ?? task.state) · Exit code: \(exitLabel)"
+            self.taskOutputView.string = (truncated ? "[Earlier output truncated]\n" : "")
+                + (output.isEmpty ? "(No captured output)" : output)
+            self.copyTaskOutputButton.isEnabled = !output.isEmpty
+        }
+    }
+
+    @objc private func revealSelectedTaskFolder() {
+        let index = taskPicker.indexOfSelectedItem
+        guard desktopTaskList.indices.contains(index) else { return }
+        let path = desktopTaskList[index].cwd
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    @objc private func copySelectedTaskOutput() {
+        let content = taskOutputView.string
+        guard copyTaskOutputButton.isEnabled, !content.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(content, forType: .string)
+        showFeedback("Copied selected task output. Check for credentials before sharing.")
     }
 
     @objc private func cancelSelectedDesktopTask() {
@@ -1693,6 +1869,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         openAIKeyRow.isHidden = cloudflare
         cloudflareGroup.isHidden = !cloudflare
         cloudflareKeyRow.isHidden = !cloudflare
+        oauthClientSection.isHidden = !cloudflare
         cloudflareNameSection.isHidden = usesCloudflareToken
         cloudflareTokenSection.isHidden = !usesCloudflareToken
         cloudflareAccountActions?.isHidden = usesCloudflareToken

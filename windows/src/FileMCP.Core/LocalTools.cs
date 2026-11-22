@@ -46,12 +46,13 @@ internal sealed partial class LocalTools
     private readonly SemaphoreSlim _codexHistorySlot = new(1, 1);
     private static readonly HashSet<string> SerializedToolNames = new(StringComparer.Ordinal)
     {
-        "write_file", "delete_file", "delete_directory", "edit_file", "apply_patch", "workspace_context", "start_command",
+        "write_file", "delete_file", "delete_directory", "create_directory", "copy_file", "move_file",
+        "edit_file", "apply_patch", "workspace_context", "start_command",
         "git_init", "git_status", "git_log", "git_diff", "git_add", "git_commit", "git_push",
     };
     private static readonly HashSet<string> BatchReadToolNames = new(StringComparer.Ordinal)
     {
-        "list_files", "read_file", "read_file_range", "grep", "search_code", "glob", "repo_overview",
+        "list_files", "read_file", "read_file_range", "file_info", "grep", "search_code", "glob", "repo_overview",
         "git_status", "git_log", "git_diff",
     };
     private readonly Ripgrep _ripgrep;
@@ -164,6 +165,22 @@ internal sealed partial class LocalTools
                         ("content", StringProperty("UTF-8 text content.")),
                         ("append", BooleanProperty(false))),
                     ["relative_path", "content"], false, destructive: true),
+                Tool("file_info", "Inspect file, folder or symlink metadata without reading contents or following the final symlink.",
+                    Props(("relative_path", StringProperty("Path to inspect, or empty for the root."))),
+                    ["relative_path"], true, output: ObjectSchema(new[] {
+                        ("path", "string"), ("kind", "string"), ("size_bytes", "integer"),
+                        ("modified_at_unix", "integer") })),
+                Tool("create_directory", "Create a folder and any missing parents inside the approved workspace; does not need shell permission.",
+                    Props(("relative_path", StringProperty("New folder, relative to the workspace root."))),
+                    ["relative_path"], false),
+                Tool("copy_file", "Copy a regular file in the approved workspace without overwriting. Symlink sources refused; 50 MiB limit.",
+                    Props(("source_path", StringProperty("Regular source file.")),
+                          ("destination_path", StringProperty("New destination; must not exist."))),
+                    ["source_path", "destination_path"], false),
+                Tool("move_file", "Move or rename a regular file inside this workspace without overwriting or following final symlinks.",
+                    Props(("source_path", StringProperty("Regular source file.")),
+                          ("destination_path", StringProperty("New destination; must not exist."))),
+                    ["source_path", "destination_path"], false),
                 Tool("delete_file", "Delete a file inside the shared directory (files only, not directories).",
                     Props(("relative_path", StringProperty("Relative file path."))), ["relative_path"], false, destructive: true),
                 Tool("delete_directory", "Recursively delete a folder and everything inside it.",
@@ -259,7 +276,7 @@ internal sealed partial class LocalTools
             if (serialize && name != "start_command") EnsureNoActiveCommand();
             return name switch
             {
-                "list_files" or "read_file" or "read_file_range" or "grep" or "search_code" or
+                "list_files" or "read_file" or "read_file_range" or "file_info" or "grep" or "search_code" or
                 "glob" or "repo_overview" or "git_status" or "git_log" or "git_diff" =>
                     await CallReadOnlyAsync(name, arguments, cancellationToken).ConfigureAwait(false),
                 "batch_read" => ObjectOutput(await BatchReadAsync(
@@ -275,6 +292,11 @@ internal sealed partial class LocalTools
                     GetRequiredString(arguments, "relative_path"),
                     GetRequiredString(arguments, "content"),
                     GetBool(arguments, "append", false))),
+                "create_directory" => StringOutput(CreateDirectory(GetRequiredString(arguments, "relative_path"))),
+                "copy_file" => StringOutput(CopyOrMoveFile(GetRequiredString(arguments, "source_path"),
+                    GetRequiredString(arguments, "destination_path"), false)),
+                "move_file" => StringOutput(CopyOrMoveFile(GetRequiredString(arguments, "source_path"),
+                    GetRequiredString(arguments, "destination_path"), true)),
                 "delete_file" => StringOutput(DeleteFile(GetRequiredString(arguments, "relative_path"))),
                 "delete_directory" => StringOutput(DeleteDirectory(GetRequiredString(arguments, "relative_path"))),
                 "run_command" when _enableCommands => StringOutput(await RunCommandAsync(
@@ -320,6 +342,7 @@ internal sealed partial class LocalTools
         {
             "list_files" => StringArrayOutput(ListFiles(GetString(arguments, "subpath", ""))),
             "read_file" => StringOutput(ReadFile(GetRequiredString(arguments, "relative_path"))),
+            "file_info" => ObjectOutput(FileInfoTool(GetRequiredString(arguments, "relative_path"))),
             "read_file_range" => ObjectOutput(ReadFileRange(
                 GetRequiredString(arguments, "relative_path"),
                 GetRequiredInt(arguments, "start_line"),
@@ -1463,6 +1486,67 @@ internal sealed partial class LocalTools
             ["search_errors"] = output.SearchErrors + directoryEnumerationErrors,
             ["default_excluded_directory_names"] = DefaultExcludedDirectoryNames(),
         };
+    }
+
+    private JsonObject FileInfoTool(string relativePath)
+    {
+        var target = _resolver.ResolveForDeletion(relativePath);
+        var attributes = _resolver.GetAttributesWithoutFollowingFinalTarget(
+            target, $"No such path: {relativePath}");
+        var kind = (attributes & FileAttributes.ReparsePoint) != 0 ? "symlink" :
+                   (attributes & FileAttributes.Directory) != 0 ? "directory" : "file";
+        var size = kind == "file" ? new FileInfo(target).Length : 0L;
+        var modified = kind == "symlink" ? 0L :
+            new DateTimeOffset(File.GetLastWriteTimeUtc(target)).ToUnixTimeSeconds();
+        return new JsonObject { ["path"] = relativePath, ["kind"] = kind,
+            ["size_bytes"] = size, ["modified_at_unix"] = modified };
+    }
+
+    private string CreateDirectory(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || relativePath == ".")
+            throw new FileMcpException("Choose a non-root destination folder");
+        var target = _resolver.Resolve(relativePath);
+        if (string.Equals(target.TrimEnd('\\'), _resolver.Root.TrimEnd('\\'),
+            StringComparison.OrdinalIgnoreCase))
+            throw new FileMcpException("Workspace root already exists");
+        if (File.Exists(target))
+            throw new FileMcpException("A file already exists at the requested folder path");
+        if (Directory.Exists(target)) return $"Directory already exists: {relativePath}";
+        Directory.CreateDirectory(target);
+        return $"Created directory {relativePath}";
+    }
+
+    private string CopyOrMoveFile(string source, string destination, bool move)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(destination))
+            throw new FileMcpException("Source and destination must be nonempty");
+        var from = _resolver.ResolveForDeletion(source);
+        var to = _resolver.ResolveForDeletion(destination);
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(from, _resolver.Root, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(to, _resolver.Root, StringComparison.OrdinalIgnoreCase))
+            throw new FileMcpException("Cannot use workspace root or identical source and destination");
+        var attributes = _resolver.GetAttributesWithoutFollowingFinalTarget(
+            from, $"No such source file: {source}");
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+            throw new FileMcpException("Source must be a regular file; links and directories are refused");
+        var file = new FileInfo(from);
+        if (!move && file.Length > 50L * 1_048_576)
+            throw new FileMcpException("Copy is limited to 50 MiB");
+        // File.Exists() does not detect dangling links. GetAttributes rejects
+        // a present reparse point as well as an existing regular destination.
+        try
+        {
+            File.GetAttributes(to);
+            throw new FileMcpException("Destination already exists; overwrite refused");
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
+        Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+        if (move) File.Move(from, to, overwrite: false);
+        else File.Copy(from, to, overwrite: false);
+        return $"{(move ? "Moved" : "Copied")} {source} to {destination}";
     }
 
     private string WriteFile(string relativePath, string content, bool append)

@@ -306,6 +306,16 @@ extension MainViewController {
             WorkspaceDefinition(id: "nested", name: "Nested", path: first.path))
         precondition((try? controller.validateApprovedWorkspacePaths()) == nil)
         precondition(controller.cancelTaskButton.isEnabled == false)
+        controller.providerPopup.selectItem(at: 1)
+        controller.applyProviderSelection()
+        precondition(!controller.oauthClientSection.isHidden)
+        precondition(controller.oauthClientRevokeButton.isEnabled == false)
+        controller.providerPopup.selectItem(at: 0)
+        controller.applyProviderSelection()
+        precondition(controller.oauthClientSection.isHidden)
+        precondition(controller.taskOutputScroll.hasVerticalScroller)
+        precondition(!controller.taskOutputView.isEditable)
+        precondition(!controller.copyTaskOutputButton.isEnabled)
         controller.loginStartCheckbox.state = .on
         controller.loginItemOptionsChanged()
         precondition(controller.loginAutoConnectCheckbox.isEnabled &&

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0] — 2026-11-22
+
+- Added safe no-shell file operations on macOS and Windows: file_info,
+  create_directory, copy_file and move_file. File copies/moves refuse overwrite
+  and symlink sources, validate workspace boundaries and have regression tests.
+- Expanded Mac and Windows Tasks GUIs with bounded stdout/stderr, exit codes,
+  output copy and folder reveal. Mac preserves session selection on refresh.
+- Mac Cloudflare OAuth now offers explicit workspace scope approval (default
+  workspace only by default), token-verified client ownership of command
+  sessions, scoped tool isolation and GUI client revocation.
+- Secure MCP Tunnel continues to use shared local authorization and does NOT
+  cryptographically identify an individual ChatGPT conversation.
+- macOS crash-safe command receipt journal (from 0.1.0 development main)
+  persists idempotency tombstones and warns about interrupted work; it is not
+  cross-restart process reattachment.
+- Aligned macOS and Windows app/server/package version identifiers with 0.2.0,
+  and expanded native regression tests and security/GUI documentation.
+
+
 ## [0.1.0] — 2026-11-22
 
 Initial public npm source-installer release for ChatToComputerMCP:

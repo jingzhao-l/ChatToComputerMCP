@@ -80,6 +80,13 @@ The Mac app also supports Cloudflare if you prefer a public HTTPS hostname rathe
 
 The Cloudflare route does **not** use an OpenAI Tunnel ID or OpenAI Platform runtime key. Avoid **URL-secret compatibility mode** unless necessary: anyone with that full secret URL may call the enabled tools.
 
+**Per-client scopes:** the local Cloudflare OAuth approval page now asks the
+user which approved workspaces the verified client may access; the default
+workspace is selected by default. macOS Connection can inspect and revoke
+approved client tokens. The shared Secure MCP Tunnel header does not provide
+equivalent per-conversation identity isolation.
+
+
 See [Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/).
 
 ## Troubleshooting checklist

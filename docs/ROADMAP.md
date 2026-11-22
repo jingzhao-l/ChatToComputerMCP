@@ -17,7 +17,9 @@
 - [x] Cross-cwd parallel requests and overlap admission checks
 - [x] Independent cancellation and bounded command output
 - [x] Read-only live capacity/active-job diagnostics (no cross-client paths or commands)
-- [ ] Per-client authenticated session ownership and disconnect recovery
+- [x] macOS Cloudflare OAuth: verified token-bound client scopes, task ownership, request-ID collision protection and GUI revocation
+- [ ] Authenticated per-conversation identity in the shared OpenAI Secure MCP Tunnel (no verified chat principal supplied)
+- [ ] Persistent client-to-task ownership after full app restart (current ownership is runtime-scoped)
 - [ ] Fair scheduling, durable task recovery and cancellation receipts
 - [x] Mac command receipt journal: durable ID tombstones, interrupted state and protected 0600/0700 audit metadata
 - [ ] Dedicated supervisor reattachment to genuinely live tasks after crash/reboot (receipt journaling is NOT reattachment)
@@ -27,7 +29,9 @@
 - [ ] ChatGPT, Claude and other MCP client interoperability matrix
 - [ ] Hardened process-level isolation for untrusted workspaces
 - [ ] Mac Developer ID/notarized release and Windows signed installer
-- [ ] Polished native identity, status and approval UX
+- [x] Native task-output and exit-code viewers with folder reveal on macOS and Windows
+- [x] macOS Cloudflare OAuth client inspection, explicit scope approval and revocation UI
+- [ ] Per-client verified scope parity across transport modes and Windows; extended accessibility and manual interaction tests
 
 
 ## Packaging and optional macOS service (2026-11-22)
@@ -42,4 +46,4 @@
 - [ ] npm Registry public publication (npm account authentication required)
 - [ ] Cryptographically signed/notarized public macOS distribution
 - [ ] Authenticated per-client scopes beyond shared tunnel credentials
-- [ ] Durable running-process supervisor and actual cross-restart task reattachment
+- [ ] Independent durable task supervisor and real cross-restart process reattachment (receipts are not reattachment)

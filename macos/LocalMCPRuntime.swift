@@ -156,6 +156,51 @@ final class LocalMCPRuntime {
         }
     }
 
+    func fetchDesktopOAuthClients(
+        _ completion: @escaping ([DesktopOAuthClient]) -> Void
+    ) {
+        queue.async { [weak self] in
+            let clients = self?.server?.desktopOAuthClients() ?? []
+            DispatchQueue.main.async { completion(clients) }
+        }
+    }
+
+    func revokeDesktopOAuthClient(_ clientID: String,
+                                  completion: @escaping (String?) -> Void) {
+        queue.async { [weak self] in
+            do {
+                guard let server = self?.server else {
+                    throw NSError(domain: "ChatToComputerMCP", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey:
+                                    "Connect using Cloudflare OAuth to manage clients."])
+                }
+                try server.revokeDesktopOAuthClient(clientID)
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { completion(message) }
+            }
+        }
+    }
+
+    func fetchDesktopCommandOutput(workspaceID: String, sessionID: String,
+                                   completion: @escaping ([String: Any]?, String?) -> Void) {
+        queue.async { [weak self] in
+            do {
+                guard let server = self?.server else {
+                    throw NSError(domain: "ChatToComputerMCP", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Connect to inspect task output."])
+                }
+                let result = try server.desktopCommandOutput(
+                    workspaceID: workspaceID, sessionID: sessionID)
+                DispatchQueue.main.async { completion(result, nil) }
+            } catch {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { completion(nil, message) }
+            }
+        }
+    }
+
     func cancelDesktopCommand(workspaceID: String, sessionID: String,
                               completion: @escaping (String?) -> Void) {
         queue.async { [weak self] in
@@ -252,6 +297,7 @@ final class LocalMCPRuntime {
                 let policy = canonicalPaths.sorted().joined(separator: "|") + "|" + permissions
                 oauth = try LocalMCPOAuthServer(issuer: "https://" + configuration.cloudflareHostname,
                     pairingSecret: configuration.cloudflarePathSecret, policy: policy, permissionDescription: permissions,
+                    approvedWorkspaces: configuration.additionalWorkspaces,
                     persistedState: configuration.cloudflareOAuthState, persist: configuration.saveCloudflareOAuthState)
             } else { oauth = nil }
             // Separate ChatToComputerMCP App Support path; never read or

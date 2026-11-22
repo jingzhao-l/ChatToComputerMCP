@@ -7,6 +7,7 @@ import cp from 'node:child_process';
 import url from 'node:url';
 const root=path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
 const entry=path.join(root,'bin','chat-to-computer-mcp.mjs');
+const version=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version;
 function invoke(args,home) {
   return cp.spawnSync(process.execPath,[entry,...args],{
     encoding:'utf8',env:{...process.env,HOME:home},timeout:6000
@@ -32,7 +33,7 @@ test('installer is explicit; never auto-starts or creates a launchagent',()=>{
 test('CLI help and version are stable',()=>{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-help-test-'));
  try {
-  assert.match(invoke(['version'],temp).stdout,/0\.1\.0/);
+  assert.equal(invoke(['version'],temp).stdout.trim(), version);
   assert.match(invoke(['help'],temp).stdout,/npx --yes chat-to-computer-mcp/);
   assert.notEqual(invoke(['unknown'],temp).status,0);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
@@ -42,7 +43,7 @@ test('dry-run LaunchAgent has explicit label, safe defaults, and no registration
  if(process.platform!=='darwin') return;
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-agent-preview-'));
  try {
-  const app=path.join(tmp,'.local','share','chat-to-computer-mcp','releases','0.1.0','ChatToComputerMCP.app');
+  const app=path.join(tmp,'.local','share','chat-to-computer-mcp','releases',version,'ChatToComputerMCP.app');
   fs.mkdirSync(path.join(app,'Contents','MacOS'),{recursive:true});
   fs.writeFileSync(path.join(app,'Contents','MacOS','ChatToComputerMCP'),'#!/bin/sh\nexit 0\n');
   const preview=invoke(['launchagent','enable','--dry-run','--always'],tmp);
@@ -66,7 +67,7 @@ test('macOS local build places a real app bundle under versioned release and can
   fs.mkdirSync(fakeHome,{recursive:true});
   fs.copyFileSync(entry,path.join(src,'bin','chat-to-computer-mcp.mjs'));
   fs.writeFileSync(path.join(src,'package.json'),JSON.stringify({
-    name:'chat-to-computer-mcp',version:'0.1.0'
+    name:'chat-to-computer-mcp',version:version
   }));
   fs.writeFileSync(path.join(src,'LICENSE'),'Apache-2.0 test fixture');
   fs.writeFileSync(path.join(src,'build_macos_icon.sh'),'#!/bin/bash\nexit 0\n');
@@ -86,7 +87,7 @@ test('macOS local build places a real app bundle under versioned release and can
   const result=cli(['install']);
   assert.equal(result.status,0,result.stdout+'\n'+result.stderr);
   const expected=path.join(fakeHome,'.local','share','chat-to-computer-mcp',
-    'releases','0.1.0','ChatToComputerMCP.app','Contents','MacOS','ChatToComputerMCP');
+    'releases',version,'ChatToComputerMCP.app','Contents','MacOS','ChatToComputerMCP');
   assert.equal(fs.existsSync(expected),true,'expected executable exists in app bundle');
   const state=cli(['status']);
   assert.equal(state.status,0,state.stderr);

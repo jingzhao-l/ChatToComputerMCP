@@ -75,6 +75,8 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 | **按工作区调用工具** | `list_workspaces` 查看已批准的工作区；`workspace_call` 显式选择执行范围。 |
 | **多 AI 并发命令** | 总容量可设为 **4–16**，默认 **8**；拒绝重叠目录的冲突命令。 |
 | **任务管理** | 查询命令会话、分页读取输出、取消指定任务。 |
+| **安全文件操作** | 不开启 Shell 即可查看文件属性、创建目录、复制和移动/重命名文件；目标文件存在时不覆盖。 |
+| **Mac OAuth 客户端权限** | Cloudflare OAuth 可以校验真实令牌、按客户端限制工作区和任务操作，并在 GUI 中撤销授权。私有 OpenAI Tunnel 仍使用共享连接身份。 |
 | **原生桌面 GUI** | Mac 提供概览、工作区、连接、任务、日志五个页面；Windows 有独立 WPF 界面。 |
 | **连接方案** | Mac/Windows 支持 OpenAI Secure MCP Tunnel；Mac 另有 Cloudflare 连接方式。 |
 | **本机编译安装** | npm 包提供源码和固定版本工具，在用户自己的设备上编译应用。 |
@@ -179,7 +181,7 @@ Windows 有自己的 WPF 控件。其编译检查已经通过，但**Windows 实
 
 本机网关提供 loopback-only MCP 服务；出站隧道接收兼容客户端的调用。每个工作区拥有独立的路径解析与文件操作约束，跨工作区命令共享总容量门；同步和异步命令都计入额度。
 
-**明确的安全边界：** Shell 执行仍以当前用户的操作系统权限运行，仅靠 cwd 防冲突不等于沙盒。Mac 开发版已增加启动前持久化的请求 ID 防重复记录；重启时未确认完成的任务标成 interrupted，不会自动重复执行。**这不是重新附着原进程。**逐客户端身份隔离和实际任务重新接管仍未实现。
+**明确的安全边界：**Mac Cloudflare OAuth 现在使用服务器签发的 Token 验证客户端，分别限制工作区及任务读取、取消权限，GUI 可撤销授权。**OpenAI Secure MCP Tunnel 仍使用共享连接凭据，不能据此识别每个独立的 ChatGPT 对话。**Shell 的 cwd 限制不是 OS 沙盒；Mac 持久化任务记录只能防止重启后误重复执行，不能重新附着原进程。参阅[OAuth 客户端权限边界](docs/VERIFIED_CLIENT_ACCESS.md)。
 
 ## 🔧 MCP 使用示例
 
@@ -276,6 +278,7 @@ ChatToComputerMCP 解决的是**云端 AI 对话如何经授权操作本地电�
 | [npm 安装](docs/INSTALL_NPM.md) | 环境、CLI、保活 |
 | [系统架构](docs/ARCHITECTURE.md) | 客户端、连接和命令执行 |
 | [工作区安全](docs/MULTI_WORKSPACE_SECURITY.md) | 授权、路由与边界 |
+| [OAuth 客户端身份与权限](docs/VERIFIED_CLIENT_ACCESS.md) | 令牌验证、工作区授权、任务隔离和撤销 |
 | [GUI 功能](docs/GUI_CAPABILITIES.md) | 原生界面 |
 | [自动发布](docs/PUBLISHING.md) | OIDC 与版本管理 |
 | [故障排查](docs/TROUBLESHOOTING.md) | 构建、连接、权限 |

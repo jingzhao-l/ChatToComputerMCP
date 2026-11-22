@@ -139,6 +139,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="170"/>
                     </Grid.RowDefinitions>
                     <TextBlock x:Name="TasksSummaryText" Grid.Row="0" Margin="0,0,0,8"
                                Text="Connect to review tasks across approved workspaces."
@@ -146,13 +147,22 @@
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
                         <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
                         <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"
-                                IsEnabled="False" />
+                                IsEnabled="False" Margin="0,0,8,0"/>
+                        <Button x:Name="RevealTaskButton" Content="Open folder" Click="RevealTask_Click"
+                                IsEnabled="False" Margin="0,0,8,0"/>
+                        <Button x:Name="CopyTaskOutputButton" Content="Copy output" Click="CopyTaskOutput_Click"
+                                IsEnabled="False" ToolTip="Command output may contain secrets. Review before sharing."/>
                     </StackPanel>
                     <ListBox x:Name="TaskListBox" Grid.Row="2" DisplayMemberPath="Display"
                              SelectionChanged="TaskSelectionChanged"/>
                     <TextBlock x:Name="TaskDetailText" Grid.Row="3" Margin="0,8,0,0"
                                TextWrapping="Wrap" Foreground="Gray"
                                Text="Select a session to review its scope and status."/>
+                    <TextBox x:Name="TaskOutputBox" Grid.Row="4" Margin="0,9,0,0"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             FontFamily="Consolas" FontSize="11"
+                             ToolTip="Captured, bounded stdout/stderr of the selected command session."/>
                 </Grid>
             </TabItem>
 

@@ -8,6 +8,8 @@ cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 try LocalMCPServer.verifyApprovedWorkspaces()
 try LocalMCPServer.verifyDurableCommandReceipts()
+try LocalMCPServer.verifyAuthenticatedClientIsolation()
+try LocalMCPServer.verifyOAuthRevocationCancelsOwnedJobs()
 SWIFT
 swiftc -j 1 -module-cache-path "$tmp/cache" -framework Network \
   -o "$tmp/check" macos/ProcessRunner.swift macos/Ripgrep.swift \

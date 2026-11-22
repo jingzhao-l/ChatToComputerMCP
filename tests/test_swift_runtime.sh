@@ -1053,7 +1053,34 @@ mkdir -p "$TMP_DIR/git-template"
 printf 'outside-template-marker\n' > "$TMP_DIR/git-template/copied-from-template"
 FILEMCP_RG="$PWD/vendor/ripgrep/darwin-arm64/rg" GIT_TEMPLATE_DIR="$TMP_DIR/git-template" "$TMP_DIR/server-test" &
 SERVER_PID=$!
-sleep 1
+# Real startup readiness gate: OAuth persistence/self-tests execute before
+# listeners start, and may exceed a fixed one-second sleep on loaded machines.
+# Bound the wait, fail if the child exited, and verify every required listener.
+python3 - "$SERVER_PID" <<'PYREADY'
+import os, socket, sys, time
+pid = int(sys.argv[1])
+ports = (18088, 18089, 18090, 18094, 18095)
+deadline = time.monotonic() + 25
+while time.monotonic() < deadline:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        raise SystemExit("Swift server fixture exited before opening ports")
+    ready = True
+    for port in ports:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=.35):
+                pass
+        except OSError:
+            ready = False
+            break
+    if ready:
+        print("mcp-test-server-readiness: ok")
+        break
+    time.sleep(.15)
+else:
+    raise SystemExit("Swift fixture did not open all MCP test listeners within 25 seconds")
+PYREADY
 
 BASE_URL="http://127.0.0.1:18088/mcp"
 SAFE_BASE_URL="http://127.0.0.1:18089/mcp"
@@ -2348,25 +2375,7 @@ printf '%s' "$TOOLS" | grep -q '"resultType":"complete"'
 printf '%s' "$TOOLS" | grep -q '"cacheScope":"private"'
 printf '%s' "$TOOLS" | grep -q '"name":"read_file"'
 printf '%s' "$TOOLS" | grep -q '"name":"read_file_range"'
-printf '%s' "$TOOLS" | plutil -extract result.tools.3.name raw -expect string -o - - | grep -qx 'grep'
-printf '%s' "$TOOLS" | plutil -extract result.tools.6.name raw -expect string -o - - | grep -qx 'glob'
-printf '%s' "$TOOLS" | plutil -extract result.tools.3.inputSchema.properties.output_mode.enum json -o - - | grep -q 'files_with_matches'
-printf '%s' "$TOOLS" | grep -q '"outputSchema"'
-printf '%s' "$TOOLS" | plutil -extract result.tools.0.outputSchema.properties.result.type raw -expect string -o - - | grep -qx 'array'
-printf '%s' "$TOOLS" | plutil -extract result.tools.1.outputSchema.properties.result.type raw -expect string -o - - | grep -qx 'string'
-printf '%s' "$TOOLS" | plutil -extract result.tools.2.outputSchema.properties.content.type raw -expect string -o - - | grep -qx 'string'
-printf '%s' "$TOOLS" | plutil -extract result.tools.4.name raw -expect string -o - - | grep -qx 'search_code'
-printf '%s' "$TOOLS" | plutil -extract result.tools.4.outputSchema.properties.query_results.type raw -expect string -o - - | grep -qx 'array'
-printf '%s' "$TOOLS" | plutil -extract result.tools.5.name raw -expect string -o - - | grep -qx 'repo_overview'
-printf '%s' "$TOOLS" | plutil -extract result.tools.5.outputSchema.properties.manifests.type raw -expect string -o - - | grep -qx 'array'
-printf '%s' "$TOOLS" | plutil -extract result.tools.0.annotations.openWorldHint raw -expect bool -o - - | grep -qx 'false'
-printf '%s' "$TOOLS" | plutil -extract result.tools.7.annotations.destructiveHint raw -expect bool -o - - | grep -qx 'true'
-printf '%s' "$TOOLS" | plutil -extract result.tools.16.annotations.openWorldHint raw -expect bool -o - - | grep -qx 'true'
-printf '%s' "$TOOLS" | plutil -extract result.tools.17.name raw -expect string -o - - | grep -qx 'save_conversation_to_codex'
-printf '%s' "$TOOLS" | plutil -extract result.tools.17.annotations.openWorldHint raw -expect bool -o - - | grep -qx 'false'
-printf '%s' "$TOOLS" | plutil -extract result.tools.18.annotations.openWorldHint raw -expect bool -o - - | grep -qx 'true'
-printf '%s' "$TOOLS" | plutil -extract result.tools.19.name raw -expect string -o - - | grep -qx 'batch_read'
-printf '%s' "$TOOLS" | plutil -extract result.tools.19.annotations.readOnlyHint raw -expect bool -o - - | grep -qx 'true'
+printf '%s' "$TOOLS" | python3 tests/assert_mcp_tools.py
 
 MODERN_CALL="$(curl -fsS -X POST "$BASE_URL" \
     -H 'Content-Type: application/json' \

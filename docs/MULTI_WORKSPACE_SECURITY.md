@@ -40,8 +40,15 @@ through the matching workspace_call context.
 - Each scope has its own resolver, Git and mutation guard. One shared command
   admission budget limits concurrent commands across all scopes, including
   simultaneous synchronous and asynchronous requests.
-- Cloudflare OAuth's permission policy includes the canonical paths of all
-  approved roots; changing the set invalidates previous scope consent.
+- Cloudflare OAuth permission policy binds all canonical roots. Its local
+  authorization page defaults to the default workspace and requires an
+  explicit user choice for one additional workspace or all approved scopes.
+  Verified clients cannot access unapproved workspaces or read/cancel
+  sessions owned by another verified OAuth client. The Mac GUI can revoke
+  the client's access/refresh token family. Permission changes require consent.
+- OpenAI Secure MCP Tunnel still forwards a shared local authentication header,
+  not a unique verified ChatGPT conversation identity. Do not claim these two
+  modes provide equivalent per-conversation isolation.
 - A working-directory guard is NOT an OS sandbox: shell commands may still
   access other folders with absolute paths.
 - Windows now supports explicit scoped routing and a shared 4–16 command

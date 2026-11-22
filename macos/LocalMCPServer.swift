@@ -13,7 +13,7 @@ private let mcpModernProtocolVersion = "2026-07-28"
 private let mcpLegacySupportedVersions = ["2025-03-26", "2025-06-18", "2025-11-25"]
 private let mcpAllSupportedVersions = [mcpModernProtocolVersion] + mcpLegacySupportedVersions.reversed()
 private let mcpServerName = "chat-to-computer-mcp"
-private let mcpServerVersion = "0.4.0-swift"
+private let mcpServerVersion = "0.2.0-swift"
 private let maxFileBytes = 5_000_000
 private let maxWriteBytes = 5_000_000
 private let maxPatchAggregateBytes = 32_000_000
@@ -272,11 +272,12 @@ private final class LocalTools {
     private let gitSlots = DispatchSemaphore(value: 3)
     private let codexHistorySlot = DispatchSemaphore(value: 1)
     private let serializedToolNames: Set<String> = [
-        "write_file", "delete_file", "delete_directory", "edit_file", "apply_patch", "workspace_context", "start_command",
+        "write_file", "delete_file", "delete_directory", "create_directory", "copy_file", "move_file",
+        "edit_file", "apply_patch", "workspace_context", "start_command",
         "git_init", "git_status", "git_log", "git_diff", "git_add", "git_commit", "git_push",
     ]
     private let batchReadToolNames: Set<String> = [
-        "list_files", "read_file", "read_file_range", "grep", "search_code", "glob", "repo_overview",
+        "list_files", "read_file", "read_file_range", "file_info", "grep", "search_code", "glob", "repo_overview",
         "git_status", "git_log", "git_diff",
     ]
     private let ripgrep: Ripgrep
@@ -467,6 +468,36 @@ private final class LocalTools {
                 required: ["relative_path", "content"],
                 readOnly: false,
                 destructive: true
+            ),
+            tool(
+                name: "file_info",
+                description: "Inspect type, size and modification time of a file, folder or symlink inside the approved workspace without following its final symlink.",
+                properties: ["relative_path": stringProperty("Path to inspect, or empty for workspace root.")],
+                required: ["relative_path"], readOnly: true,
+                output: .object(["type": "object", "properties": [
+                    "path": ["type": "string"], "kind": ["type": "string"],
+                    "size_bytes": ["type": "integer"], "modified_at_unix": ["type": "integer"]],
+                    "required": ["path", "kind", "size_bytes", "modified_at_unix"], "additionalProperties": false])
+            ),
+            tool(
+                name: "create_directory",
+                description: "Create an approved folder, including missing parents. Does not require Shell permissions.",
+                properties: ["relative_path": stringProperty("New folder relative to the workspace root.")],
+                required: ["relative_path"], readOnly: false
+            ),
+            tool(
+                name: "copy_file",
+                description: "Copy a regular file inside the approved workspace, without overwriting an existing destination. Refuses symlink sources and files larger than 50 MiB.",
+                properties: ["source_path": stringProperty("Regular source file."),
+                             "destination_path": stringProperty("New destination file; must not exist.")],
+                required: ["source_path", "destination_path"], readOnly: false
+            ),
+            tool(
+                name: "move_file",
+                description: "Move or rename a regular file inside the approved workspace. No overwrites or final symlink traversal.",
+                properties: ["source_path": stringProperty("Regular source file."),
+                             "destination_path": stringProperty("New destination file; must not exist.")],
+                required: ["source_path", "destination_path"], readOnly: false
             ),
             tool(
                 name: "delete_file",
@@ -668,7 +699,7 @@ private final class LocalTools {
             let session = try findSession(requiredString(arguments, "session_id"))
             session.cancel()
             return objectOutput(try session.snapshot(cursor: 0))
-        case "list_files", "read_file", "read_file_range", "grep", "search_code", "glob", "repo_overview",
+        case "list_files", "read_file", "read_file_range", "file_info", "grep", "search_code", "glob", "repo_overview",
              "git_status", "git_log", "git_diff":
             return try callReadOnlyOperation(name: name, arguments: arguments)
         case "batch_read":
@@ -682,6 +713,16 @@ private final class LocalTools {
                 content: requiredString(arguments, "content"),
                 append: bool(arguments, "append", default: false)
             ))
+        case "create_directory":
+            return stringOutput(try createDirectory(relativePath: requiredString(arguments, "relative_path")))
+        case "copy_file":
+            return stringOutput(try copyOrMoveFile(
+                source: requiredString(arguments, "source_path"),
+                destination: requiredString(arguments, "destination_path"), move: false))
+        case "move_file":
+            return stringOutput(try copyOrMoveFile(
+                source: requiredString(arguments, "source_path"),
+                destination: requiredString(arguments, "destination_path"), move: true))
         case "delete_file":
             return stringOutput(try deleteFile(relativePath: requiredString(arguments, "relative_path")))
         case "delete_directory":
@@ -739,6 +780,8 @@ private final class LocalTools {
             return stringArrayOutput(result.values, truncated: result.truncated)
         case "read_file":
             return stringOutput(try readFile(relativePath: requiredString(arguments, "relative_path")))
+        case "file_info":
+            return objectOutput(try fileInfo(relativePath: requiredString(arguments, "relative_path")))
         case "read_file_range":
             return objectOutput(try readFileRange(
                 relativePath: requiredString(arguments, "relative_path"),
@@ -1949,6 +1992,73 @@ private final class LocalTools {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private func fileInfo(relativePath: String) throws -> [String: Any] {
+        let location = try resolver.resolveForDeletion(relativePath)
+        var statInfo = stat()
+        guard lstat(location.path, &statInfo) == 0 else {
+            throw MCPServerError.notFound("No such path: \(relativePath)")
+        }
+        let kind: String
+        switch statInfo.st_mode & S_IFMT {
+        case S_IFREG: kind = "file"
+        case S_IFDIR: kind = "directory"
+        case S_IFLNK: kind = "symlink"
+        default: kind = "other"
+        }
+        return ["path": relativePath, "kind": kind, "size_bytes": Int(statInfo.st_size),
+                "modified_at_unix": Int(statInfo.st_mtimespec.tv_sec)]
+    }
+
+    private func createDirectory(relativePath: String) throws -> String {
+        guard !relativePath.isEmpty, relativePath != "." else {
+            throw MCPServerError.invalidArguments("Choose a non-root destination folder")
+        }
+        let target = try resolver.resolve(relativePath)
+        guard target.path != resolver.root.path else {
+            throw MCPServerError.invalidPath("Workspace root already exists")
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw MCPServerError.invalidPath("A file already exists at the requested folder path")
+            }
+            return "Directory already exists: \(relativePath)"
+        }
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        return "Created directory \(relativePath)"
+    }
+
+    private func copyOrMoveFile(source: String, destination: String, move: Bool) throws -> String {
+        guard !source.isEmpty, !destination.isEmpty else {
+            throw MCPServerError.invalidArguments("Source and destination must be nonempty")
+        }
+        let from = try resolver.resolveForDeletion(source)
+        let to = try resolver.resolveForDeletion(destination)
+        guard from.path != to.path, from.path != resolver.root.path,
+              to.path != resolver.root.path else {
+            throw MCPServerError.invalidPath("Cannot use workspace root or identical source and destination")
+        }
+        var statInfo = stat()
+        guard lstat(from.path, &statInfo) == 0, statInfo.st_mode & S_IFMT == S_IFREG else {
+            throw MCPServerError.invalidPath("Source must be an existing regular file; symlinks are refused")
+        }
+        if !move && statInfo.st_size > 50 * 1_048_576 {
+            throw MCPServerError.operationFailed("Copy is limited to 50 MiB")
+        }
+        var targetInfo = stat()
+        guard lstat(to.path, &targetInfo) != 0, errno == ENOENT else {
+            throw MCPServerError.invalidPath("Destination exists or is inaccessible; overwrite refused")
+        }
+        try FileManager.default.createDirectory(
+            at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if move {
+            try FileManager.default.moveItem(at: from, to: to)
+        } else {
+            try FileManager.default.copyItem(at: from, to: to)
+        }
+        return "\(move ? "Moved" : "Copied") \(source) to \(destination)"
+    }
+
     private func writeFile(relativePath: String, content: String, append: Bool) throws -> String {
         guard let data = content.data(using: .utf8), data.count <= maxWriteBytes else {
             throw MCPServerError.operationFailed("Content is larger than the 5 MB write limit")
@@ -3054,6 +3164,9 @@ final class LocalMCPServer {
     private let oauth: LocalMCPOAuthServer?
     private let tools: LocalTools
     private let receiptLedger: CommandReceiptLedger?
+    private let taskOwnershipLock = NSLock()
+    private var ownerByScopedRequest: [String: String] = [:]
+    private var ownerBySessionID: [String: String] = [:]
     private let workspaceDefinitions: [WorkspaceDefinition]
     private let workspaceTools: [String: LocalTools]
     private let log: (String) -> Void
@@ -3188,6 +3301,51 @@ final class LocalMCPServer {
             $0.workspaceName == $1.workspaceName
                 ? $0.requestID < $1.requestID : $0.workspaceName < $1.workspaceName
         }
+    }
+
+    func desktopOAuthClients() -> [DesktopOAuthClient] {
+        oauth?.desktopApprovedClients() ?? []
+    }
+
+    func revokeDesktopOAuthClient(_ clientID: String) throws {
+        guard let oauth else {
+            throw MCPServerError.operationFailed(
+                "Per-client OAuth controls apply to Cloudflare OAuth connections only")
+        }
+        // Persist revocation first so even a concurrent in-flight request
+        // cannot authenticate with the now-revoked access token.
+        try oauth.revokeDesktopClient(clientID)
+        taskOwnershipLock.lock()
+        let revokedSessions = ownerBySessionID.compactMap { sessionID, owner in
+            owner == clientID ? sessionID : nil
+        }
+        taskOwnershipLock.unlock()
+        // In addition to denying future reads/cancels, terminate work
+        // already launched by the revoked OAuth client. Never cancel a task
+        // owned by a different client or the local administrator.
+        let available = [tools] + Array(workspaceTools.values)
+        for id in revokedSessions {
+            for scoped in available {
+                if let session = try? scoped.findSession(id) {
+                    session.cancel(synchronously: true)
+                    break
+                }
+            }
+        }
+    }
+
+    func desktopCommandOutput(workspaceID: String, sessionID: String) throws -> [String: Any] {
+        let scoped: LocalTools
+        if workspaceID == "default" {
+            scoped = tools
+        } else if let selected = workspaceTools[workspaceID] {
+            scoped = selected
+        } else {
+            throw MCPServerError.invalidArguments("Unknown approved workspace")
+        }
+        return try scoped.call(name: "read_command_output", arguments: [
+            "session_id": sessionID, "cursor": 0
+        ]).structuredContent
     }
 
     func cancelDesktopCommand(workspaceID: String, sessionID: String) throws {
@@ -3550,6 +3708,14 @@ final class LocalMCPServer {
         if let response = oauth?.handle(method: request.method, path: request.path, query: request.query, contentType: request.headers["content-type"], body: request.body) {
             return httpResponse(status: response.status, body: response.body, contentType: response.contentType, extraHeaders: response.headers)
         }
+        // The HTTP parser validated authorization. If a bearer was revoked
+        // between parsing and dispatch, do NOT fall back to local-admin
+        // semantics: a missing verified identity must fail closed.
+        if oauth != nil, request.headers["authorization"] != nil,
+           oauth?.verifiedClient(forAuthorization: request.headers["authorization"]) == nil {
+            return httpResponse(status: 401, body: Data("Unauthorized".utf8),
+                                contentType: "text/plain")
+        }
         if request.method == "OPTIONS" {
             return httpResponse(status: 204, body: Data(), contentType: "text/plain")
         }
@@ -3626,19 +3792,26 @@ final class LocalMCPServer {
                 if message["id"] == nil {
                     return httpResponse(status: 202, body: Data(), contentType: "application/json")
                 }
-                return processModernRequest(id: id, method: method, params: params)
+                let client = oauth?.verifiedClient(
+                    forAuthorization: request.headers["authorization"])
+                return processModernRequest(id: id, method: method,
+                                            params: params, verifiedClient: client)
             }
 
             if message["id"] == nil {
                 return httpResponse(status: 202, body: Data(), contentType: "application/json")
             }
-            return processLegacyRequest(id: id, method: method, params: params)
+            let client = oauth?.verifiedClient(
+                forAuthorization: request.headers["authorization"])
+            return processLegacyRequest(id: id, method: method,
+                                        params: params, verifiedClient: client)
         } catch {
             return jsonRPCError(id: NSNull(), code: -32700, message: "Parse error", status: 400)
         }
     }
 
-    private func processLegacyRequest(id: Any, method: String, params: [String: Any]) -> Data {
+    private func processLegacyRequest(id: Any, method: String, params: [String: Any],
+                                      verifiedClient: VerifiedOAuthClient?) -> Data {
         switch method {
         case "initialize":
             let requestedVersion = params["protocolVersion"] as? String ?? mcpProtocolFallback
@@ -3656,13 +3829,15 @@ final class LocalMCPServer {
         case "tools/list":
             return jsonRPCResult(id: id, result: ["tools": publishedToolDefinitions])
         case "tools/call":
-            return callTool(id: id, params: params, modern: false)
+            return callTool(id: id, params: params, modern: false,
+                            verifiedClient: verifiedClient)
         default:
             return jsonRPCError(id: id, code: -32601, message: "Method not found: \(method)")
         }
     }
 
-    private func processModernRequest(id: Any, method: String, params: [String: Any]) -> Data {
+    private func processModernRequest(id: Any, method: String, params: [String: Any],
+                                      verifiedClient: VerifiedOAuthClient?) -> Data {
         switch method {
         case "server/discover":
             var result = modernCompleteResult([
@@ -3679,7 +3854,8 @@ final class LocalMCPServer {
             addCacheMetadata(to: &result, ttlMs: 30_000)
             return jsonRPCResult(id: id, result: result)
         case "tools/call":
-            return callTool(id: id, params: params, modern: true)
+            return callTool(id: id, params: params, modern: true,
+                            verifiedClient: verifiedClient)
         default:
             return jsonRPCError(
                 id: id,
@@ -3690,7 +3866,46 @@ final class LocalMCPServer {
         }
     }
 
-    private func callTool(id: Any, params: [String: Any], modern: Bool) -> Data {
+    private func authenticatedToolCall(
+        scoped: LocalTools, scopeID: String, name: String,
+        arguments: [String: Any], client: VerifiedOAuthClient?
+    ) throws -> LocalToolCallOutput {
+        if name == "start_command" {
+            // Serialize admission and owner recording: another authorized
+            // client must not discover an existing request_id before we mark
+            // the session owner. Static local headers retain admin semantics.
+            let key = scopeID + ":" + (arguments["request_id"] as? String ?? "")
+            let owner = client?.id ?? "__local_admin__"
+            taskOwnershipLock.lock()
+            defer { taskOwnershipLock.unlock() }
+            if let previous = ownerByScopedRequest[key], previous != owner {
+                throw MCPServerError.operationFailed(
+                    "This command request ID belongs to another authenticated client")
+            }
+            let result = try scoped.call(name: name, arguments: arguments)
+            if let sessionID = result.structuredContent["session_id"] as? String {
+                ownerByScopedRequest[key] = owner
+                ownerBySessionID[sessionID] = owner
+            }
+            return result
+        }
+        if let client, ["read_command_output", "cancel_command"].contains(name) {
+            // Server-issued token → client ID; do NOT use model-supplied
+            // client names, request IDs or tool arguments as identity.
+            let sessionID = arguments["session_id"] as? String ?? ""
+            taskOwnershipLock.lock()
+            let allowed = ownerBySessionID[sessionID] == client.id
+            taskOwnershipLock.unlock()
+            guard allowed else {
+                throw MCPServerError.operationFailed(
+                    "Command belongs to a different authenticated client")
+            }
+        }
+        return try scoped.call(name: name, arguments: arguments)
+    }
+
+    private func callTool(id: Any, params: [String: Any], modern: Bool,
+                          verifiedClient: VerifiedOAuthClient? = nil) -> Data {
         guard let toolName = params["name"] as? String else {
             return jsonRPCError(
                 id: id,
@@ -3720,7 +3935,9 @@ final class LocalMCPServer {
         do {
             let output: LocalToolCallOutput
             if toolName == "list_workspaces" {
-                let list = workspaceDefinitions.map {
+                let list = workspaceDefinitions.filter {
+                    verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
+                }.map {
                     ["id": $0.id, "name": $0.name, "path": $0.path]
                 }
                 let all = [["id": "default", "name": "Default workspace",
@@ -3733,18 +3950,23 @@ final class LocalMCPServer {
             } else if toolName == "workspace_call" {
                 guard let scopeID = arguments["workspace_id"] as? String,
                       let scoped = workspaceTools[scopeID],
+                      verifiedClient?.approvedWorkspaceIDs.contains(scopeID) ?? true,
                       let innerName = arguments["tool_name"] as? String,
                       scoped.hasTool(named: innerName),
                       let innerArgs = arguments["arguments"] as? [String: Any] else {
                     throw MCPServerError.invalidArguments("Unknown workspace or tool")
                 }
-                let inner = try scoped.call(name: innerName, arguments: innerArgs)
+                let inner = try authenticatedToolCall(
+                    scoped: scoped, scopeID: scopeID, name: innerName,
+                    arguments: innerArgs, client: verifiedClient)
                 let payload: [String: Any] = [
                     "workspace_id": scopeID, "result": inner.structuredContent]
                 // Preserve content blocks and return a scoped structured result.
                 output = LocalToolCallOutput(content: inner.content, structuredContent: payload)
             } else {
-                output = try tools.call(name: toolName, arguments: arguments)
+                output = try authenticatedToolCall(
+                    scoped: tools, scopeID: "default", name: toolName,
+                    arguments: arguments, client: verifiedClient)
             }
             var result: [String: Any] = [
                 "content": output.content,
@@ -4239,7 +4461,7 @@ private extension LocalTools {
         ]
         if enableCommands {
             definitions += [
-                tool(name: "start_command", description: "Start a long-running non-interactive shell command (shell permission required; not OS-sandboxed). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to four command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
+                tool(name: "start_command", description: "Start a long-running non-interactive shell command (shell permission required; not OS-sandboxed). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
                      properties: ["request_id": stringProperty("Unique retry key, 1–128 ASCII letters/digits/dot/underscore/hyphen. Reuse only for the same command."),
                                   "command": stringProperty("Shell command."), "cwd": stringProperty("Working directory inside shared root."),
                                   "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600]],
@@ -4611,8 +4833,13 @@ private extension LocalTools {
     func ensureNoConflictingCommand(for name: String, arguments: [String: Any]) throws {
         var paths: [String] = []
         switch name {
-        case "write_file", "edit_file":
+        case "write_file", "edit_file", "create_directory":
             paths = [try resolver.resolve(requiredString(arguments, "relative_path")).path]
+        case "copy_file", "move_file":
+            paths = [
+                try resolver.resolveForDeletion(requiredString(arguments, "source_path")).path,
+                try resolver.resolveForDeletion(requiredString(arguments, "destination_path")).path
+            ]
         case "delete_file", "delete_directory":
             // Preserve safe deletion of a symlink whose target is outside the
             // workspace. Resolve its parent, never follow the final symlink.
@@ -4654,6 +4881,21 @@ private extension LocalTools {
     }
 }
 
+/// A verified identity is derived ONLY from an active, server-issued OAuth
+/// access token. ClientInfo/client_name values are not security principals.
+struct VerifiedOAuthClient {
+    let id: String
+    let approvedWorkspaceIDs: Set<String>
+}
+
+/// Local-only GUI record; names are self-reported and are NEVER security IDs.
+struct DesktopOAuthClient {
+    let id: String
+    let displayName: String
+    let approvedWorkspaces: [String]
+    let createdAt: Date
+}
+
 struct LocalOAuthResponse {
     let status: Int
     let contentType: String
@@ -4672,9 +4914,26 @@ final class LocalMCPOAuthServer {
 
     private struct Client: Codable {
         let redirects: [String]
-        let name: String
+        let name: String // self-reported display name, never a security principal
         let created: Date
         var approved = false
+        var allowedWorkspaceIDs: [String] = ["default"]
+
+        private enum CodingKeys: String, CodingKey {
+            case redirects, name, created, approved, allowedWorkspaceIDs
+        }
+        init(redirects: [String], name: String, created: Date) {
+            self.redirects = redirects; self.name = name; self.created = created
+        }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            redirects = try values.decode([String].self, forKey: .redirects)
+            name = try values.decode(String.self, forKey: .name)
+            created = try values.decode(Date.self, forKey: .created)
+            approved = try values.decodeIfPresent(Bool.self, forKey: .approved) ?? false
+            allowedWorkspaceIDs = try values.decodeIfPresent([String].self,
+                forKey: .allowedWorkspaceIDs) ?? ["default"]
+        }
     }
     private struct Grant: Codable {
         let client: String
@@ -4707,8 +4966,11 @@ final class LocalMCPOAuthServer {
     let issuer: String
     var resource: String { issuer + "/mcp" }
     private let permissionDescription: String
+    // These are configured by the local user, never by a remote MCP caller.
+    private let availableWorkspaces: [WorkspaceDefinition]
 
     init(issuer: String, pairingSecret: String, policy: String, permissionDescription: String,
+         approvedWorkspaces: [WorkspaceDefinition] = [],
          persistedState: Data? = nil, persist: ((Data) throws -> Void)? = nil) throws {
         guard let url = URLComponents(string: issuer), url.scheme == "https", url.host != nil,
               url.user == nil, url.password == nil, url.path.isEmpty, url.query == nil, url.fragment == nil,
@@ -4720,6 +4982,7 @@ final class LocalMCPOAuthServer {
         self.pairingSecret = pairingSecret
         self.persist = persist
         self.permissionDescription = permissionDescription
+        self.availableWorkspaces = approvedWorkspaces
         let boundPolicy = Self.hash(policy + "|" + pairingSecret)
         if let persistedState {
             self.store = try JSONDecoder().decode(Store.self, from: persistedState)
@@ -4732,17 +4995,57 @@ final class LocalMCPOAuthServer {
         } else { self.store = Store(issuer: issuer, policy: boundPolicy) }
     }
 
+    func desktopApprovedClients() -> [DesktopOAuthClient] {
+        lock.lock()
+        defer { lock.unlock() }
+        return store.clients.compactMap { id, client in
+            guard client.approved else { return nil }
+            return DesktopOAuthClient(
+                id: id, displayName: client.name,
+                approvedWorkspaces: client.allowedWorkspaceIDs,
+                createdAt: client.created)
+        }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func revokeDesktopClient(_ clientID: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard store.clients[clientID]?.approved == true else {
+            throw MCPServerError.notFound("This approved OAuth client no longer exists")
+        }
+        let before = store
+        store.clients.removeValue(forKey: clientID)
+        store.access = store.access.filter { $0.value.client != clientID }
+        store.refresh = store.refresh.filter { $0.value.client != clientID }
+        store.consumedRefresh = store.consumedRefresh.filter {
+            $0.value.client != clientID
+        }
+        do { try save() } catch { store = before; throw error }
+    }
+
     func isPublicRoute(method: String, path: String) -> Bool {
         (method == "GET" && ["/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/oauth/authorize"].contains(path))
             || (method == "POST" && ["/oauth/register", "/oauth/authorize", "/oauth/token", "/oauth/revoke"].contains(path))
     }
 
     func accepts(_ authorization: String?) -> Bool {
-        guard let authorization else { return false }
+        verifiedClient(forAuthorization: authorization) != nil
+    }
+
+    func verifiedClient(forAuthorization authorization: String?) -> VerifiedOAuthClient? {
+        guard let authorization else { return nil }
         let parts = authorization.split(separator: " ", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts[0].lowercased() == "bearer" else { return false }
-        lock.lock(); defer { lock.unlock() }
-        return store.access[Self.hash(String(parts[1]))].map { $0.expires > Date() } ?? false
+        guard parts.count == 2, parts[0].lowercased() == "bearer" else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let grant = store.access[Self.hash(String(parts[1]))],
+              grant.expires > Date(), let client = store.clients[grant.client],
+              client.approved else { return nil }
+        // These IDs came from the local approval page and were persisted with
+        // the server-issued token. Never trust the request's client_info.
+        let permitted = Set(["default"] + availableWorkspaces.map(\.id))
+        return VerifiedOAuthClient(id: grant.client,
+            approvedWorkspaceIDs: Set(client.allowedWorkspaceIDs).intersection(permitted))
     }
 
     func handle(method: String, path: String, query: String, contentType: String?, body: Data) -> LocalOAuthResponse? {
@@ -4814,6 +5117,23 @@ final class LocalMCPOAuthServer {
                     return try authorizationPage(requestID: id, clientName: client.name, redirect: request.redirect,
                         message: "The login code did not match. Copy a fresh login code from the ChatToComputerMCP app currently serving this hostname, then try again.", status: 403)
                 }
+                let selectedScope = values["workspace_scope"] ?? "scope:default"
+                let allowedWorkspaceIDs: [String]
+                if selectedScope == "scope:default" {
+                    allowedWorkspaceIDs = ["default"]
+                } else if selectedScope == "scope:all" {
+                    allowedWorkspaceIDs = ["default"] + availableWorkspaces.map(\.id)
+                } else if selectedScope.hasPrefix("scope:"),
+                          let selected = availableWorkspaces.first(where: {
+                              selectedScope == "scope:" + $0.id
+                          }) {
+                    allowedWorkspaceIDs = ["default", selected.id]
+                } else {
+                    return try authorizationPage(requestID: id, clientName: client.name,
+                        redirect: request.redirect,
+                        message: "Choose an approved workspace access scope.", status: 403)
+                }
+                client.allowedWorkspaceIDs = allowedWorkspaceIDs
                 client.approved = true
                 let before = store
                 store.clients[request.client] = client
@@ -4900,8 +5220,13 @@ final class LocalMCPOAuthServer {
                 // Chromium applies form-action to the redirect after the local POST.
                 // The callback is already bound to this pending authorization request.
                 let callbackSource = Self.redirectOrigin(redirect).map { " " + $0 } ?? ""
+                let scopedChoices = availableWorkspaces.map { workspace in
+                    "<label class=\"scope-choice\"><input type=\"radio\" name=\"workspace_scope\" value=\"scope:\(Self.html(workspace.id))\"> \(Self.html(workspace.name))</label>"
+                }.joined()
+                let allChoice = availableWorkspaces.isEmpty ? "" :
+                    "<label class=\"scope-choice\"><input type=\"radio\" name=\"workspace_scope\" value=\"scope:all\"> All approved workspaces</label>"
                 let formHTML = """
-                <form method="post" action="/oauth/authorize"><input type="hidden" name="request_id" value="\(requestID)"><label for="pairing-code">Login code</label><input id="pairing-code" type="password" name="pairing_code" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="128" placeholder="Paste your login code" aria-describedby="code-help"><p class="hint" id="code-help">In the ChatToComputerMCP app, open Connection and choose Copy login code.</p><button type="submit">Authorize connection</button></form>
+                <form method="post" action="/oauth/authorize"><input type="hidden" name="request_id" value="\(requestID)"><label for="pairing-code">Login code</label><input id="pairing-code" type="password" name="pairing_code" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="128" placeholder="Paste your login code" aria-describedby="code-help"><p class="hint" id="code-help">In the ChatToComputerMCP app, open Connection and choose Copy login code.</p><fieldset><legend>Approved workspace access</legend><label class="scope-choice"><input type="radio" name="workspace_scope" value="scope:default" checked> Default workspace only (recommended)</label>\(scopedChoices)\(allChoice)</fieldset><button type="submit">Authorize connection</button></form>
                 """
                 let html = """
                 <!doctype html>
@@ -4911,7 +5236,7 @@ final class LocalMCPOAuthServer {
                 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:40px 20px}
                 .shell{width:100%;max-width:480px}.brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:26px;font-size:19px;font-weight:650;letter-spacing:-.5px}.mark{width:34px;height:34px;color:var(--accent);display:block;flex:none}
                 .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:32px;box-shadow:0 12px 48px rgba(0,0,0,.05)}.eyebrow{font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:var(--muted);margin:0 0 10px}h1{font-size:28px;line-height:1.2;letter-spacing:-.9px;margin:0 0 12px;font-weight:700}.intro{color:var(--muted);margin:0 0 24px}.summary{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:16px;margin-bottom:24px}.caption{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}.client{display:block;font-size:16px;font-weight:650;overflow-wrap:anywhere}.permissions{margin:12px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);overflow-wrap:anywhere}
-                label{display:block;font-weight:600;font-size:14px;margin-bottom:8px}input[type=password]{display:block;width:100%;min-height:50px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);padding:12px 14px;font:16px ui-monospace,SFMono-Regular,monospace;outline:none}input:focus-visible{border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}.hint{color:var(--muted);font-size:12px;margin:9px 0 22px}button{width:100%;min-height:48px;padding:12px 18px;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:600 15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}button:hover{filter:brightness(.94)}button:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:4px}.notice{font-size:12px;color:var(--muted);margin:18px 0 0;text-align:center}details{border-top:1px solid var(--line);margin-top:24px;padding-top:16px;font-size:12px;color:var(--muted)}summary{cursor:pointer;font-weight:600}.callback{overflow-wrap:anywhere;margin:10px 0 0}.footer{text-align:center;color:var(--muted);font-size:12px;margin:20px 12px 0}
+                label{display:block;font-weight:600;font-size:14px;margin-bottom:8px}fieldset{border:1px solid var(--line);border-radius:10px;margin:0 0 20px;padding:12px}legend{font-size:12px;font-weight:650;padding:0 5px}.scope-choice{display:block;font-size:13px;font-weight:450;margin:10px 0;cursor:pointer}.scope-choice input{margin-right:7px}input[type=password]{display:block;width:100%;min-height:50px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);padding:12px 14px;font:16px ui-monospace,SFMono-Regular,monospace;outline:none}input:focus-visible{border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}.hint{color:var(--muted);font-size:12px;margin:9px 0 22px}button{width:100%;min-height:48px;padding:12px 18px;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:600 15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}button:hover{filter:brightness(.94)}button:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:4px}.notice{font-size:12px;color:var(--muted);margin:18px 0 0;text-align:center}details{border-top:1px solid var(--line);margin-top:24px;padding-top:16px;font-size:12px;color:var(--muted)}summary{cursor:pointer;font-weight:600}.callback{overflow-wrap:anywhere;margin:10px 0 0}.footer{text-align:center;color:var(--muted);font-size:12px;margin:20px 12px 0}
                 @media(prefers-color-scheme:dark){:root{--bg:#111;--card:#1c1c1c;--ink:#f5f5f5;--muted:#aaa;--line:#383838;--soft:#252525;--accent:#fff;--on-accent:#111;--ring:rgba(255,255,255,.2)}}@media(max-width:420px){body{padding:24px 16px}.card{padding:24px;border-radius:18px}h1{font-size:25px}}
                 </style></head><body><div class="shell"><div class="brand">\(Self.brandImageHTML)<span>ChatToComputerMCP</span></div>
                 <main class="card"><p class="eyebrow">Connection request</p><h1>Connect your workspace</h1><p class="intro">Review the request, then enter the login code from ChatToComputerMCP on your Mac.</p>

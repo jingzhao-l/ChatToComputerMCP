@@ -60,6 +60,13 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     public IReadOnlyList<DesktopCommandInfo> DesktopCommandSnapshots() =>
         _server?.DesktopCommandSnapshots() ?? [];
 
+    public Task<System.Text.Json.Nodes.JsonObject> DesktopCommandOutputAsync(
+        string workspaceID, string sessionID)
+    {
+        if (_server is null) throw new FileMcpException("No connected local server");
+        return _server.DesktopCommandOutputAsync(workspaceID, sessionID);
+    }
+
     public void CancelDesktopCommand(string workspaceID, string sessionID)
     {
         if (_server is null) throw new FileMcpException("No connected local server");

@@ -32,10 +32,46 @@ func runAgentToolChecks(rootPath: String) throws {
     check(!restricted.hasTool(named: "git_push") && !restricted.hasTool(named: "save_conversation_to_codex"))
     rejects("disabled Git push") { _ = try call(restricted, "git_push") }
     rejects("disabled Codex history") { _ = try call(restricted, "save_conversation_to_codex", ["title": "disabled", "messages": [["role": "user", "content": "test"]]]) }
-    check(safe.toolDefinitions.count == 22 && full.toolDefinitions.count == 27)
+    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 31)
+    for name in ["file_info", "create_directory", "copy_file", "move_file"] {
+        check(safe.hasTool(named: name))
+    }
     check(!safe.hasTool(named: "command_capacity_status") && full.hasTool(named: "command_capacity_status"))
     check(safe.hasTool(named: "apply_patch") && !safe.hasTool(named: "start_command") && !safe.hasTool(named: "read_command_output"))
     rejects("disabled commands") { _ = try call(safe, "start_command", ["request_id": "disabled", "command": "true"]) }
+    _ = try call(safe, "create_directory", ["relative_path": "new-folder/sub"])
+    check(FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("new-folder/sub").path))
+    let newFolderInfo = try call(safe, "file_info", ["relative_path": "new-folder/sub"])
+    check(newFolderInfo["kind"] as? String == "directory")
+    try write("new-folder/source.txt", "safe original")
+    let sourceInfo = try call(safe, "file_info", ["relative_path": "new-folder/source.txt"])
+    check(sourceInfo["kind"] as? String == "file" && sourceInfo["size_bytes"] as? Int == 13)
+    _ = try call(safe, "copy_file", [
+        "source_path": "new-folder/source.txt", "destination_path": "new-folder/sub/copy.txt"])
+    check(try String(contentsOf: root.appendingPathComponent("new-folder/sub/copy.txt"),
+                     encoding: .utf8) == "safe original")
+    rejects("copy refuses overwrite") {
+        _ = try call(safe, "copy_file", [
+            "source_path": "new-folder/source.txt", "destination_path": "new-folder/sub/copy.txt"])
+    }
+    _ = try call(safe, "move_file", [
+        "source_path": "new-folder/sub/copy.txt", "destination_path": "new-folder/moved.txt"])
+    check(FileManager.default.fileExists(atPath: root.appendingPathComponent("new-folder/moved.txt").path))
+    check(!FileManager.default.fileExists(atPath: root.appendingPathComponent("new-folder/sub/copy.txt").path))
+    rejects("move refuses overwrite") {
+        _ = try call(safe, "move_file", [
+            "source_path": "new-folder/moved.txt", "destination_path": "new-folder/source.txt"])
+    }
+    rejects("file tools refuse traversal") {
+        _ = try call(safe, "create_directory", ["relative_path": "../forbidden"])
+    }
+    rejects("file copy refuses source outside workspace") {
+        _ = try call(safe, "copy_file", [
+            "source_path": "../outside.txt", "destination_path": "new-folder/escape.txt"])
+    }
+    print("PASS: file info, new directories, copy/move, no overwrite, workspace containment")
+
     try write("nested/code.txt", "héllo 👋\r\nkeep\r\n")
     let edit: [String: Any] = ["relative_path": "nested/code.txt", "old_text": "héllo 👋", "new_text": "xin chào", "dry_run": true]
     let preview = try call(safe, "edit_file", edit)

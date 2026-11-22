@@ -1,6 +1,6 @@
 {
   "name": "chat-to-computer-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP gateway for approved local workspaces and concurrent AI conversations",
   "license": "Apache-2.0",
   "author": "ChatToComputerMCP contributors",
@@ -57,7 +57,8 @@
     "docs/UPSTREAM_ATTRIBUTION.md",
     "docs/PROJECT_SCOPE.md",
     "docs/CONNECT_CHATGPT.md",
-    "docs/CONNECT_CHATGPT.zh-CN.md"
+    "docs/CONNECT_CHATGPT.zh-CN.md",
+    "docs/VERIFIED_CLIENT_ACCESS.md"
   ],
   "scripts": {
     "test": "node --test npm/installer.test.mjs",

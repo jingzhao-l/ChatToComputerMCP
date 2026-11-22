@@ -42,3 +42,19 @@ Windows Settings now includes additional named folder approvals and a shared
 cancellation. Windows x64 integration and WPF smoke have now passed on a GitHub-hosted
 Windows runner (run 45028574644). Native ARM64 execution and complete upgrade
 and restart scenarios remain unverified; ARM64 packages build successfully.
+
+
+## Expanded native controls in 0.2.0
+
+- macOS Tasks: retain selection after refresh, inspect bounded stdout/stderr
+  and exit codes, reveal the owning folder and explicitly copy command output.
+  Output can contain secrets. The prior interrupted receipt count is not
+  a subprocess reattachment mechanism.
+- Windows Tasks: inspect bounded stdout/stderr and exit codes, reveal folder
+  in Explorer, copy output and cancel only the selected long-running session.
+- macOS Connection (Cloudflare OAuth): list server-verified client registrations,
+  show user-approved scopes and revoke a client and its refresh-token family.
+  Display names are self-reported labels, never security identities.
+- Additional non-shell MCP tools on Mac and Windows: file_info,
+  create_directory, copy_file and move_file. Paths stay in approved roots,
+  source symlinks are refused and existing destinations are never overwritten.

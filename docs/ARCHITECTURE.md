@@ -49,7 +49,7 @@ Long-running sessions carry IDs, output cursors, completion states, bounded outp
 
 1. A cwd guard is cooperative. A user-privileged shell may still open absolute paths or spawn unrestricted child processes.
 2. The active session list is still in-process, not an authenticated cross-restart supervisor. macOS now persists private command receipts BEFORE launching; incomplete ones are marked interrupted on restart, and their IDs cannot be silently replayed. The journal intentionally contains no command text, output or full workspace path. This is safe idempotency metadata, not actual process reattachment.
-3. Caller-provided MCP `clientInfo` is not proof of a security identity. No per-client cryptographically verified scope grants are promised.
+3. Mac Cloudflare OAuth now derives client identity exclusively from server-issued, validated bearer tokens, with locally approved workspace scopes and command ownership. Client-supplied MCP clientInfo remains untrusted. OpenAI Secure MCP Tunnel currently forwards a shared local authentication header, so it cannot identify individual conversations without an additional authenticated protocol.
 
 ## Native applications
 

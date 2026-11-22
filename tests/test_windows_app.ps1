@@ -17,7 +17,7 @@ if ($env:OS -ne "Windows_NT") {
     throw "Windows app smoke test must run on Windows."
 }
 
-$Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.4.0-windows-x64.zip"
+$Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.2.0-windows-x64.zip"
 if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
     throw "Windows x64 release archive is missing: $Archive"
 }

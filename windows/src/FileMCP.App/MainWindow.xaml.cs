@@ -196,23 +196,76 @@ public partial class MainWindow : Window
         try
         {
             var tasks = _runtime.DesktopCommandSnapshots();
-            TaskListBox.ItemsSource = tasks.Select(task => new TaskRow(task)).ToArray();
+            var selectedID = (TaskListBox.SelectedItem as TaskRow)?.Task.SessionId;
+            var entries = tasks.Select(task => new TaskRow(task)).ToArray();
+            TaskListBox.ItemsSource = entries;
+            TaskListBox.SelectedItem = entries.FirstOrDefault(entry =>
+                entry.Task.SessionId == selectedID);
             TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
                 "Synchronous commands count toward total capacity but are not individually cancellable here.";
             TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
             CancelTaskButton.IsEnabled = false;
+            RevealTaskButton.IsEnabled = TaskListBox.SelectedItem is TaskRow;
         }
         catch (Exception ex) { TasksSummaryText.Text = ex.Message; }
     }
 
-    private void TaskSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void TaskSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (TaskListBox.SelectedItem is not TaskRow row) {
-            CancelTaskButton.IsEnabled = false; return;
+            CancelTaskButton.IsEnabled = false;
+            RevealTaskButton.IsEnabled = false;
+            CopyTaskOutputButton.IsEnabled = false;
+            TaskOutputBox.Text = "";
+            return;
         }
         TaskDetailText.Text = row.Task.WorkspaceName + " · " + row.Task.Cwd + " · " + row.Task.State;
         CancelTaskButton.IsEnabled = row.Task.Active &&
             _runtime.State.Status == LocalMcpRuntimeStatus.Running;
+        RevealTaskButton.IsEnabled = Directory.Exists(row.Task.Cwd);
+        CopyTaskOutputButton.IsEnabled = false;
+        TaskOutputBox.Text = "Loading bounded command output…";
+        try
+        {
+            var result = await _runtime.DesktopCommandOutputAsync(
+                row.Task.WorkspaceId, row.Task.SessionId);
+            // An async read may finish after the user selected another task.
+            if ((TaskListBox.SelectedItem as TaskRow)?.Task.SessionId != row.Task.SessionId)
+                return;
+            var text = result["output"]?.GetValue<string>() ?? "";
+            var truncated = result["truncated"]?.GetValue<bool>() ?? false;
+            var code = result["exit_code"] is null ? "pending" :
+                result["exit_code"]!.GetValue<int>().ToString();
+            TaskDetailText.Text = row.Task.WorkspaceName + " · " + row.Task.Cwd +
+                " · " + (result["state"]?.GetValue<string>() ?? row.Task.State) +
+                " · exit " + code;
+            TaskOutputBox.Text = (truncated ? "[Earlier output truncated]\n" : "") +
+                (text.Length == 0 ? "(No captured output)" : text);
+            CopyTaskOutputButton.IsEnabled = text.Length > 0;
+        }
+        catch (Exception ex)
+        {
+            if ((TaskListBox.SelectedItem as TaskRow)?.Task.SessionId == row.Task.SessionId)
+                TaskOutputBox.Text = "Could not read output: " + ex.Message;
+        }
+    }
+
+    private void RevealTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskListBox.SelectedItem is not TaskRow row ||
+            !Directory.Exists(row.Task.Cwd)) return;
+        Process.Start(new ProcessStartInfo {
+            FileName = "explorer.exe", Arguments = "/select,\"" + row.Task.Cwd + "\"",
+            UseShellExecute = true
+        });
+    }
+
+    private void CopyTaskOutput_Click(object sender, RoutedEventArgs e)
+    {
+        if (!CopyTaskOutputButton.IsEnabled || string.IsNullOrEmpty(TaskOutputBox.Text))
+            return;
+        System.Windows.Clipboard.SetText(TaskOutputBox.Text);
+        AppendLog("Task output copied. Inspect it for credentials before sharing.\n");
     }
 
     private void CancelTask_Click(object sender, RoutedEventArgs e)
@@ -403,7 +456,7 @@ public partial class MainWindow : Window
     {
         System.Windows.MessageBox.Show(
             this,
-            "ChatToComputerMCP 0.4.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
+            "ChatToComputerMCP 0.2.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
             "About ChatToComputerMCP",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
