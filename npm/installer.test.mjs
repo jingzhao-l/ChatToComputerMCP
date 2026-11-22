@@ -54,3 +54,48 @@ test('dry-run LaunchAgent has explicit label, safe defaults, and no registration
     'local.chat-to-computer-mcp.plist')),false);
  } finally {fs.rmSync(tmp,{recursive:true,force:true});}
 });
+
+test('macOS local build places a real app bundle under versioned release and can be opened',()=>{
+ if(process.platform!=='darwin')return;
+ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-layout-'));
+ try {
+  const src=path.join(temp,'source');
+  const fakeHome=path.join(temp,'home');
+  for(const d of ['bin','macos','vendor','assets/branding/chat-to-computer-mcp'])
+    fs.mkdirSync(path.join(src,d),{recursive:true});
+  fs.mkdirSync(fakeHome,{recursive:true});
+  fs.copyFileSync(entry,path.join(src,'bin','chat-to-computer-mcp.mjs'));
+  fs.writeFileSync(path.join(src,'package.json'),JSON.stringify({
+    name:'chat-to-computer-mcp',version:'0.1.0'
+  }));
+  fs.writeFileSync(path.join(src,'LICENSE'),'Apache-2.0 test fixture');
+  fs.writeFileSync(path.join(src,'build_macos_icon.sh'),'#!/bin/bash\nexit 0\n');
+  fs.writeFileSync(path.join(src,'assets/branding/render_chat_to_computer_mcp_icon.swift'),'// fixture\n');
+  fs.writeFileSync(path.join(src,'build_macos_app.sh'),[
+    '#!/bin/bash','set -eu',
+    'mkdir -p dist/ChatToComputerMCP.app/Contents/MacOS',
+    'printf "#!/bin/sh\\nexit 0\\n" > dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP',
+    'chmod +x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP',
+    ''
+  ].join('\n'));
+  function cli(args) {
+    return cp.spawnSync(process.execPath,
+      [path.join(src,'bin','chat-to-computer-mcp.mjs'),...args],
+      {encoding:'utf8',env:{...process.env,HOME:fakeHome},timeout:10000});
+  }
+  const result=cli(['install']);
+  assert.equal(result.status,0,result.stdout+'\n'+result.stderr);
+  const expected=path.join(fakeHome,'.local','share','chat-to-computer-mcp',
+    'releases','0.1.0','ChatToComputerMCP.app','Contents','MacOS','ChatToComputerMCP');
+  assert.equal(fs.existsSync(expected),true,'expected executable exists in app bundle');
+  const state=cli(['status']);
+  assert.equal(state.status,0,state.stderr);
+  assert.match(state.stdout,/Installed: yes/);
+  const preview=cli(['launchagent','enable','--dry-run']);
+  assert.equal(preview.status,0,preview.stderr);
+  assert.match(preview.stdout,/ChatToComputerMCP\.app\/Contents\/MacOS\/ChatToComputerMCP/);
+  const duplicate=cli(['install']);
+  assert.equal(duplicate.status,0,duplicate.stderr);
+  assert.match(duplicate.stdout,/Already installed/);
+ } finally {fs.rmSync(temp,{recursive:true,force:true});}
+});

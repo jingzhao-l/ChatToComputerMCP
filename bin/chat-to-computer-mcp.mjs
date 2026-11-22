@@ -100,7 +100,16 @@ function install(args) {
   try {
     const built = platform==='darwin' ? macBuild(stage) : windowsBuild(stage);
     const completed=path.join(stage,'release');
-    fs.renameSync(built,completed);
+    if(platform==='darwin') {
+      mkdir(completed);
+      fs.renameSync(built,path.join(completed,name+'.app'));
+    } else {
+      fs.renameSync(built,completed);
+    }
+    const expected=platform==='darwin'
+      ? path.join(completed,name+'.app','Contents','MacOS',name)
+      : path.join(completed,name+'.exe');
+    if(!fs.existsSync(expected)) throw new Error('Build output layout is incomplete: '+expected);
     let backup;
     if(fs.existsSync(versionDir)) {
       backup=path.join(releaseParent,version+'-previous-'+Date.now());
@@ -198,7 +207,15 @@ function main() {
     case 'open':
       if(!fs.existsSync(app)) throw new Error('Run install first');
       if(platform==='darwin') return run('/usr/bin/open',['-a',app]);
-      return run(app,[]);
+      // A native Windows GUI runs independently of the invoking terminal;
+      // blocking the CLI here would make "open" appear hung until Quit.
+      {
+        const child=cp.spawn(app,[],{stdio:'ignore',detached:true,windowsHide:false});
+        child.on('error',e=>console.error('Could not launch desktop app: '+e.message));
+        child.unref();
+        console.log('Desktop application launch requested.');
+        return;
+      }
     case 'status':return status();
     case 'launchagent':return launchagent(subcommand,rest);
     default:throw new Error('Unknown command: '+command);
