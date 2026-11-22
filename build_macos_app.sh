@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build the full native macOS FileMCP app.
+# Build the full native macOS ChatToComputerMCP app.
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
 ROOT="$PWD"
-APP="$ROOT/dist/FileMCP.app"
+APP="$ROOT/dist/ChatToComputerMCP.app"
 SWIFTC="${SWIFTC:-swiftc}"
 
 "$ROOT/build_macos_icon.sh"
@@ -49,8 +49,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/build/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-cp "$ROOT/assets/branding/filemcp-v2/app-icon-128.png" "$APP/Contents/Resources/FileMCP-login.png"
-cp "$APP_LICENSE" "$APP/Contents/Resources/FileMCP-LICENSE.txt"
+cp "$ROOT/assets/branding/chat-to-computer-mcp/app-icon-128.png" "$APP/Contents/Resources/ChatToComputerMCP-login.png"
+cp "$APP_LICENSE" "$APP/Contents/Resources/ChatToComputerMCP-LICENSE.txt"
 cp "$TUNNEL_LICENSE" "$APP/Contents/Resources/tunnel-client-LICENSE.txt"
 cp "$TUNNEL_NOTICE" "$APP/Contents/Resources/tunnel-client-NOTICE.txt"
 cp "$TUNNEL_THIRD_PARTY" "$APP/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt"
@@ -68,16 +68,16 @@ chmod 755 "$APP/Contents/MacOS/rg"
     -framework AppKit \
     -framework Network \
     -framework Security \
-    -o "$APP/Contents/MacOS/FileMCP" \
+    -o "$APP/Contents/MacOS/ChatToComputerMCP" \
     "$ROOT/macos/ProcessRunner.swift" \
     "$ROOT/macos/Ripgrep.swift" \
     "$ROOT/macos/LocalMCPServer.swift" \
     "$ROOT/macos/CodexHistory.swift" \
     "$ROOT/macos/LocalMCPRuntime.swift" \
-    "$ROOT/macos/FileMCPApp.swift" \
+    "$ROOT/macos/ChatToComputerMCPApp.swift" \
     "$ROOT/macos/main.swift"
 
 echo
 echo "Built: $APP"
-file "$APP/Contents/MacOS/FileMCP" "$APP/Contents/MacOS/tunnel-client" "$APP/Contents/MacOS/rg"
-ls -lh "$APP/Contents/MacOS/FileMCP" "$APP/Contents/MacOS/tunnel-client" "$APP/Contents/MacOS/rg"
+file "$APP/Contents/MacOS/ChatToComputerMCP" "$APP/Contents/MacOS/tunnel-client" "$APP/Contents/MacOS/rg"
+ls -lh "$APP/Contents/MacOS/ChatToComputerMCP" "$APP/Contents/MacOS/tunnel-client" "$APP/Contents/MacOS/rg"

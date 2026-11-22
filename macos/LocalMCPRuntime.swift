@@ -21,6 +21,8 @@ struct LocalMCPConfiguration {
     let profile: String
     let port: UInt16
     let allowedDirectory: String
+    var additionalWorkspaces: [WorkspaceDefinition] = []
+    var maxConcurrentCommands: Int = 8
     let healthAddress: String
     let gitUserName: String
     let gitUserEmail: String
@@ -63,9 +65,9 @@ private final class ProfileLock {
             close(fd)
             if code == EWOULDBLOCK || code == EAGAIN {
                 throw NSError(
-                    domain: "FileMCP",
+                    domain: "ChatToComputerMCP",
                     code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "This tunnel profile is already in use by another FileMCP instance."]
+                    userInfo: [NSLocalizedDescriptionKey: "This tunnel profile is already in use by another ChatToComputerMCP instance."]
                 )
             }
             throw lockError("Could not acquire the profile lock", code: code)
@@ -90,7 +92,7 @@ private final class ProfileLock {
 
     private func lockError(_ prefix: String, code: Int32) -> NSError {
         NSError(
-            domain: "FileMCP",
+            domain: "ChatToComputerMCP",
             code: Int(code),
             userInfo: [NSLocalizedDescriptionKey: "\(prefix): \(String(cString: strerror(code)))"]
         )
@@ -135,6 +137,33 @@ final class LocalMCPRuntime {
     func start(_ configuration: LocalMCPConfiguration) {
         queue.async { [weak self] in
             self?.startOnQueue(configuration)
+        }
+    }
+
+    // The local GUI queries task status on the runtime queue, without
+    // exposing command text or mutating another workspace's files.
+    func fetchDesktopCommands(_ completion: @escaping ([DesktopCommandSnapshot]) -> Void) {
+        queue.async { [weak self] in
+            let snapshot = self?.server?.desktopCommandSnapshots() ?? []
+            DispatchQueue.main.async { completion(snapshot) }
+        }
+    }
+
+    func cancelDesktopCommand(workspaceID: String, sessionID: String,
+                              completion: @escaping (String?) -> Void) {
+        queue.async { [weak self] in
+            let failure: String?
+            do {
+                guard let server = self?.server else {
+                    throw NSError(domain: "ChatToComputerMCP", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "No connected local server."])
+                }
+                try server.cancelDesktopCommand(workspaceID: workspaceID, sessionID: sessionID)
+                failure = nil
+            } catch {
+                failure = error.localizedDescription
+            }
+            DispatchQueue.main.async { completion(failure) }
         }
     }
 
@@ -204,11 +233,16 @@ final class LocalMCPRuntime {
             let isCloudflare = configuration.provider == .cloudflare
             let oauth: LocalMCPOAuthServer?
             if isCloudflare && !configuration.allowCloudflareURLSecret {
-                let permissions = "Read, edit and delete files in the shared folder."
+                let permissions = "Read, edit and delete files in the explicitly approved workspace folders."
                     + (configuration.enableCommands ? " Run shell commands with your macOS user privileges." : " Shell commands are disabled.")
                     + (configuration.enableGitPush ? " Push code to configured remote servers." : "")
                     + (configuration.enableCodexHistory ? " Write conversations to Codex history outside the folder." : "")
-                let policy = Self.canonicalWorkspacePath(configuration.allowedDirectory) + "|" + permissions
+                // Authorization is bound to every permitted folder, not only
+                // the default. Changing any scope invalidates the old policy.
+                let approvedPaths = [configuration.allowedDirectory]
+                    + configuration.additionalWorkspaces.map(\.path)
+                let canonicalPaths = approvedPaths.map(Self.canonicalWorkspacePath)
+                let policy = canonicalPaths.sorted().joined(separator: "|") + "|" + permissions
                 oauth = try LocalMCPOAuthServer(issuer: "https://" + configuration.cloudflareHostname,
                     pairingSecret: configuration.cloudflarePathSecret, policy: policy, permissionDescription: permissions,
                     persistedState: configuration.cloudflareOAuthState, persist: configuration.saveCloudflareOAuthState)
@@ -219,6 +253,8 @@ final class LocalMCPRuntime {
                 gitUserName: configuration.gitUserName,
                 gitUserEmail: configuration.gitUserEmail,
                 enableCommands: configuration.enableCommands,
+                additionalWorkspaces: configuration.additionalWorkspaces,
+                maxConcurrentCommands: configuration.maxConcurrentCommands,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
                 localAuthToken: localAuthToken,
@@ -420,7 +456,7 @@ final class LocalMCPRuntime {
             attributes: [.posixPermissions: 0o600]
         ) else {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Could not write the cloudflared config file."]
             )
@@ -439,7 +475,7 @@ final class LocalMCPRuntime {
             attributes: [.posixPermissions: 0o600]
         ) else {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Could not write the cloudflared token file."]
             )
@@ -541,7 +577,7 @@ final class LocalMCPRuntime {
         }
         for (label, value) in requiredValues where value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "\(label) cannot be empty."]
             )
@@ -549,7 +585,7 @@ final class LocalMCPRuntime {
         if configuration.provider == .cloudflare {
             guard Self.isValidPublicHostname(configuration.cloudflareHostname) else {
                 throw NSError(
-                    domain: "FileMCP",
+                    domain: "ChatToComputerMCP",
                     code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "Public hostname must be a bare hostname such as mcp.example.com (no scheme, port or path)."]
                 )
@@ -557,35 +593,35 @@ final class LocalMCPRuntime {
             guard configuration.cloudflarePathSecret.utf8.count >= 32,
                   configuration.cloudflarePathSecret.utf8.allSatisfy(LocalMCPServer.isURLSafeSecretByte) else {
                 throw NSError(
-                    domain: "FileMCP",
+                    domain: "ChatToComputerMCP",
                     code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "The MCP connection credential is missing or too short. Reset it in the Connection tab."]
                 )
             }
         } else if !Self.isValidTunnelID(configuration.tunnelID) {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Tunnel ID must match tunnel_<32 lowercase letters or digits>."]
             )
         }
         guard Self.isValidProfileName(configuration.profile) else {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters)."]
             )
         }
         guard configuration.port > 0 else {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "MCP port must be between 1 and 65535."]
             )
         }
         guard let healthAddress = Self.normalizedHealthAddress(configuration.healthAddress) else {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535."]
             )
@@ -665,7 +701,7 @@ final class LocalMCPRuntime {
     ) throws {
         if result.timedOut {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "\(operation) timed out."]
             )
@@ -674,7 +710,7 @@ final class LocalMCPRuntime {
             let detail = !result.stderr.isEmpty ? result.stderr : result.stdout
             let safeDetail = redactSensitiveValues(detail, sensitiveValues: sensitiveValues)
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: Int(result.exitCode),
                 userInfo: [NSLocalizedDescriptionKey: "\(operation) failed: \(safeDetail)"]
             )
@@ -744,7 +780,7 @@ final class LocalMCPRuntime {
         } else {
             guard let defaultDirectory = Self.defaultTunnelProfilesDirectory() else {
                 throw NSError(
-                    domain: "FileMCP",
+                    domain: "ChatToComputerMCP",
                     code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "Could not locate the user Application Support directory."]
                 )
@@ -770,7 +806,7 @@ final class LocalMCPRuntime {
         }
 
         throw NSError(
-            domain: "FileMCP",
+            domain: "ChatToComputerMCP",
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "tunnel-client was not found inside the app bundle."]
         )
@@ -785,7 +821,7 @@ final class LocalMCPRuntime {
         }
         guard status == errSecSuccess else {
             throw NSError(
-                domain: "FileMCP",
+                domain: "ChatToComputerMCP",
                 code: Int(status),
                 userInfo: [NSLocalizedDescriptionKey: "Could not generate the local MCP authentication token (OSStatus \(status))."]
             )
@@ -815,7 +851,7 @@ final class LocalMCPRuntime {
             guard sleepActivity == nil else { return }
             sleepActivity = ProcessInfo.processInfo.beginActivity(
                 options: [.idleSystemSleepDisabled, .userInitiated],
-                reason: "FileMCP tunnel is connected"
+                reason: "ChatToComputerMCP tunnel is connected"
             )
         } else if let activity = sleepActivity {
             ProcessInfo.processInfo.endActivity(activity)
@@ -1042,7 +1078,7 @@ enum CloudflareCLI {
     }
 
     private static func error(_ message: String) -> NSError {
-        NSError(domain: "FileMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "ChatToComputerMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 

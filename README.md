@@ -1,8 +1,10 @@
-# ChatToComputer
+![ChatToComputerMCP](assets/branding/chat-to-computer-mcp/wordmark.svg)
+
+# ChatToComputerMCP
 
 **Bring cloud AI conversations to your local development workspaces.**
 
-ChatToComputer is a local-first, cross-client MCP workspace gateway designed so
+ChatToComputerMCP is a local-first, cross-client MCP workspace gateway designed so
 multiple ChatGPT, Claude, and other compatible AI conversations can collaborate
 with a computer without taking over one another's work. The initial codebase is
 derived from [anhnv02/file-mcp](https://github.com/anhnv02/file-mcp),
@@ -38,18 +40,33 @@ tests/test_swift_agent_tools.sh, and tests/test_swift_runtime.sh.
 Windows: build windows/FileMCP.Windows.sln with .NET 8 and run
 tests/test_windows_runtime.ps1.
 
-The inherited app bundle output stays dist/FileMCP.app for compatibility. Do
+The macOS app bundle output is dist/ChatToComputerMCP.app. The internal
+Keychain bundle identifier and tunnel profile stay backward-compatible
+with the original installation pending a safe credential migration. Do
 not replace a live production service while AI sessions remain active.
 
 ## Documentation
 
 - [Product vision and safety](docs/PROJECT_SCOPE.md)
+- [Multi-workspace routing and security](docs/MULTI_WORKSPACE_SECURITY.md)
+- [Native GUI capabilities](docs/GUI_CAPABILITIES.md)
 - [Engineering roadmap](docs/ROADMAP.md)
 - [Credential-preserving migration](docs/RELEASE_MIGRATION.md)
 - [Source provenance](docs/UPSTREAM_ATTRIBUTION.md)
 - [Original FileMCP README](docs/FILEMCP_UPSTREAM_README.md)
 - [Apache-2.0 license](LICENSE) and [security model](SECURITY.md)
 
-ChatToComputer is independent, not an official OpenAI product and not endorsed
+ChatToComputerMCP is independent, not an official OpenAI product and not endorsed
 by the original FileMCP maintainers. Reusable improvements will be offered
 upstream in focused contributions.
+
+
+## Branding and legacy compatibility
+
+Current app resources and Windows/macOS visible product strings use
+ChatToComputerMCP. Legacy FileMCP images and screenshots remain only under
+assets/legacy-filemcp for attribution. Older internal native namespaces,
+credential target keys, user preference domains, tunnel profile locks, and
+OpenAI local-auth header names are deliberately retained as binary/protocol
+compatibility layers until a signed migration can preserve existing users'
+credentials without an outage.

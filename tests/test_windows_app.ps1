@@ -17,7 +17,7 @@ if ($env:OS -ne "Windows_NT") {
     throw "Windows app smoke test must run on Windows."
 }
 
-$Archive = Join-Path $Root "dist/FileMCP-v0.4.0-windows-x64.zip"
+$Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.4.0-windows-x64.zip"
 if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
     throw "Windows x64 release archive is missing: $Archive"
 }
@@ -25,10 +25,10 @@ if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
 $SmokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("filemcp-windows-app-smoke-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force $SmokeRoot | Out-Null
 Expand-Archive -LiteralPath $Archive -DestinationPath $SmokeRoot -Force
-$Exe = Join-Path $SmokeRoot "FileMCP.exe"
+$Exe = Join-Path $SmokeRoot "ChatToComputerMCP.exe"
 $TunnelClient = Join-Path $SmokeRoot "tunnel-client.exe"
 if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
-    throw "FileMCP.exe is missing from the Windows x64 release archive."
+    throw "ChatToComputerMCP.exe is missing from the Windows x64 release archive."
 }
 if (-not (Test-Path -LiteralPath $TunnelClient -PathType Leaf)) {
     throw "tunnel-client.exe is missing from the Windows x64 release archive."
@@ -58,7 +58,7 @@ try {
             $EventText = ""
             try {
                 $Events = Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = $StartedAt.AddSeconds(-2) } -ErrorAction Stop |
-                    Where-Object { $_.ProviderName -in @(".NET Runtime", "Application Error", "Windows Error Reporting") -and $_.Message -match "FileMCP" } |
+                    Where-Object { $_.ProviderName -in @(".NET Runtime", "Application Error", "Windows Error Reporting") -and $_.Message -match "ChatToComputerMCP" } |
                     Select-Object -First 8
                 if ($Events) {
                     $EventText = ($Events | ForEach-Object { "[$($_.ProviderName)] $($_.Message)" }) -join "`n---`n"
@@ -66,24 +66,24 @@ try {
             } catch {
                 $EventText = "Could not read Application event log: $($_.Exception.Message)"
             }
-            throw "FileMCP.exe exited during WPF startup with exit code $($Process.ExitCode).`n$EventText"
+            throw "ChatToComputerMCP.exe exited during WPF startup with exit code $($Process.ExitCode).`n$EventText"
         }
-        if ($Process.MainWindowHandle -ne 0 -and $Process.MainWindowTitle -eq "FileMCP") {
+        if ($Process.MainWindowHandle -ne 0 -and $Process.MainWindowTitle -eq "ChatToComputerMCP") {
             $WindowReady = $true
             break
         }
     }
     if (-not $WindowReady) {
-        throw "FileMCP.exe stayed alive but did not create the FileMCP main window within 12 seconds."
+        throw "ChatToComputerMCP.exe stayed alive but did not create the ChatToComputerMCP main window within 12 seconds."
     }
 
     if (-not $Process.CloseMainWindow()) {
-        throw "FileMCP.exe main window did not accept a normal close request."
+        throw "ChatToComputerMCP.exe main window did not accept a normal close request."
     }
     Start-Sleep -Seconds 2
     $Process.Refresh()
     if ($Process.HasExited) {
-        throw "FileMCP.exe exited after closing the main window instead of remaining active in the system tray."
+        throw "ChatToComputerMCP.exe exited after closing the main window instead of remaining active in the system tray."
     }
 
     Write-Host "windows-app-startup: ok"

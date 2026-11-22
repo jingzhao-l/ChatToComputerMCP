@@ -1,4 +1,4 @@
-// Appended to FileMCPApp.swift by test_swift_ui.sh to exercise private UI log behavior.
+// Appended to ChatToComputerMCPApp.swift by test_swift_ui.sh to exercise private UI log behavior.
 extension MainViewController {
 static func checkLogs() {
     let controller = MainViewController()
@@ -31,6 +31,7 @@ static func checkLogs() {
 func runLogRegressionChecks() {
     MainViewController.checkLogs()
     MainViewController.checkDeferredCredentialStartup()
+    MainViewController.checkWorkspaceCatalog()
     MainViewController.checkInterface()
     MainViewController.checkCompactLayoutMatrix()
 }
@@ -117,7 +118,7 @@ extension MainViewController {
         precondition(!controller.saveSettingsButton.isEnabled && !controller.cloudflareLoginButton.isEnabled)
         precondition(!controller.resetButton.isEnabled && controller.startButton.isEnabled)
         precondition(!controller.enableGitPushCheckbox.isEnabled && !controller.enableCodexHistoryCheckbox.isEnabled)
-        for tab in ["overview", "settings", "log", "config"] {
+        for tab in ["overview", "settings", "config", "tasks", "log"] {
             controller.tabs.selectTabViewItem(withIdentifier: tab)
             precondition(controller.navigation.selectedSegment == controller.tabs.indexOfTabViewItem(controller.tabs.selectedTabViewItem!), "Navigation follows programmatic tab selection")
             precondition(!controller.overviewChangeButton.isEnabled && controller.themeButton.isEnabled)
@@ -229,7 +230,7 @@ extension MainViewController {
                 controller.applyProviderSelection()
                 for state in states {
                     controller.updateRunButton(state: state)
-                    for tab in ["overview", "settings", "config", "log"] {
+                    for tab in ["overview", "settings", "config", "tasks", "log"] {
                         controller.tabs.selectTabViewItem(withIdentifier: tab)
                         window.setContentSize(NSSize(width: Layout.windowWidth, height: controller.preferredContentHeight))
                         controller.view.layoutSubtreeIfNeeded()
@@ -269,6 +270,42 @@ extension MainViewController {
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: controller.portField))
         precondition(controller.overviewLocalLabel.stringValue.contains("9009"))
         window.orderOut(nil)
-        print("PASS: \(cases) layout cases (2 appearances × 3 providers × 5 states × 4 tabs), long/empty paths, port summary and white action titles")
+        print("PASS: \(cases) layout cases (2 appearances × 3 providers × 5 states × 5 tabs), long/empty paths, port summary and white action titles")
+    }
+}
+
+// Multi-workspace GUI regression runs with no saved settings or credentials.
+// All temporary directories are owned by this isolated test only.
+extension MainViewController {
+    static func checkWorkspaceCatalog() {
+        let controller = MainViewController()
+        controller.loadsSavedConfiguration = false
+        _ = controller.view
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("chat-to-computer-ui-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("one")
+        let second = root.appendingPathComponent("two")
+        try! FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try! FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        controller.directoryField.stringValue = first.path
+        controller.additionalWorkspaces = [
+            WorkspaceDefinition(id: "second", name: "Two", path: second.path)]
+        controller.refreshApprovedWorkspaceMenu()
+        precondition(controller.workspaceMenu.numberOfItems == 2)
+        precondition(controller.workspaceCountLabel.stringValue == "2 approved workspaces")
+        controller.workspaceMenu.selectItem(at: 1)
+        controller.workspaceSelectionChanged()
+        precondition(controller.workspaceSelectedPath.stringValue == second.path)
+        precondition(controller.removeWorkspaceButton.isEnabled)
+        precondition(controller.copyWorkspaceScopeButton.isEnabled)
+        precondition((try? controller.validateApprovedWorkspacePaths()) != nil)
+        controller.commandCapacityMenu.selectItem(withTag: 12)
+        precondition(controller.commandCapacityMenu.selectedTag() == 12)
+        controller.additionalWorkspaces.append(
+            WorkspaceDefinition(id: "nested", name: "Nested", path: first.path))
+        precondition((try? controller.validateApprovedWorkspacePaths()) == nil)
+        precondition(controller.cancelTaskButton.isEnabled == false)
+        print("PASS: approved-workspace picker, safe root validation, task controls and 12-command GUI setting")
     }
 }

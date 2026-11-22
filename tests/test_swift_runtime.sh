@@ -1381,7 +1381,7 @@ INITIALIZE="$(curl -fsS -X POST "$BASE_URL" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}')"
 printf '%s' "$INITIALIZE" | grep -q '"protocolVersion":"2025-03-26"'
 printf '%s' "$INITIALIZE" | grep -q '"serverInfo"'
-printf '%s' "$INITIALIZE" | grep -q '"name":"filemcp"'
+printf '%s' "$INITIALIZE" | grep -q '"name":"chat-to-computer-mcp"'
 
 TOP_LEVEL_NON_OBJECT_PARAMS="$(curl -fsS -X POST "$BASE_URL" \
     -H 'Content-Type: application/json' \
@@ -2332,7 +2332,7 @@ DISCOVER="$(curl -fsS -X POST "$BASE_URL" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"server/discover\",\"params\":{\"_meta\":$MODERN_META}}")"
 printf '%s' "$DISCOVER" | grep -q '"supportedVersions":\["2026-07-28"\]'
 printf '%s' "$DISCOVER" | grep -q '"resultType":"complete"'
-printf '%s' "$DISCOVER" | grep -q '"name":"filemcp"'
+printf '%s' "$DISCOVER" | grep -q '"name":"chat-to-computer-mcp"'
 printf '%s' "$DISCOVER" | grep -q 'io.modelcontextprotocol\\/serverInfo'
 printf '%s' "$DISCOVER" | grep -q 'search_code'
 printf '%s' "$DISCOVER" | grep -q 'repo_overview'

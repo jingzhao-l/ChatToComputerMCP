@@ -1,4 +1,4 @@
-# ChatToComputer roadmap
+# ChatToComputerMCP roadmap
 
 ## R0: Source independence
 - [x] Copy original tracked code and preserve local Git history
@@ -8,6 +8,11 @@
 - [ ] Complete an explicitly tested future binary and credentials rename
 
 ## R1: Reliable shared access
+- [x] macOS multi-workspace approval and explicit scoped MCP routing
+- [x] Canonical containment, shared command limit and OAuth policy binding
+- [x] Native Tasks page with targeted cancellation
+- [x] ChatToComputerMCP brand name, icons and independent app output
+- [ ] Windows multi-workspace and command task parity
 - [x] Mac concurrent command slots configurable 4..16 (default 8)
 - [x] Cross-cwd parallel requests and overlap admission checks
 - [x] Independent cancellation and bounded command output

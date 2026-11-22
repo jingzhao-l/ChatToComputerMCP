@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Generate the FileMCP macOS .icns asset from the brand source.
+# Generate the ChatToComputerMCP macOS .icns asset from the brand source.
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
 ROOT="$PWD"
-RENDERER="$ROOT/assets/branding/render_filemcp_icon.swift"
-SOURCE="$ROOT/build/filemcp-icon.png"
+RENDERER="$ROOT/assets/branding/render_chat_to_computer_mcp_icon.swift"
+SOURCE="$ROOT/build/chat-to-computer-mcp-icon.png"
 ICONSET="$ROOT/build/AppIcon.iconset"
 OUTPUT="$ROOT/build/AppIcon.icns"
 SWIFT="${SWIFT:-swift}"
 
 [ -f "$RENDERER" ] || { echo "ERROR: missing $RENDERER" >&2; exit 1; }
 command -v "$SWIFT" >/dev/null 2>&1 || {
-    echo "ERROR: swift is required to render the FileMCP app icon." >&2
+    echo "ERROR: swift is required to render the ChatToComputerMCP app icon." >&2
     exit 1
 }
 

@@ -72,7 +72,7 @@ jobs:
             macos/LocalMCPServer.swift \
             macos/CodexHistory.swift \
             macos/LocalMCPRuntime.swift \
-            macos/FileMCPApp.swift \
+            macos/ChatToComputerMCPApp.swift \
             macos/main.swift
 
       - name: Integration tests
@@ -80,6 +80,9 @@ jobs:
 
       - name: UI state regression tests
         run: bash tests/test_swift_ui.sh
+
+      - name: Multi-workspace scope and security regression
+        run: bash tests/test_swift_workspace_scope.sh
 
       - name: Coding tool regression tests
         run: bash tests/test_swift_agent_tools.sh
@@ -91,16 +94,16 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          cmp LICENSE dist/FileMCP.app/Contents/Resources/FileMCP-LICENSE.txt
-          cmp vendor/tunnel-client/LICENSE dist/FileMCP.app/Contents/Resources/tunnel-client-LICENSE.txt
-          cmp vendor/tunnel-client/NOTICE dist/FileMCP.app/Contents/Resources/tunnel-client-NOTICE.txt
-          cmp vendor/tunnel-client/darwin-arm64/THIRD-PARTY-LICENSES.txt dist/FileMCP.app/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt
-          cmp vendor/ripgrep/darwin-arm64/rg dist/FileMCP.app/Contents/MacOS/rg
-          cmp vendor/ripgrep/COPYING dist/FileMCP.app/Contents/Resources/ripgrep-COPYING.txt
-          cmp vendor/ripgrep/LICENSE-MIT dist/FileMCP.app/Contents/Resources/ripgrep-LICENSE-MIT.txt
-          cmp vendor/ripgrep/UNLICENSE dist/FileMCP.app/Contents/Resources/ripgrep-UNLICENSE.txt
-          cmp assets/branding/filemcp-v2/app-icon-128.png dist/FileMCP.app/Contents/Resources/FileMCP-login.png
-          test -s dist/FileMCP.app/Contents/Resources/AppIcon.icns
+          cmp LICENSE dist/ChatToComputerMCP.app/Contents/Resources/ChatToComputerMCP-LICENSE.txt
+          cmp vendor/tunnel-client/LICENSE dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-LICENSE.txt
+          cmp vendor/tunnel-client/NOTICE dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-NOTICE.txt
+          cmp vendor/tunnel-client/darwin-arm64/THIRD-PARTY-LICENSES.txt dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt
+          cmp vendor/ripgrep/darwin-arm64/rg dist/ChatToComputerMCP.app/Contents/MacOS/rg
+          cmp vendor/ripgrep/COPYING dist/ChatToComputerMCP.app/Contents/Resources/ripgrep-COPYING.txt
+          cmp vendor/ripgrep/LICENSE-MIT dist/ChatToComputerMCP.app/Contents/Resources/ripgrep-LICENSE-MIT.txt
+          cmp vendor/ripgrep/UNLICENSE dist/ChatToComputerMCP.app/Contents/Resources/ripgrep-UNLICENSE.txt
+          cmp assets/branding/chat-to-computer-mcp/app-icon-128.png dist/ChatToComputerMCP.app/Contents/Resources/ChatToComputerMCP-login.png
+          test -s dist/ChatToComputerMCP.app/Contents/Resources/AppIcon.icns
 
   verify-windows:
     runs-on: windows-2025
@@ -171,13 +174,13 @@ jobs:
               throw "Release file mismatch: $Expected vs $Actual"
             }
           }
-          Assert-SameFile assets/branding/filemcp-v2/FileMCP.ico windows/assets/filemcp.ico
+          Assert-SameFile assets/branding/chat-to-computer-mcp/ChatToComputerMCP.ico windows/assets/chat-to-computer-mcp.ico
           foreach ($arch in @("x64", "arm64")) {
-            $root = "dist/windows-$arch/FileMCP"
-            if (-not (Test-Path "$root/FileMCP.exe" -PathType Leaf)) { throw "Missing FileMCP.exe for $arch." }
+            $root = "dist/windows-$arch/ChatToComputerMCP"
+            if (-not (Test-Path "$root/ChatToComputerMCP.exe" -PathType Leaf)) { throw "Missing ChatToComputerMCP.exe for $arch." }
             if (-not (Test-Path "$root/tunnel-client.exe" -PathType Leaf)) { throw "Missing tunnel-client.exe for $arch." }
             if (-not (Test-Path "$root/rg.exe" -PathType Leaf)) { throw "Missing rg.exe for $arch." }
-            Assert-SameFile LICENSE "$root/FileMCP-LICENSE.txt"
+            Assert-SameFile LICENSE "$root/ChatToComputerMCP-LICENSE.txt"
             Assert-SameFile vendor/tunnel-client/LICENSE "$root/tunnel-client-LICENSE.txt"
             Assert-SameFile vendor/tunnel-client/NOTICE "$root/tunnel-client-NOTICE.txt"
             $vendorTag = if ($arch -eq "arm64") { "windows-arm64" } else { "windows-amd64" }
@@ -191,13 +194,13 @@ jobs:
       - name: Upload Windows x64 package
         uses: actions/upload-artifact@v4
         with:
-          name: FileMCP-windows-x64
-          path: dist/FileMCP-v0.4.0-windows-x64.zip
+          name: ChatToComputerMCP-windows-x64
+          path: dist/ChatToComputerMCP-v0.4.0-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload Windows ARM64 package
         uses: actions/upload-artifact@v4
         with:
-          name: FileMCP-windows-arm64
-          path: dist/FileMCP-v0.4.0-windows-arm64.zip
+          name: ChatToComputerMCP-windows-arm64
+          path: dist/ChatToComputerMCP-v0.4.0-windows-arm64.zip
           if-no-files-found: error

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Fast development launcher for the full native Swift FileMCP app.
+# Fast development launcher for the full native Swift ChatToComputerMCP app.
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
 ROOT="$PWD"
 BUILD_DIR="${MCP_MACOS_DEV_BUILD_DIR:-$ROOT/build/macos-dev}"
-APP="$BUILD_DIR/FileMCP.app"
-UI_BIN="$APP/Contents/MacOS/FileMCP"
+APP="$BUILD_DIR/ChatToComputerMCP.app"
+UI_BIN="$APP/Contents/MacOS/ChatToComputerMCP"
 SWIFTC="${SWIFTC:-swiftc}"
 
 if ! command -v "$SWIFTC" >/dev/null 2>&1; then
@@ -34,7 +34,7 @@ done
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/build/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-cp "$ROOT/assets/branding/filemcp-v2/app-icon-128.png" "$APP/Contents/Resources/FileMCP-login.png"
+cp "$ROOT/assets/branding/chat-to-computer-mcp/app-icon-128.png" "$APP/Contents/Resources/ChatToComputerMCP-login.png"
 cp "$TUNNEL_BIN" "$APP/Contents/MacOS/tunnel-client"
 chmod 755 "$APP/Contents/MacOS/tunnel-client"
 cp "$RG_BIN" "$APP/Contents/MacOS/rg"
@@ -53,10 +53,10 @@ echo "Compiling full Swift macOS app ..."
     "$ROOT/macos/LocalMCPServer.swift" \
     "$ROOT/macos/CodexHistory.swift" \
     "$ROOT/macos/LocalMCPRuntime.swift" \
-    "$ROOT/macos/FileMCPApp.swift" \
+    "$ROOT/macos/ChatToComputerMCPApp.swift" \
     "$ROOT/macos/main.swift"
 
-echo "Starting FileMCP dev app"
+echo "Starting ChatToComputerMCP dev app"
 echo "  App bundle:    $APP"
 echo "  Swift binary:  $UI_BIN"
 echo "  tunnel-client: $APP/Contents/MacOS/tunnel-client"

@@ -23,7 +23,7 @@ out = ROOT / 'build/log-benchmark'
 out.mkdir(parents=True, exist_ok=True)
 fixture = (ROOT / 'tests/SwiftLogBenchmark.swift.in').read_text()
 baseline = subprocess.check_output(['git', 'show', f'{args.baseline}:macos/FileMCPApp.swift'], cwd=ROOT, text=True)
-for version, source in [('old', baseline), ('new', (ROOT / 'macos/FileMCPApp.swift').read_text())]:
+for version, source in [('old', baseline), ('new', (ROOT / 'macos/ChatToComputerMCPApp.swift').read_text())]:
     folder = out / version
     folder.mkdir(exist_ok=True)
     signature = 'private func flushLogBuffer() {'

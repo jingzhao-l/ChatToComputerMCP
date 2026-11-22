@@ -40,6 +40,8 @@ private enum ConfigKey {
     static let profile = "profile"
     static let port = "port"
     static let allowedDirectory = "allowedDirectory"
+    static let additionalWorkspaces = "additionalWorkspaces"
+    static let maxConcurrentCommands = "maxConcurrentCommands"
     static let healthAddress = "healthAddress"
     static let gitUserName = "gitUserName"
     static let gitUserEmail = "gitUserEmail"
@@ -297,12 +299,12 @@ private final class RuntimeStorage {
         }
     }
 
-    /// Removes every credential FileMCP has stored, including the legacy UserDefaults API key.
+    /// Removes every credential ChatToComputerMCP has stored, including the legacy UserDefaults API key.
     func deleteAllSecrets() throws {
         let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: keychainService]
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw keychainError(operation: "delete FileMCP credentials and OAuth sessions", status: status)
+            throw keychainError(operation: "delete ChatToComputerMCP credentials and OAuth sessions", status: status)
         }
     }
 
@@ -445,6 +447,16 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let profileField = NSTextField()
     private let portField = NSTextField()
     private let directoryField = NSTextField()
+    private var additionalWorkspaces: [WorkspaceDefinition] = []
+    private let workspaceMenu = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let workspaceSelectedPath = NSTextField(wrappingLabelWithString: "Default workspace")
+    private let workspaceCountLabel = NSTextField(labelWithString: "1 approved workspace")
+    private let commandCapacityMenu = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let addWorkspaceButton = NSButton(title: "Add folders…", target: nil, action: nil)
+    private let removeWorkspaceButton = NSButton(title: "Remove", target: nil, action: nil)
+    private let renameWorkspaceButton = NSButton(title: "Rename…", target: nil, action: nil)
+    private let revealWorkspaceButton = NSButton(title: "Reveal", target: nil, action: nil)
+    private let copyWorkspaceScopeButton = NSButton(title: "Copy AI scope", target: nil, action: nil)
     private let healthAddressField = NSTextField()
     private let gitUserNameField = NSTextField()
     private let gitUserEmailField = NSTextField()
@@ -465,7 +477,16 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let advancedSettingsGroup = NSStackView()
     private let apiKeyStatusLabel = NSTextField(labelWithString: "")
     private let tabs = NSTabView()
-    private let navigation = NSSegmentedControl(labels: ["Overview", "Workspace", "Connection", "Activity"], trackingMode: .selectOne, target: nil, action: nil)
+    private let navigation = NSSegmentedControl(labels: [
+        "Overview", "Workspaces", "Connection", "Tasks", "Activity"
+    ], trackingMode: .selectOne, target: nil, action: nil)
+    private let tasksSummaryLabel = NSTextField(wrappingLabelWithString: "Connect to view running commands")
+    private let taskPicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let taskDetailsLabel = NSTextField(wrappingLabelWithString: "No running tasks")
+    private let refreshTasksButton = NSButton(title: "Refresh tasks", target: nil, action: nil)
+    private let cancelTaskButton = NSButton(title: "Cancel selected", target: nil, action: nil)
+    private let openTaskActivityButton = NSButton(title: "View activity log", target: nil, action: nil)
+    private var desktopTaskList: [DesktopCommandSnapshot] = []
     private let themeButton = NSButton()
     private static let appearanceKey = "interfaceAppearance"
     private var usesDarkAppearance = false
@@ -575,7 +596,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         copyTokenButton.bezelStyle = .rounded
         copyTokenButton.target = self
         copyTokenButton.action = #selector(copyMCPToken)
-        copyTokenButton.toolTip = "Copy the private login code from this Mac. Paste it only into your FileMCP OAuth authorization page."
+        copyTokenButton.toolTip = "Copy the private login code from this Mac. Paste it only into your ChatToComputerMCP OAuth authorization page."
         copyTokenButton.translatesAutoresizingMaskIntoConstraints = false
         allowCloudflareURLSecretCheckbox.target = self
         allowCloudflareURLSecretCheckbox.action = #selector(cloudflareURLSecretChanged)
@@ -901,7 +922,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         directoryField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         directoryField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        enableCommandsCheckbox.toolTip = "Allow FileMCP to run shell/CLI commands with the current macOS user's permissions."
+        enableCommandsCheckbox.toolTip = "Allow ChatToComputerMCP to run shell/CLI commands with the current macOS user's permissions."
         let commandWarning = NSTextField(wrappingLabelWithString: "Allows ChatGPT to run shell/CLI commands with the current macOS user's permissions. Enable only for workspaces you trust.")
         commandWarning.font = .systemFont(ofSize: 12)
         commandWarning.textColor = .secondaryLabelColor
@@ -921,7 +942,16 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         extraPermissionsHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let profileRow = fieldRow("Profile", profileField)
         let portRow = fieldRow("MCP port", portField)
-        let directoryRow = fieldRow("Shared directory", directoryControls)
+        let directoryRow = fieldRow("Default workspace folder", directoryControls)
+        for count in [4, 6, 8, 10, 12, 16] {
+            commandCapacityMenu.addItem(withTitle: String(count) + " concurrent commands")
+            commandCapacityMenu.lastItem?.tag = count
+        }
+        commandCapacityMenu.selectItem(withTag: 8)
+        commandCapacityMenu.setAccessibilityLabel("Concurrent command limit")
+        commandCapacityMenu.toolTip = "Maximum simultaneous command jobs across all approved workspaces. Heavy builds should use a lower setting."
+        commandCapacityMenu.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        let capacityRow = fieldRow("Command capacity (all workspaces)", commandCapacityMenu)
         let healthRow = fieldRow("Health listener", healthAddressField)
         let gitNameRow = fieldRow("Git name", gitUserNameField)
         let gitEmailRow = fieldRow("Git email", gitUserEmailField)
@@ -936,7 +966,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         advancedSettingsGroup.isHidden = true
         advancedSettingsGroup.translatesAutoresizingMaskIntoConstraints = false
 
-        let workspaceHelp = NSTextField(wrappingLabelWithString: "Choose the folder ChatGPT can work with. File tools can read, edit and delete files inside this folder.")
+        let workspaceHelp = NSTextField(wrappingLabelWithString:
+            "Choose a default workspace for existing clients, then add separately approved folders. AI clients can explicitly select another folder using list_workspaces and workspace_call. All folders use the access permissions below.")
         workspaceHelp.font = .systemFont(ofSize: 12)
         workspaceHelp.textColor = .secondaryLabelColor
         workspaceHelp.preferredMaxLayoutWidth = Layout.contentWidth
@@ -945,12 +976,55 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         directoryField.delegate = self
         enableCommandsCheckbox.target = self
         enableCommandsCheckbox.action = #selector(workspaceOptionsChanged)
-        let workspaceTitle = NSTextField(labelWithString: "Workspace & access")
+        let workspaceTitle = NSTextField(labelWithString: "Workspaces & permissions")
         workspaceTitle.font = .systemFont(ofSize: 22, weight: .semibold)
+        workspaceMenu.target = self
+        workspaceMenu.action = #selector(workspaceSelectionChanged)
+        workspaceMenu.setAccessibilityLabel("Approved workspaces")
+        workspaceMenu.toolTip = "Select a workspace to inspect, rename, reveal, or remove"
+        workspaceMenu.addItem(withTitle: "Default workspace")
+        workspaceMenu.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        workspaceSelectedPath.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        workspaceSelectedPath.textColor = .secondaryLabelColor
+        workspaceSelectedPath.maximumNumberOfLines = 2
+        workspaceSelectedPath.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        workspaceCountLabel.textColor = .secondaryLabelColor
+        workspaceCountLabel.font = .systemFont(ofSize: 11)
+        for button in [addWorkspaceButton, removeWorkspaceButton, renameWorkspaceButton,
+                       revealWorkspaceButton, copyWorkspaceScopeButton] {
+            button.bezelStyle = .rounded
+            button.target = self
+            button.setAccessibilityLabel(button.title)
+        }
+        addWorkspaceButton.action = #selector(addApprovedWorkspaces)
+        removeWorkspaceButton.action = #selector(removeApprovedWorkspace)
+        renameWorkspaceButton.action = #selector(renameApprovedWorkspace)
+        revealWorkspaceButton.action = #selector(revealApprovedWorkspace)
+        copyWorkspaceScopeButton.action = #selector(copyApprovedWorkspaceScope)
+        let workspaceActions = NSStackView(views: [
+            addWorkspaceButton, renameWorkspaceButton, removeWorkspaceButton,
+            revealWorkspaceButton, copyWorkspaceScopeButton
+        ])
+        workspaceActions.orientation = .horizontal
+        workspaceActions.spacing = 6
+        workspaceActions.distribution = .fillProportionally
+        workspaceActions.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        let workspaceSafety = NSTextField(wrappingLabelWithString:
+            "Changes take effect after Save workspace and reconnect. Removing a workspace revokes future access but never deletes its local files. Do not approve overlapping parent/child folders.")
+        workspaceSafety.font = .systemFont(ofSize: 11)
+        workspaceSafety.textColor = .secondaryLabelColor
+        workspaceSafety.preferredMaxLayoutWidth = Layout.contentWidth
+        workspaceSafety.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let settingsForm = NSStackView(views: [
             workspaceTitle,
             workspaceHelp,
             directoryRow,
+            workspaceCountLabel,
+            workspaceMenu,
+            workspaceSelectedPath,
+            workspaceActions,
+            workspaceSafety,
+            capacityRow,
             enableCommandsCheckbox,
             commandWarning,
             enableGitPushCheckbox,
@@ -1043,12 +1117,71 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         logTab.label = "Activity"
         logTab.view = logPage
 
+        let taskTitle = NSTextField(labelWithString: "Tasks & command sessions")
+        taskTitle.font = .systemFont(ofSize: 22, weight: .semibold)
+        let taskHelp = NSTextField(wrappingLabelWithString:
+            "Inspect background commands across approved workspaces. Cancelling affects only the selected command session. Short synchronous commands are counted in capacity but cannot be cancelled here.")
+        taskHelp.font = .systemFont(ofSize: 12)
+        taskHelp.textColor = .secondaryLabelColor
+        taskHelp.preferredMaxLayoutWidth = Layout.contentWidth
+        tasksSummaryLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        tasksSummaryLabel.maximumNumberOfLines = 3
+        taskPicker.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        taskPicker.addItem(withTitle: "No command sessions")
+        taskPicker.target = self
+        taskPicker.action = #selector(selectedTaskChanged)
+        taskPicker.setAccessibilityLabel("Command sessions")
+        taskDetailsLabel.textColor = .secondaryLabelColor
+        taskDetailsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        taskDetailsLabel.maximumNumberOfLines = 3
+        taskDetailsLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        for button in [refreshTasksButton, cancelTaskButton, openTaskActivityButton] {
+            button.bezelStyle = .rounded
+            button.target = self
+            button.setAccessibilityLabel(button.title)
+        }
+        refreshTasksButton.action = #selector(refreshDesktopTasks)
+        cancelTaskButton.action = #selector(cancelSelectedDesktopTask)
+        cancelTaskButton.isEnabled = false
+        openTaskActivityButton.action = #selector(showActivity)
+        let taskActions = NSStackView(views: [
+            refreshTasksButton, cancelTaskButton, openTaskActivityButton])
+        taskActions.orientation = .horizontal
+        taskActions.spacing = 10
+        taskActions.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        let taskStack = NSStackView(views: [
+            taskTitle, taskHelp, tasksSummaryLabel, taskPicker,
+            taskDetailsLabel, taskActions])
+        taskStack.orientation = .vertical
+        taskStack.alignment = .leading
+        taskStack.spacing = 13
+        let taskScroll = NSScrollView()
+        taskScroll.hasVerticalScroller = true
+        taskScroll.scrollerStyle = .overlay
+        taskScroll.drawsBackground = false
+        let taskDocument = TopAlignedDocumentView()
+        taskDocument.translatesAutoresizingMaskIntoConstraints = false
+        taskScroll.documentView = taskDocument
+        taskDocument.addSubview(taskStack)
+        taskStack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            taskDocument.widthAnchor.constraint(equalTo: taskScroll.contentView.widthAnchor),
+            taskStack.leadingAnchor.constraint(equalTo: taskDocument.leadingAnchor, constant: 12),
+            taskStack.trailingAnchor.constraint(equalTo: taskDocument.trailingAnchor, constant: -12),
+            taskStack.topAnchor.constraint(equalTo: taskDocument.topAnchor, constant: 12),
+            taskStack.bottomAnchor.constraint(equalTo: taskDocument.bottomAnchor, constant: -12),
+        ])
+        let taskTab = NSTabViewItem(identifier: "tasks")
+        taskTab.label = "Tasks"
+        taskTab.view = taskScroll
+
         let overviewTab = NSTabViewItem(identifier: "overview")
         overviewTab.label = "Overview"
         overviewTab.view = buildOverview()
         tabs.addTabViewItem(overviewTab)
         tabs.addTabViewItem(settingsTab)
         tabs.addTabViewItem(configTab)
+        tabs.addTabViewItem(taskTab)
         tabs.addTabViewItem(logTab)
 
         let footerDivider = NSBox()
@@ -1287,10 +1420,67 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     @objc private func navigate() {
         guard tabs.tabViewItems.indices.contains(navigation.selectedSegment) else { return }
         tabs.selectTabViewItem(at: navigation.selectedSegment)
+        if tabs.selectedTabViewItem?.identifier as? String == "tasks" {
+            refreshDesktopTasks()
+        }
     }
 
     @objc private func openWorkspace() { tabs.selectTabViewItem(withIdentifier: "settings") }
     @objc private func openConnection() { tabs.selectTabViewItem(withIdentifier: "config") }
+
+    @objc private func refreshDesktopTasks() {
+        runtime.fetchDesktopCommands { [weak self] entries in
+            guard let self else { return }
+            self.desktopTaskList = entries
+            let active = entries.filter(\.active).count
+            self.tasksSummaryLabel.stringValue = active == 0
+                ? "No active command sessions. Configuration may still allow short synchronous commands."
+                : "\(active) active long-running command session\(active == 1 ? "" : "s") across your approved workspaces."
+            self.taskPicker.removeAllItems()
+            if entries.isEmpty {
+                self.taskPicker.addItem(withTitle: "No recorded command sessions")
+            } else {
+                for entry in entries {
+                    self.taskPicker.addItem(withTitle: "\(entry.workspaceName) · \(entry.requestID) · \(entry.state)")
+                }
+            }
+            self.taskPicker.selectItem(at: 0)
+            self.selectedTaskChanged()
+        }
+    }
+
+    @objc private func selectedTaskChanged() {
+        let index = taskPicker.indexOfSelectedItem
+        guard desktopTaskList.indices.contains(index) else {
+            taskDetailsLabel.stringValue = "Select Refresh tasks while connected to review live sessions."
+            cancelTaskButton.isEnabled = false
+            return
+        }
+        let task = desktopTaskList[index]
+        taskDetailsLabel.stringValue = "Workspace: \(task.workspaceName)\\nFolder: \(task.cwd)\\nState: \(task.state)"
+        taskDetailsLabel.toolTip = task.cwd
+        cancelTaskButton.isEnabled = task.active && runtime.state == .running
+    }
+
+    @objc private func cancelSelectedDesktopTask() {
+        let index = taskPicker.indexOfSelectedItem
+        guard desktopTaskList.indices.contains(index) else { return }
+        let task = desktopTaskList[index]
+        guard task.active else { return }
+        let alert = NSAlert()
+        alert.messageText = "Cancel this command session?"
+        alert.informativeText = "\(task.workspaceName) — \(task.requestID). This will stop only this task and its child processes."
+        alert.addButton(withTitle: "Cancel task")
+        alert.addButton(withTitle: "Keep running")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        cancelTaskButton.isEnabled = false
+        runtime.cancelDesktopCommand(workspaceID: task.workspaceID, sessionID: task.sessionID) { [weak self] error in
+            guard let self else { return }
+            if let error { self.showFeedback("Could not cancel session: " + error, isError: true) }
+            else { self.showFeedback("Cancellation requested for " + task.requestID) }
+            self.refreshDesktopTasks()
+        }
+    }
 
     @objc private func toggleAppearance() {
         applyAppearance(!usesDarkAppearance)
@@ -1366,12 +1556,21 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         profileField.stringValue = defaults.string(forKey: ConfigKey.profile) ?? "filemcp"
         portField.stringValue = defaults.string(forKey: ConfigKey.port) ?? "8008"
         directoryField.stringValue = defaults.string(forKey: ConfigKey.allowedDirectory) ?? defaultDirectory()
+        if let data = defaults.data(forKey: ConfigKey.additionalWorkspaces),
+           let decoded = try? JSONDecoder().decode([WorkspaceDefinition].self, from: data) {
+            additionalWorkspaces = decoded
+        } else {
+            additionalWorkspaces = []
+        }
+        refreshApprovedWorkspaceMenu()
         healthAddressField.stringValue = defaults.string(forKey: ConfigKey.healthAddress) ?? "127.0.0.1:0"
         gitUserNameField.stringValue = defaults.string(forKey: ConfigKey.gitUserName) ?? ""
         gitUserEmailField.stringValue = defaults.string(forKey: ConfigKey.gitUserEmail) ?? ""
         enableCommandsCheckbox.state = defaults.bool(forKey: ConfigKey.enableCommands) ? .on : .off
         enableGitPushCheckbox.state = defaults.bool(forKey: ConfigKey.enableGitPush) ? .on : .off
         enableCodexHistoryCheckbox.state = defaults.bool(forKey: ConfigKey.enableCodexHistory) ? .on : .off
+        let capacity = defaults.integer(forKey: ConfigKey.maxConcurrentCommands)
+        commandCapacityMenu.selectItem(withTag: [4, 6, 8, 10, 12, 16].contains(capacity) ? capacity : 8)
         updateWorkspaceSummary()
     }
 
@@ -1517,7 +1716,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
 
     @objc private func copyMCPToken() {
         guard allowCloudflareURLSecretCheckbox.state == .off, let token = try? connectionSecret() else { return }
-        copyConnectionValue(token, message: "Login code copied. Paste it only into your FileMCP authorization page.")
+        copyConnectionValue(token, message: "Login code copied. Paste it only into your ChatToComputerMCP authorization page.")
     }
 
     private func fullMCPURL() -> String? {
@@ -1669,7 +1868,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         if switching {
             let alert = NSAlert()
             alert.messageText = "Log in to a different Cloudflare account?"
-            alert.informativeText = "cloudflared keeps one login certificate. FileMCP renames the current one to a .bak file before opening the browser, and puts it back if the new login does not finish."
+            alert.informativeText = "cloudflared keeps one login certificate. ChatToComputerMCP renames the current one to a .bak file before opening the browser, and puts it back if the new login does not finish."
             alert.addButton(withTitle: "Continue")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -1831,7 +2030,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
 
     private func defaultDirectory() -> String {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/FileMCP", isDirectory: true).path
+            .appendingPathComponent("Documents/ChatToComputerMCP", isDirectory: true).path
     }
 
     private func saveConnectionConfiguration() {
@@ -1867,6 +2066,10 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         defaults.set(profileField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.profile)
         defaults.set(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.port)
         defaults.set(directoryField.stringValue, forKey: ConfigKey.allowedDirectory)
+        defaults.set(commandCapacityMenu.selectedTag(), forKey: ConfigKey.maxConcurrentCommands)
+        if let encoded = try? JSONEncoder().encode(additionalWorkspaces) {
+            defaults.set(encoded, forKey: ConfigKey.additionalWorkspaces)
+        }
         defaults.set(healthAddressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.healthAddress)
         defaults.set(gitUserNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.gitUserName)
         defaults.set(gitUserEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.gitUserEmail)
@@ -1950,6 +2153,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 profile: profileField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
                 port: port,
                 allowedDirectory: directoryField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                additionalWorkspaces: additionalWorkspaces,
+                maxConcurrentCommands: commandCapacityMenu.selectedTag(),
                 healthAddress: healthAddressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
                 gitUserName: gitUserNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
                 gitUserEmail: gitUserEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2066,7 +2271,14 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
 
         guard !directory.isEmpty else {
             tabs.selectTabViewItem(withIdentifier: "settings")
-            showError("Choose a shared directory.")
+            showError("Choose a default workspace directory.")
+            return false
+        }
+        do {
+            try validateApprovedWorkspacePaths()
+        } catch {
+            tabs.selectTabViewItem(withIdentifier: "settings")
+            showError(error.localizedDescription)
             return false
         }
         guard !profile.isEmpty else {
@@ -2131,7 +2343,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Reset all FileMCP settings?"
+        alert.messageText = "Reset all ChatToComputerMCP settings?"
         alert.informativeText = "This deletes saved settings, API keys, Cloudflare credentials, login codes and OAuth sessions from Keychain, and generated tunnel profiles. Existing clients must reconnect. Your Cloudflare tunnel itself is not touched."
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
@@ -2323,6 +2535,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         allowCloudflareURLSecretCheckbox.isEnabled = configurationIsEditable && !cloudflareBusy
         providerPopup.isEnabled = configurationIsEditable && !cloudflareBusy
         chooseDirectoryButton.isEnabled = configurationIsEditable
+        commandCapacityMenu.isEnabled = configurationIsEditable && enableCommandsCheckbox.state == .on
+        addWorkspaceButton.isEnabled = configurationIsEditable
+        refreshWorkspaceActionButtons()
         overviewChangeButton.isEnabled = configurationIsEditable
         enableCommandsCheckbox.isEnabled = configurationIsEditable
         enableGitPushCheckbox.isEnabled = configurationIsEditable
@@ -2359,9 +2574,160 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateWindowHeight()
     }
 
-    @objc private func workspaceOptionsChanged() { updateWorkspaceSummary() }
+    @objc private func workspaceOptionsChanged() {
+        commandCapacityMenu.isEnabled = configurationIsEditable && enableCommandsCheckbox.state == .on
+        updateWorkspaceSummary()
+    }
+
+    private func canonicalApprovedPath(_ value: String) -> String {
+        let expanded = NSString(string: value).expandingTildeInPath
+        return URL(fileURLWithPath: expanded, isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func validateApprovedWorkspacePaths() throws {
+        guard additionalWorkspaces.count <= 12 else {
+            throw NSError(domain: appName, code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "At most 12 additional workspaces can be approved."])
+        }
+        var roots: [String] = []
+        var identifiers: Set<String> = []
+        for entry in [WorkspaceDefinition(id: "default", name: "Default",
+                                         path: directoryField.stringValue)] + additionalWorkspaces {
+            let path = canonicalApprovedPath(entry.path)
+            var isDirectory: ObjCBool = false
+            guard !entry.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !path.isEmpty, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  !identifiers.contains(entry.id),
+                  entry.id.range(of: "^[A-Za-z0-9_-]{1,64}$", options: .regularExpression) != nil else {
+                throw NSError(domain: appName, code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "Each workspace needs a unique name, ID and existing folder."])
+            }
+            guard !roots.contains(where: {
+                $0 == path || $0.hasPrefix(path + "/") || path.hasPrefix($0 + "/")
+            }) else {
+                throw NSError(domain: appName, code: 3, userInfo: [
+                    NSLocalizedDescriptionKey: "Workspace roots cannot overlap (including resolved symlinks)."])
+            }
+            roots.append(path)
+            identifiers.insert(entry.id)
+        }
+    }
+
+    private func refreshApprovedWorkspaceMenu() {
+        let selected = workspaceMenu.indexOfSelectedItem
+        workspaceMenu.removeAllItems()
+        workspaceMenu.addItem(withTitle: "Default — " +
+            ((directoryField.stringValue as NSString).lastPathComponent.isEmpty
+                ? "Choose folder" : (directoryField.stringValue as NSString).lastPathComponent))
+        for entry in additionalWorkspaces {
+            workspaceMenu.addItem(withTitle: entry.name)
+        }
+        workspaceMenu.selectItem(at: min(max(0, selected), additionalWorkspaces.count))
+        workspaceCountLabel.stringValue = "\(1 + additionalWorkspaces.count) approved workspace\(additionalWorkspaces.isEmpty ? "" : "s")"
+        workspaceSelectionChanged()
+    }
+
+    @objc private func workspaceSelectionChanged() {
+        let selected = workspaceMenu.indexOfSelectedItem
+        let path = selected <= 0 || selected > additionalWorkspaces.count
+            ? directoryField.stringValue : additionalWorkspaces[selected - 1].path
+        workspaceSelectedPath.stringValue = path
+        workspaceSelectedPath.toolTip = path
+        refreshWorkspaceActionButtons()
+    }
+
+    private func refreshWorkspaceActionButtons() {
+        let scoped = workspaceMenu.indexOfSelectedItem > 0
+        removeWorkspaceButton.isEnabled = scoped && configurationIsEditable
+        renameWorkspaceButton.isEnabled = scoped && configurationIsEditable
+        revealWorkspaceButton.isEnabled = !workspaceSelectedPath.stringValue.isEmpty
+        copyWorkspaceScopeButton.isEnabled = scoped
+    }
+
+    @objc private func addApprovedWorkspaces() {
+        guard configurationIsEditable else { return }
+        let dialog = NSOpenPanel()
+        dialog.canChooseFiles = false
+        dialog.canChooseDirectories = true
+        dialog.allowsMultipleSelection = true
+        dialog.prompt = "Add approved workspaces"
+        guard dialog.runModal() == .OK else { return }
+        let originals = additionalWorkspaces
+        for url in dialog.urls {
+            let path = canonicalApprovedPath(url.path)
+            additionalWorkspaces.append(WorkspaceDefinition(id: UUID().uuidString.lowercased(),
+                name: url.lastPathComponent, path: path))
+        }
+        do { try validateApprovedWorkspacePaths() }
+        catch {
+            additionalWorkspaces = originals
+            showError(error.localizedDescription)
+            return
+        }
+        refreshApprovedWorkspaceMenu()
+        workspaceMenu.selectItem(at: additionalWorkspaces.count)
+        workspaceSelectionChanged()
+        showFeedback("Workspace added. Save workspace to apply it on the next connection.")
+    }
+
+    @objc private func removeApprovedWorkspace() {
+        guard configurationIsEditable else { return }
+        let selected = workspaceMenu.indexOfSelectedItem - 1
+        guard additionalWorkspaces.indices.contains(selected) else { return }
+        let entry = additionalWorkspaces[selected]
+        let alert = NSAlert()
+        alert.messageText = "Remove \(entry.name) from approved workspaces?"
+        alert.informativeText = "This only revokes access when you save and reconnect. It does not delete files."
+        alert.addButton(withTitle: "Remove access")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        additionalWorkspaces.remove(at: selected)
+        refreshApprovedWorkspaceMenu()
+        showFeedback("Removed workspace approval. Save workspace to apply changes.")
+    }
+
+    @objc private func renameApprovedWorkspace() {
+        guard configurationIsEditable else { return }
+        let selected = workspaceMenu.indexOfSelectedItem - 1
+        guard additionalWorkspaces.indices.contains(selected) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename workspace"
+        alert.informativeText = "Its stable ID and approved folder will remain unchanged."
+        let input = NSTextField(string: additionalWorkspaces[selected].name)
+        input.frame = NSRect(x: 0, y: 0, width: 300, height: 25)
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 64 else { showError("Name must be 1–64 characters."); return }
+        let old = additionalWorkspaces[selected]
+        additionalWorkspaces[selected] = WorkspaceDefinition(id: old.id, name: name, path: old.path)
+        refreshApprovedWorkspaceMenu()
+        showFeedback("Workspace renamed. Save workspace to apply.")
+    }
+
+    @objc private func revealApprovedWorkspace() {
+        let path = workspaceSelectedPath.stringValue
+        guard !path.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    @objc private func copyApprovedWorkspaceScope() {
+        let selected = workspaceMenu.indexOfSelectedItem - 1
+        guard additionalWorkspaces.indices.contains(selected) else { return }
+        let entry = additionalWorkspaces[selected]
+        let instruction = "Use list_workspaces then workspace_call with workspace_id=" + entry.id
+            + " and your tool_name/arguments to operate in " + entry.name + "."
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(instruction, forType: .string)
+        showFeedback("Workspace scope instructions copied.")
+    }
 
     private func updateWorkspaceSummary() {
+        refreshApprovedWorkspaceMenu()
         let path = directoryField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let folder = (path as NSString).lastPathComponent
         let access = enableCommandsCheckbox.state == .on ? "Files + shell commands" : "Read & write files"
@@ -2521,7 +2887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem(title: appName, action: nil, keyEquivalent: "")
         let appMenu = NSMenu(title: appName)
         let aboutItem = NSMenuItem(
-            title: "About FileMCP",
+            title: "About ChatToComputerMCP",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
@@ -2540,7 +2906,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(servicesItem)
         appMenu.addItem(.separator())
 
-        let hideItem = NSMenuItem(title: "Hide FileMCP", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideItem = NSMenuItem(title: "Hide ChatToComputerMCP", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         hideItem.target = NSApp
         appMenu.addItem(hideItem)
 
@@ -2558,7 +2924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(showAllItem)
         appMenu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit FileMCP", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit ChatToComputerMCP", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quitItem.target = NSApp
         appMenu.addItem(quitItem)
         appMenuItem.submenu = appMenu

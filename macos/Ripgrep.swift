@@ -7,7 +7,7 @@ enum RipgrepError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unavailable:
-            return "ripgrep (rg) was not found beside FileMCP; search tools are unavailable"
+            return "ripgrep (rg) was not found beside ChatToComputerMCP; search tools are unavailable"
         case let .failed(message):
             return message
         }

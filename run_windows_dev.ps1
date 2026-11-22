@@ -23,4 +23,4 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet build failed." }
 
 $Output = Join-Path $Root "windows/src/FileMCP.App/bin/Debug/net8.0-windows"
 Copy-Item $TunnelClient (Join-Path $Output "tunnel-client.exe") -Force
-Start-Process (Join-Path $Output "FileMCP.exe")
+Start-Process (Join-Path $Output "ChatToComputerMCP.exe")

@@ -1,6 +1,6 @@
 # Native macOS screenshots
 
-Captured on 2026-10-27 from the current `macos/FileMCPApp.swift` AppKit renderer, using the isolated `previewInterface()` fixture in `tests/SwiftUILogChecks.swift`.
+Captured on 2026-10-27 from the archived `macos/FileMCPApp.swift` AppKit renderer, using the isolated `previewInterface()` fixture in `tests/SwiftUILogChecks.swift`.
 
 The capture host was a temporary app bundle under ignored `build/readme-preview/`. It did not load saved settings, read Keychain or start a tunnel. The fixture disables credential, connection and account-management actions. Navigation, appearance, disclosure controls and provider selection use the actual native implementation.
 

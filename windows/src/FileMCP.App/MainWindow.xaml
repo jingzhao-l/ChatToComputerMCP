@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="ChatToComputer" Width="560" Height="510" MinWidth="560" MinHeight="510"
         WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
-        Icon="Assets/filemcp.ico">
+        Icon="Assets/chat-to-computer-mcp.ico">
     <Window.Resources>
         <Style TargetType="TextBox">
             <Setter Property="Height" Value="28"/>
@@ -53,7 +53,7 @@
                     </StackPanel>
 
                     <TextBlock Grid.Row="5" Grid.ColumnSpan="2" Foreground="Gray" TextWrapping="Wrap"
-                               Text="FileMCP connects this Windows PC to ChatGPT through OpenAI Secure MCP Tunnel. The local MCP server listens only on loopback."/>
+                               Text="ChatToComputerMCP connects this Windows PC to ChatGPT through OpenAI Secure MCP Tunnel. The local MCP server listens only on loopback."/>
 
                     <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="SaveConnectionButton" Content="Save connection" Margin="0,0,8,0" Click="SaveConnection_Click"/>
@@ -77,7 +77,7 @@
                         </Grid>
 
                         <CheckBox x:Name="EnableCommandsCheckBox" Margin="120,14,0,0" Content="Allow shell commands"
-                                  ToolTip="Allow FileMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
+                                  ToolTip="Allow ChatToComputerMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
                         <TextBlock Margin="120,5,0,0" Foreground="Gray" TextWrapping="Wrap"
                                    Text="Allows ChatGPT to run PowerShell/CLI commands with the current Windows user's permissions. Enable only for workspaces you trust."/>
 
@@ -127,7 +127,7 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" VerticalAlignment="Center" Foreground="Gray"
-                       Text="Closing the window keeps FileMCP running in the system tray."/>
+                       Text="Closing the window keeps ChatToComputerMCP running in the system tray."/>
             <Button Grid.Column="1" Content="Quit ChatToComputer" Click="Quit_Click"/>
         </Grid>
     </Grid>

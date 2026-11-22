@@ -18,8 +18,8 @@ $VendorTag = if ($Architecture -eq "arm64") { "windows-arm64" } else { "windows-
 $TunnelClient = Join-Path $Root "vendor/tunnel-client/$VendorTag/tunnel-client.exe"
 $ThirdParty = Join-Path $Root "vendor/tunnel-client/$VendorTag/THIRD-PARTY-LICENSES.txt"
 $Ripgrep = Join-Path $Root "vendor/ripgrep/$VendorTag/rg.exe"
-$PublishDir = Join-Path $Root "dist/windows-$Architecture/FileMCP"
-$ZipPath = Join-Path $Root "dist/FileMCP-v0.4.0-windows-$Architecture.zip"
+$PublishDir = Join-Path $Root "dist/windows-$Architecture/ChatToComputerMCP"
+$ZipPath = Join-Path $Root "dist/ChatToComputerMCP-v0.4.0-windows-$Architecture.zip"
 
 foreach ($Required in @(
     $TunnelClient,
@@ -52,7 +52,7 @@ dotnet publish "windows/src/FileMCP.App/FileMCP.App.csproj" `
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed." }
 
 Copy-Item $TunnelClient (Join-Path $PublishDir "tunnel-client.exe")
-Copy-Item (Join-Path $Root "LICENSE") (Join-Path $PublishDir "FileMCP-LICENSE.txt")
+Copy-Item (Join-Path $Root "LICENSE") (Join-Path $PublishDir "ChatToComputerMCP-LICENSE.txt")
 Copy-Item (Join-Path $Root "vendor/tunnel-client/LICENSE") (Join-Path $PublishDir "tunnel-client-LICENSE.txt")
 Copy-Item (Join-Path $Root "vendor/tunnel-client/NOTICE") (Join-Path $PublishDir "tunnel-client-NOTICE.txt")
 Copy-Item $ThirdParty (Join-Path $PublishDir "tunnel-client-THIRD-PARTY-LICENSES.txt")

@@ -3,16 +3,16 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>ChatToComputer</string>
+	<string>ChatToComputerMCP</string>
 	<key>CFBundleExecutable</key>
-	<string>FileMCP</string>
-	<!-- Preserved across the FileMCP rebrand so UserDefaults and Keychain data continue to resolve. -->
+	<string>ChatToComputerMCP</string>
+	<!-- Legacy com.localfilesmcp.app is retained ONLY for credentials migration. A future explicit migration will update it. -->
 	<key>CFBundleIdentifier</key>
 	<string>com.localfilesmcp.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>ChatToComputer</string>
+	<string>ChatToComputerMCP</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

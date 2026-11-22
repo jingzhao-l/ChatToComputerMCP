@@ -10,7 +10,7 @@ Configurable capacity source: d397ce9939e16f82713b91d78e1b7b63472aef5a
 Upstream PR contribution: https://github.com/anhnv02/file-mcp/pull/3
 
 The full inherited Git ancestry remains locally at
-/Volumes/Eng-Dev/ChatToComputer, branch legacy/filemcp-full-history at source SHA 599ebb4.
+/Volumes/Eng-Dev/ChatToComputerMCP, branch legacy/filemcp-full-history at source SHA 599ebb4.
 During initial private GitHub publication, the remote rejected inherited
 historical pack objects with a 'did not receive expected object' error.
 The private publication branch therefore imports the same tracked files as

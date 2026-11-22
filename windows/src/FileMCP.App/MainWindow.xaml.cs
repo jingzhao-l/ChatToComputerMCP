@@ -39,7 +39,7 @@ public partial class MainWindow : Window
         menu.Items.Add("Quit ChatToComputer", null, (_, _) => Dispatcher.Invoke(async () => await QuitAsync()));
         _trayIcon = new Forms.NotifyIcon
         {
-            Text = "FileMCP",
+            Text = "ChatToComputerMCP",
             Visible = true,
             ContextMenuStrip = menu,
             Icon = LoadApplicationIcon(),
@@ -53,7 +53,7 @@ public partial class MainWindow : Window
         try { return _settingsStore.Load(); }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, ex.Message, "FileMCP", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show(this, ex.Message, "ChatToComputerMCP", MessageBoxButton.OK, MessageBoxImage.Warning);
             return new FileMcpSettings();
         }
     }
@@ -227,13 +227,13 @@ public partial class MainWindow : Window
         LogBox.ScrollToEnd();
     }
 
-    private void ShowError(string message) => System.Windows.MessageBox.Show(this, message, "FileMCP", MessageBoxButton.OK, MessageBoxImage.Warning);
+    private void ShowError(string message) => System.Windows.MessageBox.Show(this, message, "ChatToComputerMCP", MessageBoxButton.OK, MessageBoxImage.Warning);
 
     private void ShowAbout()
     {
         System.Windows.MessageBox.Show(
             this,
-            "FileMCP 0.4.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
+            "ChatToComputerMCP 0.4.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
             "About ChatToComputer",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
