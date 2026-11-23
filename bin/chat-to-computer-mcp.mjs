@@ -97,7 +97,7 @@ function macBuild(stage) {
   return built;
 }
 function windowsBuild(stage) {
-  for(const item of ['windows','vendor','build_windows_app.ps1','LICENSE'])
+  for(const item of ['windows','vendor','build_windows_app.ps1','LICENSE','package.json'])
     copy(path.join(root,item),path.join(stage,item));
   const arch = process.arch==='arm64' ? 'arm64' : 'x64';
   if(!['arm64','x64'].includes(process.arch)) throw new Error('Requires Windows x64 or arm64');
