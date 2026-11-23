@@ -1,6 +1,7 @@
 import Foundation
 
 func runNativeUpdateChecks() throws {
+    precondition(DesktopUpdater.validVersion("0.4.0"))
     precondition(DesktopUpdater.validVersion("0.3.0"))
     precondition(DesktopUpdater.isNewer("0.3.0", than: "0.2.1"))
     precondition(!DesktopUpdater.isNewer("0.2.0", than: "0.10.0"))
