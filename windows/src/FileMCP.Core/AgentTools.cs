@@ -345,10 +345,40 @@ internal sealed partial class LocalTools
                 throw new FileMcpException("Another active command occupies this working directory");
             if (_usedRequestIds.Contains(key)) throw new FileMcpException("request_id expired; use a new ID only for an intentional new execution");
             if (_usedRequestIds.Count >= 4096) throw new FileMcpException("Runtime command quota reached; reconnect to start a fresh runtime");
-            var session = new CommandSession(key, command, cwd, timeout);
+            var receipt = _receiptLedger;
+            var scopeID = _workspaceScopeID;
+            var session = new CommandSession(key, command, cwd, timeout,
+                (state, code) =>
+                {
+                    try { receipt?.Finish(scopeID, key, state, code); }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Trace.WriteLine(
+                            "Could not persist command receipt terminal state: " + ex.GetType().Name);
+                    }
+                });
             _commandBudget.Admit(session, cwd);
-            try { session.Launch(PowerShellPath()); }
-            catch { _commandBudget.Forget(session); throw; }
+            var reserved = false;
+            try
+            {
+                receipt?.Reserve(scopeID, key);
+                reserved = receipt is not null;
+                session.Launch(PowerShellPath());
+            }
+            catch
+            {
+                _commandBudget.Forget(session);
+                if (reserved)
+                {
+                    try { receipt?.Finish(scopeID, key, "launch_failed", null); }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Trace.WriteLine(
+                            "Could not persist failed launch receipt: " + ex.GetType().Name);
+                    }
+                }
+                throw;
+            }
             _usedRequestIds.Add(key); _sessions.Add(session);
             if (_sessions.Count > 8) {
                 var old = _sessions.FirstOrDefault(item => !item.Active);
@@ -357,6 +387,9 @@ internal sealed partial class LocalTools
             return session.Snapshot(0);
         }
     }
+
+    internal IReadOnlyDictionary<string, int> CommandReceiptSummary() =>
+        _receiptLedger?.Summary() ?? new Dictionary<string, int>();
 
     internal IReadOnlyList<DesktopCommandInfo> DesktopCommandSnapshots(string workspaceID, string workspaceName)
     {
@@ -400,7 +433,8 @@ internal sealed partial class LocalTools
     }
 }
 
-internal sealed class CommandSession(string requestId, string command, string cwd, int timeout) : IDisposable
+internal sealed class CommandSession(string requestId, string command, string cwd, int timeout,
+    Action<string, int>? onFinish = null) : IDisposable
 {
     public string Id { get; } = Guid.NewGuid().ToString();
     public string RequestId { get; } = requestId;
@@ -443,11 +477,16 @@ internal sealed class CommandSession(string requestId, string command, string cw
 
     private void Finish(int code)
     {
+        string terminalState;
         lock (_gate)
         {
             _exitCode = code; _state = _stopReason ?? "exited";
+            terminalState = _state;
             _deadline?.Dispose(); _deadline = null;
         }
+        // Disk writes must not occur under the session gate because output
+        // readers and cancellation need independent progress.
+        onFinish?.Invoke(terminalState, code);
     }
 
     public void Cancel(string reason = "cancelled", bool synchronously = false)

@@ -637,7 +637,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         allowCloudflareURLSecretCheckbox.target = self
         allowCloudflareURLSecretCheckbox.action = #selector(cloudflareURLSecretChanged)
         allowCloudflareURLSecretCheckbox.toolTip = "Off by default. URL secrets can be exposed in external proxy/client logs. Use only for clients requiring the old no-auth URL flow."
-        configure(profileField, placeholder: "filemcp")
+        configure(profileField, placeholder: "chat-to-computer-mcp")
         profileField.toolTip = "Starts with a letter or number; use only letters, numbers, '.', '_' or '-' (maximum 128 characters)."
         configure(portField, placeholder: "8008")
         portField.delegate = self
@@ -1967,7 +1967,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             ?? (!savedTunnel.isEmpty && !savedTunnelIsName)
         providerPopup.selectItem(at: savedProvider == .openAI ? 0 : (usesToken ? 2 : 1))
         applyProviderSelection()
-        profileField.stringValue = defaults.string(forKey: ConfigKey.profile) ?? "filemcp"
+        profileField.stringValue = defaults.string(forKey: ConfigKey.profile) ?? "chat-to-computer-mcp"
         portField.stringValue = defaults.string(forKey: ConfigKey.port) ?? "8008"
         directoryField.stringValue = defaults.string(forKey: ConfigKey.allowedDirectory) ?? defaultDirectory()
         if let data = defaults.data(forKey: ConfigKey.additionalWorkspaces),

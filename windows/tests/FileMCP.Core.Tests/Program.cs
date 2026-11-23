@@ -41,6 +41,7 @@ internal static partial class Program
             await TestProcessRunnerAsync(root);
             await TestFilesystemAndToolsAsync(root);
             await TestAgentToolsAsync(root);
+            await TestWindowsReceiptLedgerAsync(root);
             await TestCodexHistoryAsync(root);
             await TestGitSafetyAsync(root);
             await TestHttpAndMcpAsync(root);
@@ -82,6 +83,13 @@ internal static partial class Program
         Assert(loaded.MaxConcurrentCommands == 12 && loaded.AdditionalWorkspaces.Count == 1 &&
             loaded.AdditionalWorkspaces[0].Id == "extra", "workspace and capacity settings persisted");
         Assert(!File.ReadAllText(Path.Combine(settingsDir, "settings.json")).Contains("apiKey", StringComparison.OrdinalIgnoreCase), "settings contain no API key");
+
+        Assert(new SettingsStore().SettingsPath.Contains(
+            Path.Combine("ChatToComputerMCP", "settings.json"),
+            StringComparison.OrdinalIgnoreCase), "Windows settings are in independent app directory");
+        Assert(new WindowsCredentialStore().CredentialTargetName ==
+            "ChatToComputerMCP/runtime-api-key",
+            "Windows credentials cannot reuse the old FileMCP credential target");
 
         var target = "FileMCP/tests/" + Guid.NewGuid().ToString("N");
         var credentials = new WindowsCredentialStore(target);

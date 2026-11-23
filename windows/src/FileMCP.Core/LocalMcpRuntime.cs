@@ -12,7 +12,7 @@ internal sealed class ProfileLock : IDisposable
     public ProfileLock(string profile)
     {
         var hash = Fnv1A64(Encoding.UTF8.GetBytes(profile));
-        _mutex = new Mutex(false, $@"Local\FileMCP-profile-{hash:x16}");
+        _mutex = new Mutex(false, $@"Local\ChatToComputerMCP-profile-{hash:x16}");
     }
 
     public void Acquire()
@@ -20,7 +20,7 @@ internal sealed class ProfileLock : IDisposable
         if (_held) return;
         try { _held = _mutex.WaitOne(0); }
         catch (AbandonedMutexException) { _held = true; }
-        if (!_held) throw new FileMcpException("This tunnel profile is already in use by another FileMCP instance.");
+        if (!_held) throw new FileMcpException("This tunnel profile is already in use by another ChatToComputerMCP instance.");
     }
 
     public void Dispose()
@@ -57,6 +57,9 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
 
     public LocalMcpRuntimeState State { get { lock (_stateGate) return _state; } }
 
+    public IReadOnlyDictionary<string, int> DesktopReceiptSummary() =>
+        _server?.DesktopReceiptSummary() ?? new Dictionary<string, int>();
+
     public IReadOnlyList<DesktopCommandInfo> DesktopCommandSnapshots() =>
         _server?.DesktopCommandSnapshots() ?? [];
 
@@ -88,9 +91,14 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                 var healthAddress = ValidateConfiguration(configuration);
                 _profileLock = new ProfileLock(configuration.Profile); _profileLock.Acquire();
                 var localAuthToken = MakeLocalAuthToken();
+                // A corrupt receipt journal fails closed and cannot allow
+                // blind replays. Never read FileMCP's old Application Data.
+                var receipts = configuration.EnableCommands
+                    ? new CommandReceiptLedger() : null;
                 _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
-                    configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands);
+                    configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
+                    receiptLedger: receipts);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
 
                 var tunnelClient = TunnelClientPath(); var profileDirectory = TunnelProfileDirectory();
@@ -217,7 +225,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
 
     private string TunnelProfileDirectory()
     {
-        var directory = _profileDirectoryOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FileMCP", "tunnel-profiles");
+        var directory = _profileDirectoryOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ChatToComputerMCP", "tunnel-profiles");
         Directory.CreateDirectory(directory); return directory;
     }
 
@@ -225,7 +233,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     {
         var sibling = Path.Combine(AppContext.BaseDirectory, "tunnel-client.exe"); if (File.Exists(sibling)) return sibling;
         var overridePath = Environment.GetEnvironmentVariable("MCP_TUNNEL_CLIENT"); if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath)) return overridePath;
-        throw new FileMcpException("tunnel-client.exe was not found beside FileMCP.exe.");
+        throw new FileMcpException("tunnel-client.exe was not found beside ChatToComputerMCP.exe.");
     }
 
     private static string MakeLocalAuthToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();

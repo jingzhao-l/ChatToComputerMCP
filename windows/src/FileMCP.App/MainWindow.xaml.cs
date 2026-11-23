@@ -216,6 +216,11 @@ public partial class MainWindow : Window
                 entry.Task.SessionId == selectedID);
             TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
                 "Synchronous commands count toward total capacity but are not individually cancellable here.";
+            var receipts = _runtime.DesktopReceiptSummary();
+            var interrupted = receipts.GetValueOrDefault("interrupted");
+            ReceiptStatusText.Text = interrupted > 0
+                ? interrupted + " prior command(s) interrupted or unconfirmed. Inspect actual effects before intentionally retrying; nothing was restarted automatically."
+                : "No unconfirmed prior command receipts. Completed IDs remain protected from accidental replay.";
             TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
             CancelTaskButton.IsEnabled = false;
             RevealTaskButton.IsEnabled = TaskListBox.SelectedItem is TaskRow;

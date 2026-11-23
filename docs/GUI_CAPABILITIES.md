@@ -70,3 +70,12 @@ running AI tasks or tunnels are never restarted by the updater.
 
 The native GUIs and CLI share Boolean update preferences. See
 [UPDATES.md](UPDATES.md).
+
+
+## Windows interrupted-command receipts
+
+Windows Tasks now displays the count of previous commands whose terminal
+state could not be established after restart. The local encrypted-user-context
+store records only hashed request IDs and state; the GUI warns the user to
+inspect effects rather than blindly rerun. This mirrors the Mac receipt
+warning and does not claim to reattach an orphaned process.

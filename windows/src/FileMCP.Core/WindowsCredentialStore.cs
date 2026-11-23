@@ -6,8 +6,9 @@ namespace FileMCP.Core;
 
 public sealed class WindowsCredentialStore
 {
-    private const string DefaultTargetName = "FileMCP/runtime-api-key";
+    private const string DefaultTargetName = "ChatToComputerMCP/runtime-api-key";
     private readonly string _targetName;
+    internal string CredentialTargetName => _targetName;
 
     public WindowsCredentialStore(string? targetName = null) => _targetName = targetName ?? DefaultTargetName;
 

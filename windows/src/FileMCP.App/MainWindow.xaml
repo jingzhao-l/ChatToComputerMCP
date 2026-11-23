@@ -162,9 +162,14 @@
                         <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="170"/>
                     </Grid.RowDefinitions>
-                    <TextBlock x:Name="TasksSummaryText" Grid.Row="0" Margin="0,0,0,8"
-                               Text="Connect to review tasks across approved workspaces."
-                               TextWrapping="Wrap" Foreground="Gray"/>
+                    <StackPanel Grid.Row="0" Margin="0,0,0,8">
+                        <TextBlock x:Name="TasksSummaryText"
+                                   Text="Connect to review tasks across approved workspaces."
+                                   TextWrapping="Wrap" Foreground="Gray"/>
+                        <TextBlock x:Name="ReceiptStatusText" Margin="0,5,0,0"
+                                   Text="Connect to view prior interrupted command receipts."
+                                   TextWrapping="Wrap" Foreground="DarkOrange"/>
+                    </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
                         <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
                         <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"

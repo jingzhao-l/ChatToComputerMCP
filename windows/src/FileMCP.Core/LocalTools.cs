@@ -39,6 +39,8 @@ internal sealed partial class LocalTools
     private readonly string? _safeGitEmptyFile;
     private readonly string? _safeGitHooksDirectory;
     private readonly WorkspaceCommandBudget _commandBudget;
+    private readonly CommandReceiptLedger? _receiptLedger;
+    private readonly string _workspaceScopeID;
     private readonly SemaphoreSlim _toolSlots = new(16, 16);
     private readonly SemaphoreSlim _serializedSlot = new(1, 1);
     private readonly SemaphoreSlim _commandSlots = new(16, 16);
@@ -82,9 +84,12 @@ internal sealed partial class LocalTools
     ];
 
     public LocalTools(string allowedDirectory, string gitUserName, string gitUserEmail,
-        bool enableCommands, Ripgrep? ripgrep = null, WorkspaceCommandBudget? sharedBudget = null)
+        bool enableCommands, Ripgrep? ripgrep = null, WorkspaceCommandBudget? sharedBudget = null,
+        CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default")
     {
         _resolver = new SafePathResolver(allowedDirectory);
+        _receiptLedger = receiptLedger;
+        _workspaceScopeID = workspaceScopeID;
         _commandBudget = sharedBudget ?? new WorkspaceCommandBudget(
             int.TryParse(Environment.GetEnvironmentVariable("FILEMCP_MAX_CONCURRENT_COMMANDS"), out var limit) ? limit : 8);
         _ripgrep = ripgrep ?? new Ripgrep();

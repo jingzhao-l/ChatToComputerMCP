@@ -34,13 +34,15 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     public LocalMcpServer(ushort port, string allowedDirectory, string gitUserName, string gitUserEmail,
         bool enableCommands, string localAuthToken, Action<string> log,
-        IReadOnlyList<ApprovedWorkspace>? additionalWorkspaces = null, int maxConcurrentCommands = 8)
+        IReadOnlyList<ApprovedWorkspace>? additionalWorkspaces = null, int maxConcurrentCommands = 8,
+        CommandReceiptLedger? receiptLedger = null)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         _port = port; _localAuthToken = localAuthToken; _log = log;
         var budget = new WorkspaceCommandBudget(maxConcurrentCommands);
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
-            enableCommands, sharedBudget: budget);
+            enableCommands, sharedBudget: budget, receiptLedger: receiptLedger,
+            workspaceScopeID: "default");
         var roots = new List<string> { _tools.WorkspaceRoot };
         var additional = additionalWorkspaces ?? [];
         if (additional.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
@@ -53,7 +55,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 throw new FileMcpException("Invalid or duplicate workspace ID or name");
             if (!Directory.Exists(definition.Path)) throw new FileMcpException("Approved workspace directory is missing");
             var scoped = new LocalTools(definition.Path, gitUserName, gitUserEmail,
-                enableCommands, sharedBudget: budget);
+                enableCommands, sharedBudget: budget, receiptLedger: receiptLedger,
+                workspaceScopeID: definition.Id);
             var canonical = Path.TrimEndingDirectorySeparator(scoped.WorkspaceRoot);
             if (roots.Any(root => OverlappingRoots(Path.TrimEndingDirectorySeparator(root), canonical)))
                 throw new FileMcpException("Approved workspace folders must not overlap");
@@ -111,6 +114,9 @@ public sealed class LocalMcpServer : IAsyncDisposable
         });
         return tools;
     }
+
+    public IReadOnlyDictionary<string, int> DesktopReceiptSummary() =>
+        _tools.CommandReceiptSummary();
 
     public IReadOnlyList<DesktopCommandInfo> DesktopCommandSnapshots()
     {

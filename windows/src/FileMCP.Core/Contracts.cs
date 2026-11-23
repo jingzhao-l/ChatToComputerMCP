@@ -9,7 +9,7 @@ public static class FileMcpConstants
     public const string ModernProtocolVersion = "2026-07-28";
     public static readonly string[] LegacySupportedVersions = ["2025-03-26", "2025-06-18", "2025-11-25"];
     public static readonly string[] AllSupportedVersions = [ModernProtocolVersion, "2025-11-25", "2025-06-18", "2025-03-26"];
-    public const string ServerName = "filemcp";
+    public const string ServerName = "chat-to-computer-mcp";
     public const string ServerVersion = "0.3.0-windows";
     public const string LocalAuthHeaderName = "X-FileMCP-Local-Token";
 
@@ -85,7 +85,7 @@ internal sealed record ToolCallOutput(JsonArray Content, JsonObject StructuredCo
 public sealed class FileMcpSettings
 {
     public string TunnelId { get; set; } = "";
-    public string Profile { get; set; } = "filemcp";
+    public string Profile { get; set; } = "chat-to-computer-mcp";
     public int Port { get; set; } = 8008;
     public string AllowedDirectory { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ChatToComputerMCP");

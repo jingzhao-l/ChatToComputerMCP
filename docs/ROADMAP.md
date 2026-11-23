@@ -22,6 +22,8 @@
 - [ ] Persistent client-to-task ownership after full app restart (current ownership is runtime-scoped)
 - [ ] Fair scheduling, durable task recovery and cancellation receipts
 - [x] Mac command receipt journal: durable ID tombstones, interrupted state and protected 0600/0700 audit metadata
+- [x] Windows command receipt journal: durable hashed request IDs, private per-user ACL, interrupted-state and replay protection; x64 execution verification pending CI
+- [x] Windows default settings, runtime credential target and tunnel-profile storage isolated from the historical FileMCP directories
 - [ ] Dedicated supervisor reattachment to genuinely live tasks after crash/reboot (receipt journaling is NOT reattachment)
 
 ## R2: Cross-platform and release readiness

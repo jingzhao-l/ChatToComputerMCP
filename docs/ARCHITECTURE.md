@@ -74,3 +74,21 @@ The 0.1.0 release has been verified with local Mac Swift/UI tests, npm tarball c
 
 - [Verified client identities and per-client grants](https://github.com/jingzhao-l/ChatToComputerMCP/issues/1)
 - [Durable supervisor and recovery after restart](https://github.com/jingzhao-l/ChatToComputerMCP/issues/2)
+
+
+## Windows receipt parity (2026-11-23)
+
+The Windows command runtime now uses a separate per-user
+`ChatToComputerMCP/receipts/command-receipts-v1.json` store with a protected
+user-only ACL. Request IDs are salted and hashed before persistence; no
+command text, output, credentials or full file paths are persisted.
+Durable tombstones precede launching a command; after an unclean exit a
+`starting` record becomes `interrupted` and cannot be re-executed using the
+same workspace/request ID. Terminal status is saved as a separate step.
+
+The previous Windows FileMCP default settings folder and Credential Manager
+target are not reused; the new product stores its own settings, tunnel profiles
+and runtime key. There is **no automatic import of prior FileMCP credentials**.
+
+This ledger is protection against unintended replays, not a task supervisor.
+The Windows x64 real-device CI must pass before calling runtime parity verified.

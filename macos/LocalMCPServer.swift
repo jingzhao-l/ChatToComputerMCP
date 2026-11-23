@@ -3170,8 +3170,8 @@ final class LocalMCPServer {
     private let workspaceDefinitions: [WorkspaceDefinition]
     private let workspaceTools: [String: LocalTools]
     private let log: (String) -> Void
-    private let listenerQueue = DispatchQueue(label: "com.filemcp.http-listener", qos: .userInitiated)
-    private let workQueue = DispatchQueue(label: "com.filemcp.http-workers", qos: .userInitiated, attributes: .concurrent)
+    private let listenerQueue = DispatchQueue(label: "com.chat-to-computer-mcp.http-listener", qos: .userInitiated)
+    private let workQueue = DispatchQueue(label: "com.chat-to-computer-mcp.http-workers", qos: .userInitiated, attributes: .concurrent)
     private var listener: NWListener?
     private let stateLock = NSLock()
     private var ready = false
