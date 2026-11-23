@@ -64,7 +64,7 @@ func runReceiptLedgerChecks() throws {
             "persistent receipt stores salted owner hash, never plaintext owner or request IDs")
 
     let third = try CommandReceiptLedger(fileURL: location)
-    require(third.summary()["interrupted"] == 1, "terminal records preserved across restart")
+    require(third.summary()["interrupted"] == 2, "two incomplete receipts marked interrupted across restart")
     require(third.summary()["exited"] == 1, "completed receipt persisted")
     require(third.summary()["cancelled"] == 1, "cancel receipt persisted")
     let recovered = try third.ownReceipt(scopeID: "owner-scope", requestID: "owned-request",
