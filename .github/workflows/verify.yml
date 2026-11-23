@@ -57,6 +57,9 @@ jobs:
           test -s vendor/ripgrep/LICENSE-MIT
           test -s vendor/ripgrep/UNLICENSE
 
+      - name: Guard GitHub Actions Node.js runtimes
+        run: python3 tests/check_github_actions_node_runtime.py
+
       - name: Verify cross-platform MCP tool contracts
         run: python3 tests/check_platform_tool_contracts.py
 
@@ -227,14 +230,14 @@ jobs:
           }
 
       - name: Upload Windows x64 package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ChatToComputerMCP-windows-x64
           path: dist/ChatToComputerMCP-v0.3.0-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload Windows ARM64 package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ChatToComputerMCP-windows-arm64
           path: dist/ChatToComputerMCP-v0.3.0-windows-arm64.zip
