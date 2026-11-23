@@ -203,6 +203,10 @@ jobs:
         shell: pwsh
         run: ./tests/test_windows_app.ps1
 
+      - name: Clean-user npm tarball to native Windows install smoke
+        shell: pwsh
+        run: ./tests/test_windows_npm_install.ps1
+
       - name: Verify Windows release resources
         shell: pwsh
         run: |

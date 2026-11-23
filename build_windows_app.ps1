@@ -66,4 +66,17 @@ Compress-Archive -Path (Join-Path $PublishDir "*") -DestinationPath $ZipPath -Co
 
 Write-Host "Built: $PublishDir"
 Write-Host "Archive: $ZipPath"
-Get-FileHash -Algorithm SHA256 $ZipPath
+# Use the .NET digest directly: npm invokes Windows PowerShell 5.1, where
+# Get-FileHash may not resolve in an isolated user profile (while pwsh CI did).
+$HashStream = [System.IO.File]::OpenRead($ZipPath)
+try {
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $Hash = [System.BitConverter]::ToString($Hasher.ComputeHash($HashStream)).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $Hasher.Dispose()
+    }
+} finally {
+    $HashStream.Dispose()
+}
+Write-Host "SHA256: $Hash"

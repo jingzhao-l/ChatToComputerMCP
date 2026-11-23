@@ -135,6 +135,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows release build failed" }
           ./tests/test_windows_app.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows GUI smoke failed" }
+          ./tests/test_windows_npm_install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows clean npm installation failed" }
 
   publish:
     name: Publish using npm Trusted Publisher
