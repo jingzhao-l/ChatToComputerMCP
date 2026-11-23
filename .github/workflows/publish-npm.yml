@@ -98,6 +98,7 @@ jobs:
           bash tests/test_swift_agent_tools.sh
           bash tests/test_swift_runtime.sh
           bash build_macos_app.sh
+          codesign --verify --deep --strict dist/ChatToComputerMCP.app
           test -x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP
 
   windows:

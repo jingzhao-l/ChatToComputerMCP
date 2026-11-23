@@ -68,6 +68,11 @@ verifying compatibility with existing local data.
 - Refuse a falsely successful installer that did not create the expected app.
 - Preserve the existing version when compilation fails.
 - Never export Keychain/Windows Credential Manager secrets.
+- If an existing Mac release uses an Apple signing team, a new source build with a different or ad-hoc identity is refused **before** replacing the selected version. Supply the same local `CHAT_TO_COMPUTER_CODESIGN_IDENTITY` to the CLI build or run the update manually; automatic installs do not silently drop Keychain identity.
+- Seal and strictly verify macOS .app bundles after building their resources.
+  The default ad-hoc signature is not notarized. To keep an existing Apple
+  developer team's Keychain identity during updates, explicitly pass
+  `CHAT_TO_COMPUTER_CODESIGN_IDENTITY` to the local build environment.
 - Never replace, restart or take over the old production FileMCP service.
 - Do not add an npm postinstall hook or silently enable LaunchAgent or Shell.
 - Native builds can be slow and require Swift/Xcode or .NET SDK as appropriate.

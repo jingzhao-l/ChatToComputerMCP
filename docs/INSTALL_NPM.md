@@ -30,6 +30,21 @@ To rebuild after quitting the installed instance:
 
 A previous successful release is retained. Running macOS apps are not replaced.
 
+### Local macOS bundle signing and Keychain continuity
+
+The native source installer seals the complete .app using ad-hoc signing by
+ default (no Apple developer account needed), and verifies it with
+`codesign --verify --deep --strict`. Ad-hoc signing is **not** Developer ID
+signing or notarization. To preserve Keychain access when upgrading an
+application signed by an existing Apple developer team, explicitly choose the
+same locally installed signing identity for the new source build:
+
+    CHAT_TO_COMPUTER_CODESIGN_IDENTITY='Apple Development: Your Name (TEAMID)' chat-to-computer-mcp install
+
+This option uses the current Mac's signing identity without exporting keys or
+credentials. Switching signing identity can cause a Keychain consent prompt.
+Never replace a currently running app or service in place.
+
 ## Updating native applications
 
 Both native GUIs offer **Check for updates** and **Install update** buttons,

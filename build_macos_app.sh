@@ -80,6 +80,18 @@ chmod 755 "$APP/Contents/MacOS/rg"
     "$ROOT/macos/ChatToComputerMCPApp.swift" \
     "$ROOT/macos/main.swift"
 
+# Seal the final bundle rather than relying on swiftc's linker signature.
+# The default ad-hoc identity (-) works without an Apple account; callers
+# needing continuity with an Apple-team Keychain identity must explicitly
+# supply a locally available identity. No private keys are exported.
+SIGNING_IDENTITY="${CHAT_TO_COMPUTER_CODESIGN_IDENTITY:--}"
+if [ -z "$SIGNING_IDENTITY" ]; then
+    echo 'ERROR: CHAT_TO_COMPUTER_CODESIGN_IDENTITY cannot be empty.' >&2
+    exit 1
+fi
+/usr/bin/codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+
 echo
 echo "Built: $APP"
 file "$APP/Contents/MacOS/ChatToComputerMCP" "$APP/Contents/MacOS/tunnel-client" "$APP/Contents/MacOS/rg"
