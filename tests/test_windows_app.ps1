@@ -91,7 +91,14 @@ $StartupSelfTest.Dispose()
 Write-Host "windows-login-startup-policy: ok"
 
 # Supervisor must exit immediately when not explicitly registered.
-$RunValue = Get-ItemPropertyValue -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ChatToComputerMCP" -ErrorAction SilentlyContinue
+$RunKey = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue
+$RunValue = $null
+if ($null -ne $RunKey) {
+    $RunEntry = $RunKey.PSObject.Properties["ChatToComputerMCP"]
+    if ($null -ne $RunEntry) {
+        $RunValue = $RunEntry.Value
+    }
+}
 if (-not $RunValue) {
     $SupervisorTest = Start-Process -FilePath $Exe -ArgumentList @("--supervise") -PassThru
     try {
