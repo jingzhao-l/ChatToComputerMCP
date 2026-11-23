@@ -144,15 +144,40 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                         : WindowsCloudflareRunner.Prepare(path,
                             configuration.CloudflareToken,configuration.Profile);
                     _cloudflareTokenFile = start.TokenFile;
+                    var registered = new TaskCompletionSource<bool>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
                     _tunnelProcess = ProcessRunner.StartManaged(start.Executable,start.Args,
                         null,start.Environment,
-                        output => EmitLog(Redact(output, [
-                            configuration.CloudflareToken,configuration.CloudflarePairingCode])),
-                        code => _ = Task.Run(() => TunnelDidExitAsync(code)));
-                    EmitLog("Cloudflare Tunnel process started. Confirm it registers, and that the hostname " +
-                        configuration.CloudflareHostname + " routes ALL OAuth and MCP paths to " +
-                        $"http://127.0.0.1:{configuration.Port}.\n");
+                        output =>
+                        {
+                            if (output.Contains("Registered tunnel connection",
+                                StringComparison.OrdinalIgnoreCase))
+                                registered.TrySetResult(true);
+                            EmitLog(Redact(output, [
+                                configuration.CloudflareToken,configuration.CloudflarePairingCode]));
+                        },
+                        code =>
+                        {
+                            registered.TrySetException(new FileMcpException(
+                                "Cloudflare tunnel exited before registration: " + code));
+                            _ = Task.Run(() => TunnelDidExitAsync(code));
+                        });
+                    EmitLog("Waiting for Cloudflare Tunnel to register a secure connection…\n");
+                    await registered.Task.WaitAsync(TimeSpan.FromSeconds(40),
+                        cancellationToken).ConfigureAwait(false);
+                    if (configuration.CloudflareMode == "token" &&
+                        _cloudflareTokenFile is { } pendingToken)
+                    {
+                        // The managed cloudflared process has read its token.
+                        // Remove the ephemeral file as soon as registration
+                        // succeeds; the durable copy stays only in CredMgr.
+                        WindowsCloudflareRunner.RemovePrivateToken(pendingToken);
+                        _cloudflareTokenFile = null;
+                    }
                     SetState(LocalMcpRuntimeState.Running);
+                    EmitLog("Cloudflare Tunnel registered for " +
+                        configuration.CloudflareHostname + ". Ensure DNS and "+
+                        $"ingress route all OAuth and MCP paths to http://127.0.0.1:{configuration.Port}.\n");
                     return;
                 }
 

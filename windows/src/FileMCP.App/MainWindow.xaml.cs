@@ -1088,6 +1088,17 @@ public partial class MainWindow : Window
         WorkspaceListBox.IsEnabled = editable;
         WorkspaceNameBox.IsEnabled = editable;
         CommandCapacityBox.IsEnabled = editable;
+        ProviderBox.IsEnabled = editable;
+        CloudflareHostnameBox.IsEnabled = editable;
+        CloudflareModeBox.IsEnabled = editable;
+        CloudflareTunnelNameBox.IsEnabled = editable;
+        CloudflareTokenBox.IsEnabled = editable;
+        CloudflareCreateButton.IsEnabled = editable;
+        CloudflareDeleteButton.IsEnabled = editable;
+        CloudflareRouteDnsButton.IsEnabled = editable;
+        ResetCloudflarePairingButton.IsEnabled = editable;
+        DeleteCloudflareTokenButton.IsEnabled = editable &&
+            _cloudflareCredentialStore.HasSavedApiKey;
         EnableGitPushBox.IsEnabled = editable;
         EnableCodexHistoryBox.IsEnabled = editable;
         AddWorkspaceButton.IsEnabled = editable;
