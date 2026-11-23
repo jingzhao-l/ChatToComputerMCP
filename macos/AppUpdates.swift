@@ -152,6 +152,17 @@ enum DesktopUpdater {
         return nil
     }
 
+    /// Never let npm exec search the application's inherited cwd for a
+    /// same-named, potentially older, locally linked package.
+    static func isolatedNpmWorkingDirectory() throws -> URL {
+        let location = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ctcmcp-gui-official-update-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: location, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        return location
+    }
+
     /// Installs a *different versioned app bundle* without terminating the
     /// active GUI, reconnecting the tunnel or changing permissions.
     static func install(version: String,
@@ -175,6 +186,13 @@ enum DesktopUpdater {
                     "--package=chat-to-computer-mcp@" + version, "--",
                     "chat-to-computer-mcp", "install"
                 ]
+                // npm exec can select an older local package when launched
+                // from a development repo or an app's inherited working folder.
+                // Resolve the requested official version from a fresh directory
+                // containing no package manifest; never touch the live app.
+                let isolated = try isolatedNpmWorkingDirectory()
+                defer { try? FileManager.default.removeItem(at: isolated) }
+                process.currentDirectoryURL = isolated
                 var env = ProcessInfo.processInfo.environment
                 let pathPrefix = npm.deletingLastPathComponent().path
                 env["PATH"] = pathPrefix + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" +

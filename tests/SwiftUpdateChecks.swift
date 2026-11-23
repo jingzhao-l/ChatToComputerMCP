@@ -9,6 +9,15 @@ func runNativeUpdateChecks() throws {
                     "0.3.0;rm -rf /", "00.3.0", "0.3"] {
         precondition(!DesktopUpdater.validVersion(invalid), invalid)
     }
+    let isolated = try DesktopUpdater.isolatedNpmWorkingDirectory()
+    defer { try? FileManager.default.removeItem(at: isolated) }
+    precondition(!FileManager.default.fileExists(
+        atPath: isolated.appendingPathComponent("package.json").path))
+    let isolatedPermissions = try FileManager.default.attributesOfItem(atPath: isolated.path)
+    precondition((isolatedPermissions[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+    precondition(isolated.lastPathComponent.hasPrefix("ctcmcp-gui-official-update-"))
+    print("PASS: native GUI updater isolates official npm package selection")
+
     let home = FileManager.default.temporaryDirectory.appendingPathComponent(
         "ctcmcp-update-settings-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)

@@ -31,6 +31,37 @@ export function compareVersions(a,b) {
   }
   return 0;
 }
+
+// npm 11 emits a JSON string for a single dist-tag value, while npm 12
+// can return a one-element array. Accept only a single stable version; never
+// silently choose a version from a multi-valued or malformed Registry result.
+export function parseRegistryLatest(stdout) {
+  if(typeof stdout!=='string')throw Error('npm latest is not a valid stable release version');
+  const trimmed=stdout.trim();
+  let value;
+  try {value=JSON.parse(trimmed);}
+  catch {value=trimmed;}
+  if(Array.isArray(value)) {
+    if(value.length!==1)throw Error('npm latest is not a valid stable release version');
+    value=value[0];
+  }
+  if(!validVersion(value))throw Error('npm latest is not a valid stable release version');
+  return value;
+}
+
+export function selectMacSigningIdentity(details, availableIdentities) {
+  if(typeof details!=='string'||typeof availableIdentities!=='string')
+    throw Error('Missing Mac signing identity details');
+  const team=details.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim();
+  if(!team || team==='not set')return null;
+  const authority=details.match(/^Authority=(.+)$/m)?.[1]?.trim();
+  if(!authority||
+     !/^(?:Apple Development|Developer ID Application|Apple Distribution|Mac Developer): [^\r\n]{1,200}$/.test(authority))
+    throw Error('Cannot identify the existing Mac signing certificate; set CHAT_TO_COMPUTER_CODESIGN_IDENTITY explicitly.');
+  if(!availableIdentities.includes('"'+authority+'"'))
+    throw Error('The existing Mac signing certificate is not available locally. Supply CHAT_TO_COMPUTER_CODESIGN_IDENTITY for the original signing team.');
+  return authority;
+}
 export const defaultPolicy=Object.freeze({
   checkAutomatically:false,
   installAutomatically:false

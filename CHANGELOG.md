@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## [0.4.3] — 2026-11-23
+
+- Fix the normal CLI updater on npm 12, which emits a one-element JSON
+  array for the latest dist-tag instead of npm 11's single JSON string.
+  Reject malformed or multiple-version registry responses without guessing.
+- Run CLI and native macOS GUI npm source updates from separate private,
+  manifest-free temporary directories so a development repository cannot
+  override the official requested package with an older local CLI.
+- Reuse the existing locally available macOS signing certificate when
+  upgrading a signed version, while retaining the strict original
+  signing-team compatibility gate and Keychain identity protection.
+- Validate the macOS wake notification recovery hook with an injected
+  native AppKit wake event, including immediate retry when the tunnel is
+  already stopped and a recorded follow-up poll result; exercise real vendor TCP
+  resets and polling recovery against an isolated loopback control plane.
+  Production OpenAI traffic and active user tasks are never fault-injected.
+
 ## [0.4.2] — 2026-11-23
 
 - Fix clean Windows npm installation by including `package.json` in the

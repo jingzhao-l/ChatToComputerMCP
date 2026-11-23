@@ -10,7 +10,7 @@ public static class FileMcpConstants
     public static readonly string[] LegacySupportedVersions = ["2025-03-26", "2025-06-18", "2025-11-25"];
     public static readonly string[] AllSupportedVersions = [ModernProtocolVersion, "2025-11-25", "2025-06-18", "2025-03-26"];
     public const string ServerName = "chat-to-computer-mcp";
-    public const string ServerVersion = "0.4.2-windows";
+    public const string ServerVersion = "0.4.3-windows";
     public const string LocalAuthHeaderName = "X-FileMCP-Local-Token";
 
     public const int MaxFileBytes = 5_000_000;
