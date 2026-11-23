@@ -81,7 +81,7 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 | **原生桌面 GUI** | Mac 提供概览、工作区、连接、任务、日志五个页面；Windows 有独立 WPF 界面。 |
 | **连接方案** | Mac/Windows 支持 OpenAI Secure MCP Tunnel；Mac 另有 Cloudflare 连接方式。 |
 | **本机编译安装** | npm 包提供源码和固定版本工具，在用户自己的设备上编译应用。 |
-| **可选保活** | Mac 可开启 LaunchAgent 登录自启、异常恢复及自主选择的持续保活。 |
+| **可选保活** | Mac LaunchAgent 和 Windows 用户登录监督器均支持主动开启自启、异常恢复、持续保活与自动连接；默认关闭。 |
 | **安全自动更新** | Mac/Windows GUI 都有检查和安装更新按钮，可选择自动检查/安装；版本化本机编译不打断 AI 任务。 |
 
 ## 🚀 快速开始
@@ -177,6 +177,20 @@ chat-to-computer-mcp update disable
 自动检查仅在应用运行时执行，不安装隐藏系统服务。
 
 详见 [自动更新完整说明](docs/UPDATES.md)。
+
+### Windows 可选登录自启与保活
+
+Windows 原生 Settings 现在也提供登录自启、自动连接和持续保活设置，
+仅在用户登录后工作，并非管理员 Windows 系统服务。
+
+```bash
+chat-to-computer-mcp startup enable
+chat-to-computer-mcp startup enable --auto-connect --always
+chat-to-computer-mcp startup status
+chat-to-computer-mcp startup disable
+```
+
+安装和更新不会偷偷开启此功能，也不会重启当前使用中的 MCP 服务。
 
 ## 🗂 多工作区和界面
 

@@ -42,6 +42,7 @@
 - [x] npm tarball extraction and clean-HOME macOS build smoke test
 - [x] Optional macOS LaunchAgent commands for explicit opt-in/disable
 - [x] Native macOS GUI controls for next-login startup, reconnect, always-on
+- [x] Windows per-user login supervisor, optional auto-connect and always-on, GUI/CLI controls (real Windows runtime gate pending CI)
 - [x] Mac AppKit UI regression and .NET Windows-targeting compilation
 - [x] GitHub-hosted Windows x64 integration, native WPF GUI smoke and x64/ARM64 packaging at commit 79a1abb (run 45028574644)
 - [ ] Windows ARM64 native execution and upgrade/restart matrix: unverified, owner waived as current release gate due to unavailable device

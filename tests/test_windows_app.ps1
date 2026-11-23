@@ -20,6 +20,12 @@ if ($env:OS -ne "Windows_NT") {
 # Source-side GUI assertions complement the real native window smoke below.
 # The XAML compiler also verifies that handlers exist at build time.
 $Markup = Get-Content (Join-Path $Root "windows/src/FileMCP.App/MainWindow.xaml") -Raw
+foreach ($Control in @("LoginStartupBox", "LoginAutoConnectBox",
+                        "LoginAlwaysOnBox", "ApplyLoginSettingsButton", "ReceiptStatusText")) {
+    if ($Markup -notmatch ('x:Name="' + [regex]::Escape($Control) + '"')) {
+        throw "Missing Windows startup/receipt GUI control: $Control"
+    }
+}
 foreach ($RequiredControl in @("CheckUpdatesButton", "InstallUpdateButton",
     "AutoCheckUpdatesBox", "AutoInstallUpdatesBox", "UpdateStatusText")) {
     if ($Markup -notmatch ('x:Name="' + [regex]::Escape($RequiredControl) + '"')) {
@@ -55,6 +61,36 @@ if ($LASTEXITCODE -ne 0 -or ($RipgrepVersion | Select-Object -First 1) -notmatch
 $TunnelVersion = & $TunnelClient --version
 if ($LASTEXITCODE -ne 0 -or $TunnelVersion -notmatch '^0\.0\.12\+881c9a8fed7cccbe6607cd419863bbca506b8215 ') {
     throw "Unexpected packaged tunnel-client version: $TunnelVersion"
+}
+
+# A headless, isolated startup-policy test. Does not register any real
+# HKCU startup entry or connect to an MCP tunnel.
+$StartupSelfTest = Start-Process -FilePath $Exe -ArgumentList @("--selftest-startup") -Wait -PassThru
+if ($StartupSelfTest.ExitCode -ne 0) {
+    throw "Windows startup policy self-test failed: $($StartupSelfTest.ExitCode)"
+}
+$StartupSelfTest.Dispose()
+Write-Host "windows-login-startup-policy: ok"
+
+# Supervisor must exit immediately when not explicitly registered.
+$RunValue = Get-ItemPropertyValue -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ChatToComputerMCP" -ErrorAction SilentlyContinue
+if (-not $RunValue) {
+    $SupervisorTest = Start-Process -FilePath $Exe -ArgumentList @("--supervise") -PassThru
+    try {
+        if (-not $SupervisorTest.WaitForExit(10000)) {
+            throw "Windows unconfigured supervisor did not exit"
+        }
+        if ($SupervisorTest.ExitCode -ne 0) {
+            throw "Windows unconfigured supervisor returned $($SupervisorTest.ExitCode)"
+        }
+        Write-Host "windows-disabled-supervisor: ok"
+    }
+    finally {
+        if (-not $SupervisorTest.HasExited) {
+            Stop-Process -Id $SupervisorTest.Id -Force -ErrorAction SilentlyContinue
+        }
+        $SupervisorTest.Dispose()
+    }
 }
 
 $StartedAt = Get-Date

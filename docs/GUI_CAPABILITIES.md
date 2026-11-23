@@ -79,3 +79,13 @@ state could not be established after restart. The local encrypted-user-context
 store records only hashed request IDs and state; the GUI warns the user to
 inspect effects rather than blindly rerun. This mirrors the Mac receipt
 warning and does not claim to reattach an orphaned process.
+
+
+## Windows optional login supervision
+
+Windows Settings now has opt-in **Start on sign-in**, **Auto-connect**,
+**Always-on** and **Apply login settings** controls, matching the macOS
+LaunchAgent's user-facing behaviors. Windows uses HKCU Run plus a
+non-privileged in-app supervisor; macOS uses native launchd. Both are
+user-login services, not pre-login system daemons, and do not independently
+reattach subprocesses after a reboot.

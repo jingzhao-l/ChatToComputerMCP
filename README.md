@@ -86,7 +86,7 @@ ChatGPT / Claude / another compatible MCP client
 | **Native GUI** | Mac: Overview, Workspaces, Connection, Tasks, Activity. Windows: connection, workspace and task management. |
 | **Connection providers** | OpenAI Secure MCP Tunnel on Mac/Windows; Cloudflare alternative on Mac. |
 | **Local installation** | npm ships native source and pinned vendor binaries; installation **compiles locally**. |
-| **Optional background mode** | macOS login LaunchAgent, crash recovery, optional always-on and explicit auto-connect. |
+| **Optional background mode** | Mac LaunchAgent and Windows per-user login supervisor, crash recovery, optional always-on and explicit auto-connect. |
 | **Safe auto-updates** | CLI update commands and Mac/Windows GUI buttons, optional auto-check/auto-install while app is open, with versioned native builds. |
 
 ## 🚀 Quick start
@@ -183,6 +183,23 @@ after you quit and reopen the native app. Automatic checks run while the
 app is open, not from a hidden background daemon.
 
 See [Safe update guide](docs/UPDATES.md).
+
+### Optional Windows login supervision
+
+Windows Settings offers opt-in **Start at login**, **Auto-connect** and
+**Always-on** controls. The equivalent installed CLI commands are:
+
+```bash
+chat-to-computer-mcp startup enable
+chat-to-computer-mcp startup enable --auto-connect --always
+chat-to-computer-mcp startup status
+chat-to-computer-mcp startup disable
+```
+
+This runs only after the user signs in and may restart an abnormal exit.
+It never installs a privileged Windows service or silently enables Shell.
+A native app update refreshes an existing user login registration without
+restarting the current app or its AI tasks.
 
 ## 🗂 Workspace workflow
 

@@ -91,6 +91,31 @@ associating the ChatGPT workspace, obtaining a restricted runtime Platform
 API key, connecting from the native GUI and validating a real read-only MCP
 tool call.
 
+## Windows login supervisor (optional)
+
+Windows provides an independent per-user login supervisor, matching the
+Mac LaunchAgent's user-level lifecycle. It uses the user's own HKCU Run
+registration, starts minimized to tray after sign-in, restarts abnormal
+exits, and may optionally relaunch after normal Quit. It is NOT a
+pre-login or privileged Windows system service.
+
+Native Windows Settings offers explicit **Start on login**, **Auto-connect**,
+**Always-on**, and **Apply login settings** controls. Nothing is registered
+during normal npm install.
+
+From an installed Windows CLI:
+
+    chat-to-computer-mcp startup enable
+    chat-to-computer-mcp startup enable --auto-connect --always
+    chat-to-computer-mcp startup status
+    chat-to-computer-mcp startup disable
+
+Auto-connect is OFF by default and uses only existing approved Windows
+Credential Manager and workspace settings. If FileMCP's legacy user login
+registration exists, competing auto-connect is refused. An app update
+refreshes only the already-enabled ChatToComputerMCP registration on disk,
+never restarts a currently running process.
+
 ## Safety and support
 
 - macOS local compile needs Swift and Apple SDK development tools.

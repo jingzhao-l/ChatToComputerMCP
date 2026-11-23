@@ -129,6 +129,26 @@
                             </Grid>
                         </Expander>
 
+                        <TextBlock Text="Background service (optional)" FontWeight="SemiBold"
+                                   Margin="0,18,0,7"/>
+                        <TextBlock Text="Login startup uses this user's Windows startup registration and a small in-app supervisor. Nothing is installed or started unless explicitly enabled. Crash recovery restarts an abnormal exit; Always-on also relaunches normal Quit."
+                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <CheckBox x:Name="LoginStartupBox"
+                                  Content="Start ChatToComputerMCP at user sign-in (minimized to tray)"
+                                  Click="LoginOptions_Click" Margin="0,0,0,5"/>
+                        <CheckBox x:Name="LoginAutoConnectBox"
+                                  Content="Automatically reconnect the approved MCP tunnel"
+                                  Click="LoginOptions_Click" IsEnabled="False" Margin="0,0,0,5"/>
+                        <CheckBox x:Name="LoginAlwaysOnBox"
+                                  Content="Always keep the app running (even after Quit)"
+                                  Click="LoginOptions_Click" IsEnabled="False" Margin="0,0,0,8"/>
+                        <Button x:Name="ApplyLoginSettingsButton"
+                                Content="Apply Windows login settings"
+                                HorizontalAlignment="Left"
+                                Click="ApplyLoginSettings_Click"/>
+                        <TextBlock x:Name="LoginStatusText" Foreground="Gray"
+                                   TextWrapping="Wrap" Margin="0,7,0,0"
+                                   Text="Login startup is disabled."/>
                         <TextBlock Text="Application updates" FontWeight="SemiBold"
                                    Margin="0,18,0,7"/>
                         <TextBlock Text="Updates use official npm releases and compile a separate app version. The running connection and tasks are never restarted automatically."

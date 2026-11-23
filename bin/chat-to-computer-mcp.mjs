@@ -41,6 +41,9 @@ function help() {
     ' chat-to-computer-mcp launchagent enable [--always] [--auto-connect]',
     ' chat-to-computer-mcp launchagent status',
     ' chat-to-computer-mcp launchagent disable',
+    ' chat-to-computer-mcp startup enable [--always] [--auto-connect] (Windows)',
+    ' chat-to-computer-mcp startup status (Windows)',
+    ' chat-to-computer-mcp startup disable (Windows)',
     '',
     'One-step local compilation after npm release:',
     ' npx --yes chat-to-computer-mcp@latest install',
@@ -145,6 +148,13 @@ function install(args) {
     }
     if(platform==='darwin' && selectedVersion()===version)
       migrateExistingAgentPlist();
+    if(platform==='win32') {
+      const sync=cp.spawnSync(path.join(versionDir,name+'.exe'),['--sync-startup'],
+        {timeout:15000,stdio:'ignore',windowsHide:true});
+      if(sync.error||sync.status!==0)
+        console.warn('Warning: could not update the existing Windows login registration. '+
+                     'Review the login startup settings after opening the new app.');
+    }
     console.log('Installed: ' + app);
     console.log('Not started. Use chat-to-computer-mcp open to launch.');
   } finally { fs.rmSync(stage,{recursive:true,force:true}); }
@@ -340,6 +350,30 @@ function launchagent(action,args) {
     console.log('Disable: chat-to-computer-mcp launchagent disable');
   } finally { if(fs.existsSync(tmp)) fs.unlinkSync(tmp); }
 }
+function startup(action,args) {
+  if(platform!=='win32')
+    throw Error('Windows startup is available only on Windows. On macOS use launchagent.');
+  if(action==='status') {
+    const query=probe('reg.exe',['query',
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+      '/v','ChatToComputerMCP']);
+    console.log('Windows login startup: '+(query.ok?'registered':'disabled'));
+    return;
+  }
+  if(!['enable','disable'].includes(action)) throw Error('Expected startup enable, disable or status');
+  if(action==='enable'&&args.some(x=>!['--always','--auto-connect'].includes(x)))
+    throw Error('Expected startup enable [--always] [--auto-connect]');
+  if(!fs.existsSync(selectedApp()))throw Error('Install the application locally before configuring login startup');
+  const parameters=['--manage-startup',action];
+  if(action==='enable') {
+    if(args.includes('--always'))parameters.push('--always');
+    if(args.includes('--auto-connect'))parameters.push('--auto-connect');
+  }
+  run(selectedApp(),parameters,{timeout:12000,windowsHide:true});
+  console.log('Windows login startup '+(action==='enable'?'enabled':'disabled')+
+    '. No currently running app or AI task was restarted.');
+}
+
 function main() {
   const [command='help',subcommand,...rest]=process.argv.slice(2);
   switch(command) {
@@ -361,6 +395,7 @@ function main() {
     case 'status':return status();
     case 'update':return update(subcommand,rest);
     case 'launchagent':return launchagent(subcommand,rest);
+    case 'startup':return startup(subcommand,rest);
     default:throw new Error('Unknown command: '+command);
   }
 }

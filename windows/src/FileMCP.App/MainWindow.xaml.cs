@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _settings = LoadSettingsSafely();
         ApplySettings(_settings);
+        LoadStartupSettings();
         UpdateApiKeyStatus();
         LoadUpdateSettings();
         _updateTimer.Interval = TimeSpan.FromHours(12);
@@ -298,6 +299,75 @@ public partial class MainWindow : Window
         RefreshTasks();
     }
 
+    private void LoadStartupSettings()
+    {
+        try
+        {
+            var policy = WindowsStartup.Read();
+            LoginStartupBox.IsChecked = policy.Enabled;
+            LoginAutoConnectBox.IsChecked = policy.AutoConnect;
+            LoginAlwaysOnBox.IsChecked = policy.AlwaysOn;
+            LoginAutoConnectBox.IsEnabled = policy.Enabled;
+            LoginAlwaysOnBox.IsEnabled = policy.Enabled;
+            LoginStatusText.Text = WindowsStartup.IsRegistered
+                ? "Windows login startup is registered; settings take effect at the next sign-in. "
+                  + "Current services were not restarted."
+                : "Windows login startup is disabled.";
+        }
+        catch (Exception ex)
+        {
+            LoginStartupBox.IsChecked = false;
+            LoginAutoConnectBox.IsChecked = false;
+            LoginAlwaysOnBox.IsChecked = false;
+            LoginAutoConnectBox.IsEnabled = false;
+            LoginAlwaysOnBox.IsEnabled = false;
+            LoginStatusText.Text = "Could not safely load startup policy: " + ex.Message;
+        }
+    }
+
+    private void LoginOptions_Click(object sender, RoutedEventArgs e)
+    {
+        var enabled = LoginStartupBox.IsChecked == true;
+        LoginAutoConnectBox.IsEnabled = enabled;
+        LoginAlwaysOnBox.IsEnabled = enabled;
+        if (!enabled)
+        {
+            LoginAutoConnectBox.IsChecked = false;
+            LoginAlwaysOnBox.IsChecked = false;
+        }
+    }
+
+    private void ApplyLoginSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var enabled = LoginStartupBox.IsChecked == true;
+        var autoConnect = enabled && LoginAutoConnectBox.IsChecked == true;
+        var always = enabled && LoginAlwaysOnBox.IsChecked == true;
+        if (enabled && System.Windows.MessageBox.Show(this,
+            "Enable background startup after Windows sign-in? " +
+            (autoConnect ? "The saved tunnel credentials will be reused automatically. " : "") +
+            (always ? "The app will also reopen after a normal Quit." :
+                      "The app will restart after crashes, but not after a normal Quit."),
+            "Confirm login startup",
+            MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        try
+        {
+            WindowsStartup.Configure(
+                new WindowsStartup.Policy(1, enabled, autoConnect, always),
+                Environment.ProcessPath ??
+                    throw new IOException("The current executable path is unavailable"));
+            LoadStartupSettings();
+            AppendLog(enabled
+                ? "Windows login startup saved. Changes take effect at next sign-in; no active tasks were restarted.\n"
+                : "Windows login startup disabled for future logins. Existing tasks remain unaffected.\n");
+        }
+        catch (Exception ex)
+        {
+            LoginStatusText.Text = "Could not apply login startup: " + ex.Message;
+            AppendLog("Windows login startup update failed: " + ex.Message + "\n");
+        }
+    }
+
     private void LoadUpdateSettings()
     {
         try
@@ -465,6 +535,45 @@ public partial class MainWindow : Window
         catch (Exception ex) { ShowError(ex.Message); }
     }
 
+    internal void ConnectSavedAtLogin()
+    {
+        _ = ConnectSavedAtLoginAsync();
+    }
+
+    private async Task ConnectSavedAtLoginAsync()
+    {
+        // Headless login startup must never display a blocking approval or
+        // Keychain dialog; user has already explicitly opted into it.
+        try
+        {
+            if (!LocalMcpRuntime.IsValidTunnelId(_settings.TunnelId) ||
+                !_credentialStore.HasSavedApiKey ||
+                !Directory.Exists(_settings.AllowedDirectory) ||
+                !LocalMcpRuntime.IsValidProfileName(_settings.Profile))
+            {
+                AppendLog("Login auto-connect skipped: check tunnel credentials and approved workspace settings.\n");
+                return;
+            }
+            var config = new LocalMcpConfiguration(
+                _settings.TunnelId,
+                _credentialStore.ReadApiKey(),
+                _settings.Profile,
+                checked((ushort)_settings.Port),
+                _settings.AllowedDirectory,
+                _settings.HealthAddress,
+                _settings.GitUserName,
+                _settings.GitUserEmail,
+                _settings.EnableCommands,
+                _settings.AdditionalWorkspaces.ToArray(),
+                _settings.MaxConcurrentCommands);
+            await _runtime.StartAsync(config);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Login auto-connect error: " + ex.Message + "\n");
+        }
+    }
+
     private void SaveConnection_Click(object sender, RoutedEventArgs e)
     {
         if (!ValidateConnection(requireApiKey: true)) return;
@@ -615,8 +724,10 @@ public partial class MainWindow : Window
         Hide();
     }
 
-    private void ShowFromTray()
+    internal void ShowFromTray()
     {
+        ShowInTaskbar = true;
+        ShowActivated = true;
         Show();
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();

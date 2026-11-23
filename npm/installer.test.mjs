@@ -223,3 +223,24 @@ test('CLI update check uses registry latest and never executes unverified update
     'local.chat-to-computer-mcp.plist')),false);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });
+
+test('Windows user-login startup commands are explicit and platform-scoped',()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-startup-cli-'));
+  try {
+    const before=invoke(['startup','status'],home);
+    if(process.platform==='win32') {
+      assert.equal(before.status,0,before.stderr);
+      assert.match(before.stdout,/Windows login startup:/);
+      const enable=invoke(['startup','enable'],home);
+      assert.notEqual(enable.status,0);
+      assert.match(enable.stderr,/Install the application locally first/);
+    } else {
+      assert.notEqual(before.status,0);
+      assert.match(before.stderr,/Windows startup is available only on Windows/);
+    }
+    assert.equal(fs.existsSync(path.join(home,'Library','LaunchAgents',
+      'local.chat-to-computer-mcp.plist')),false);
+    assert.equal(fs.existsSync(path.join(home,'AppData','Local',
+      'ChatToComputerMCP','startup.json')),false);
+  } finally {fs.rmSync(home,{recursive:true,force:true});}
+});
