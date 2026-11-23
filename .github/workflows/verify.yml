@@ -13,12 +13,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out full history
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Go for the pinned scanner
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.9'
           cache: false
@@ -34,7 +34,7 @@ jobs:
       MCP_HTTP_FUZZ_ITERATIONS: "40"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Verify vendored tunnel-client
         shell: bash
@@ -88,7 +88,7 @@ jobs:
         run: MCP_EXTENDED_SEARCH_TESTS=1 ./tests/test_swift_runtime.sh
 
       - name: Set up Node for source npm package tests
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           package-manager-cache: false
@@ -141,10 +141,10 @@ jobs:
       MCP_HTTP_FUZZ_ITERATIONS: "40"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up .NET 8
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
 
@@ -178,7 +178,7 @@ jobs:
         shell: pwsh
         run: dotnet build windows/FileMCP.Windows.sln -c Release -warnaserror
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           package-manager-cache: false
@@ -230,14 +230,14 @@ jobs:
           }
 
       - name: Upload Windows x64 package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ChatToComputerMCP-windows-x64
           path: dist/ChatToComputerMCP-v0.3.0-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload Windows ARM64 package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ChatToComputerMCP-windows-arm64
           path: dist/ChatToComputerMCP-v0.3.0-windows-arm64.zip
