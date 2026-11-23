@@ -41,11 +41,11 @@ foreach ($key in $Overrides.Keys) {
 $PackedArchive = $null
 $Success = $false
 try {
-    $Packed = @(& npm pack --ignore-scripts --silent)
+    $Packed = @(& npm pack --ignore-scripts --silent --pack-destination $Sandbox)
     if ($LASTEXITCODE -ne 0 -or $Packed.Count -ne 1) {
         throw "npm pack failed to produce exactly one archive"
     }
-    $PackedArchive = Join-Path $Root $Packed[0].Trim()
+    $PackedArchive = Join-Path $Sandbox $Packed[0].Trim()
     if (-not (Test-Path -LiteralPath $PackedArchive -PathType Leaf)) {
         throw "npm pack archive is missing"
     }
