@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.4.2] — 2026-11-23
+
+- Fix clean Windows npm installation by including `package.json` in the
+  temporary native source-build directory before resolving the versioned
+  Windows archive name. Native build and runtime tests already succeeded, but
+  the isolated npm installer stage lacked this manifest in v0.4.1.
+- Preserve v0.4.1 as an immutable historical tag; its npm publication was
+  blocked by the Windows clean-install release gate.
+
 ## [0.4.1] — 2026-11-23
 
 - Add macOS OpenAI tunnel supervision using the bundled client health endpoint:
