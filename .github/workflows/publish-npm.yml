@@ -140,7 +140,7 @@ jobs:
     name: Publish using npm Trusted Publisher
     needs: [package, macos, windows]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -169,9 +169,24 @@ jobs:
         run: |
           set -Eeuo pipefail
           version="$(node -p "require('./package.json').version")"
-          for retry in 1 2 3 4 5 6 7 8; do
-            found="$(npm view "chat-to-computer-mcp@$version" version 2>/dev/null || true)"
-            if [ "$found" = "$version" ]; then exit 0; fi
-            sleep 4
+          # npm can acknowledge the OIDC publish before publish-time malware
+          # scanning makes a new version visible. This is NOT a reason to
+          # re-publish an immutable version or force-push the tag.
+          for retry in $(seq 1 90); do
+            found="$(
+              npm view "chat-to-computer-mcp@$version" version --prefer-online                 --fetch-retries=0 --fetch-timeout=10000 2>/dev/null || true
+            )"
+            latest="$(
+              npm view chat-to-computer-mcp dist-tags.latest --prefer-online                 --fetch-retries=0 --fetch-timeout=10000 2>/dev/null || true
+            )"
+            if [ "$found" = "$version" ] && [ "$latest" = "$version" ]; then
+              echo "Verified npm Registry: chat-to-computer-mcp@$version is latest"
+              exit 0
+            fi
+            if [ $((retry % 6)) -eq 0 ]; then
+              echo "Published tarball accepted; Registry still processing version $version ($retry checks)."
+            fi
+            sleep 8
           done
-          echo "::error::npm read-back failed"; exit 1
+          echo "::error::npm accepted the upload, but the version/latest dist-tag did not become public within the verification window. Check Registry and publish-time scanning; do NOT re-publish or reuse the immutable version."
+          exit 1

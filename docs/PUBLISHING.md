@@ -110,7 +110,10 @@ npm's OIDC Trusted Publishing currently accepts GitHub-hosted runners; the exist
 ## Historical unpublished release tag
 
 The immutable v0.2.0 Git tag failed the Linux package-test gate before npm
-publication. It was not force-moved or reused. The complete 0.2.x feature
-release therefore proceeds as v0.2.1 after correcting cross-platform tests,
-with normal stable-tag OIDC verification. This illustrates why CI green on
-main and actual npm Registry read-back are both release gates.
+publication; it was not force-moved or reused. The 0.2.1 version remained
+an internal build. The next stable feature release was tagged v0.3.0,
+adding native update controls. Its OIDC upload was acknowledged, but the
+initial 32-second Registry read-back gate timed out while npm was processing
+the package. The workflow now waits longer and checks both the version and
+latest dist-tag; an accepted upload must never be repeated merely because
+its publication scan has not finished.
