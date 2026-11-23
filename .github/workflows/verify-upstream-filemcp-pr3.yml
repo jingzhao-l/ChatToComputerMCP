@@ -1,0 +1,51 @@
+name: Validate upstream FileMCP PR 3 pinned source
+on:
+  push:
+    branches:
+      - verify/upstream-filemcp-pr3-20261123
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos-upstream:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact contributor fork commit
+        uses: actions/checkout@v7
+        with:
+          repository: jingzhao-l/file-mcp
+          ref: a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51
+          persist-credentials: false
+      - name: Verify pinned source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51
+      - name: Mac command concurrency and security regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash tests/test_swift_agent_tools.sh
+          MCP_HTTP_FUZZ_ITERATIONS=20 bash tests/test_swift_runtime.sh
+  windows-upstream:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact contributor fork commit
+        uses: actions/checkout@v7
+        with:
+          repository: jingzhao-l/file-mcp
+          ref: a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51
+          persist-credentials: false
+      - name: Verify pinned source
+        shell: pwsh
+        run: if ((git rev-parse HEAD).Trim() -ne 'a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51') { throw 'Unexpected fork revision' }
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+      - name: Native Windows release build
+        shell: pwsh
+        run: dotnet build windows/FileMCP.Windows.sln -c Release -warnaserror
+      - name: Native Windows command and MCP integration
+        shell: pwsh
+        run: ./tests/test_windows_runtime.ps1
