@@ -61,3 +61,8 @@
 - [x] No forced app, tunnel or AI task restart during update
 - [ ] Independent always-on updater daemon (intentionally not installed)
 - [ ] Signed public installer and independent cross-restart task supervisor
+
+
+## Cross-platform parity evidence
+
+See [Platform parity audit](PLATFORM_PARITY.md). Shared MCP tool names do not prove semantic equivalence or persistent task supervision. Live account verification, Windows ARM64 hardware and signed distribution remain separate acceptance gates.

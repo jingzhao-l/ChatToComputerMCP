@@ -57,6 +57,9 @@ jobs:
           test -s vendor/ripgrep/LICENSE-MIT
           test -s vendor/ripgrep/UNLICENSE
 
+      - name: Verify cross-platform MCP tool contracts
+        run: python3 tests/check_platform_tool_contracts.py
+
       - name: Static verification
         shell: bash
         run: |
