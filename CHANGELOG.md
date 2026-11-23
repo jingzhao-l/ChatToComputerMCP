@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.4.4] — 2026-11-23
+
+- Fix macOS GUI being permanently stuck on **Connecting to OpenAI** even
+  while the real tunnel is connected. Official tunnel-client v0.0.12 omits
+  cloud polling metrics unless health is run with
+  `--require-control-plane-poll`; the GUI watchdog now requests that data.
+- Enforce the actual bundled health CLI contract in native regression tests,
+  separately validating real connected polling and preserving prior releases.
+
 ## [0.4.3] — 2026-11-23
 
 - Fix the normal CLI updater on npm 12, which emits a one-element JSON

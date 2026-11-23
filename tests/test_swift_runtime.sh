@@ -258,7 +258,7 @@ case "$1" in
         ;;
     doctor) echo "doctor-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; exit 0 ;;
     health)
-        [ "$2" = "--url-file" ] && [ -f "$3" ] && [ "$4" = "--json" ] || { echo invalid-health-probe >&2; exit 3; }
+        [ "$2" = "--url-file" ] && [ -f "$3" ] && [ "$4" = "--require-control-plane-poll" ] && [ "$5" = "--json" ] || { echo invalid-health-probe >&2; exit 3; }
         printf '{"control_plane_poll":{"value":%s,"ok":true}}\n' "$(date +%s)"
         exit 0 ;;
     run) echo "run-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; trap 'exit 0' TERM INT; while :; do sleep 1; done ;;
@@ -386,6 +386,11 @@ let invalidProxy = LocalMCPRuntime.baseTunnelEnvironment(
 precondition(invalidProxy["CONTROL_PLANE_HTTP_PROXY"] == nil)
 print("runtime-control-plane-system-proxy: ok")
 
+let healthArguments = LocalMCPRuntime.controlPlaneHealthArguments(urlFile: "/tmp/isolated-health.url")
+precondition(healthArguments == [
+    "health", "--url-file", "/tmp/isolated-health.url",
+    "--require-control-plane-poll", "--json",
+], "Missing --require-control-plane-poll would leave GUI stuck on Connecting")
 let cloudHealthJSON = Data(#"{"control_plane_poll":{"value":1795421400,"ok":true}}"#.utf8)
 precondition(TunnelCloudHealth.hasPollComponent(fromJSON: cloudHealthJSON))
 precondition(!TunnelCloudHealth.hasPollComponent(fromJSON: Data("{}".utf8)))

@@ -617,6 +617,13 @@ final class LocalMCPRuntime {
         }
     }
 
+    /// The bundled tunnel client omits the control-plane poll metric unless
+    /// health probes explicitly request it; never infer cloud connectivity
+    /// from an ordinary process liveness or readiness response.
+    static func controlPlaneHealthArguments(urlFile: String) -> [String] {
+        ["health", "--url-file", urlFile, "--require-control-plane-poll", "--json"]
+    }
+
     private func scheduleControlPlaneHealthCheck(for attempt: UUID, after delay: TimeInterval) {
         let generation = healthCheckGeneration
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -628,7 +635,7 @@ final class LocalMCPRuntime {
             if let executable = try? self.tunnelClientPath(),
                let result = try? ProcessRunner.run(
                    executable: executable,
-                   arguments: ["health", "--url-file", file.path, "--json"],
+                   arguments: Self.controlPlaneHealthArguments(urlFile: file.path),
                    environment: Self.baseTunnelEnvironment(),
                    timeoutSeconds: 5,
                    outputLimitBytes: 16_384,

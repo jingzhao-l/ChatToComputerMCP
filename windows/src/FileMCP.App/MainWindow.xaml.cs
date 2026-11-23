@@ -1180,7 +1180,7 @@ public partial class MainWindow : Window
     {
         System.Windows.MessageBox.Show(
             this,
-            "ChatToComputerMCP 0.4.3\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
+            "ChatToComputerMCP 0.4.4\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
             "About ChatToComputerMCP",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
