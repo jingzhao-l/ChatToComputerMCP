@@ -27,6 +27,9 @@ internal static class WindowsCloudflareRunner
 
     internal static string Locate()
     {
+        var testOrCustom = Environment.GetEnvironmentVariable("MCP_CLOUDFLARED");
+        if (!string.IsNullOrWhiteSpace(testOrCustom) && File.Exists(testOrCustom))
+            return Path.GetFullPath(testOrCustom);
         var candidates = new List<string> {
             Path.Combine(AppContext.BaseDirectory, "cloudflared.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
@@ -134,16 +137,24 @@ internal static class WindowsCloudflareRunner
         var yaml="ingress:\n  - hostname: "+hostname+
             "\n    service: http://127.0.0.1:"+port+
             "\n  - service: http_status:404\n";
-        File.WriteAllText(config,yaml,Encoding.UTF8);
-        if(OperatingSystem.IsWindows())
+        try
         {
-            var sid=WindowsIdentity.GetCurrent().User ??
-                throw new FileMcpException("Windows user identity unavailable");
-            var acl=new FileSecurity();
-            acl.SetAccessRuleProtection(true,false);
-            acl.AddAccessRule(new FileSystemAccessRule(sid,
-                FileSystemRights.FullControl,AccessControlType.Allow));
-            new FileInfo(config).SetAccessControl(acl);
+            File.WriteAllText(config,yaml,new UTF8Encoding(false));
+            if(OperatingSystem.IsWindows())
+            {
+                var sid=WindowsIdentity.GetCurrent().User ??
+                    throw new FileMcpException("Windows user identity unavailable");
+                var acl=new FileSecurity();
+                acl.SetAccessRuleProtection(true,false);
+                acl.AddAccessRule(new FileSystemAccessRule(sid,
+                    FileSystemRights.FullControl,AccessControlType.Allow));
+                new FileInfo(config).SetAccessControl(acl);
+            }
+        }
+        catch
+        {
+            try { File.Delete(config); } catch { }
+            throw;
         }
         var environment=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
         foreach(var key in new[] {"PATH","USERPROFILE","APPDATA","LOCALAPPDATA",
@@ -151,6 +162,12 @@ internal static class WindowsCloudflareRunner
         {
             var value=Environment.GetEnvironmentVariable(key);
             if(!string.IsNullOrEmpty(value))environment[key]=value;
+        }
+        foreach(DictionaryEntry envVar in Environment.GetEnvironmentVariables())
+        {
+            if(envVar.Key is string key && envVar.Value is string value &&
+               key.StartsWith("MCP_TEST_",StringComparison.OrdinalIgnoreCase))
+                environment[key]=value;
         }
         return new Startup(executable,
             ["tunnel","--no-autoupdate","--config",config,
@@ -206,7 +223,8 @@ internal static class WindowsCloudflareRunner
         foreach(DictionaryEntry item in Environment.GetEnvironmentVariables())
         {
             if(item.Key is string key && item.Value is string value &&
-                allowed.Contains(key))env[key]=value;
+                (allowed.Contains(key) || key.StartsWith("MCP_TEST_",StringComparison.OrdinalIgnoreCase)))
+                env[key]=value;
         }
         return new Startup(executable,
             ["tunnel","--no-autoupdate","run","--token-file",secretFile],

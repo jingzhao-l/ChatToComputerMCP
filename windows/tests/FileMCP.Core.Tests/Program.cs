@@ -24,6 +24,9 @@ internal static partial class Program
     {
         if (args.Length > 0 && args[0] is "init" or "doctor" or "run")
             return await RunFakeTunnelClientAsync(args);
+        if (args.Length > 0 && args[0] == "tunnel" &&
+            Environment.GetEnvironmentVariable("MCP_TEST_FAKE_CLOUDFLARED") == "1")
+            return await RunFakeCloudflaredAsync(args);
         if (args.Length > 0 && args[0] == "app-server" && Environment.GetEnvironmentVariable("FILEMCP_TEST_FAKE_CODEX") == "1")
             return await RunFakeCodexAppServerAsync();
 
@@ -48,6 +51,8 @@ internal static partial class Program
             await TestWorkspaceScopeAsync(root);
             await TestWindowsOAuthAsync(root);
             await TestRuntimeAsync(root);
+            await TestWindowsCloudflareRuntimeAsync(root);
+            await TestWindowsNamedCloudflareAsync(root);
             Console.WriteLine($"windows-core-tests: ok ({_assertions} assertions)");
             return 0;
         }
@@ -478,7 +483,8 @@ internal static partial class Program
         Environment.SetEnvironmentVariable("FILEMCP_TEST_CODEX_HOME", codexHome);
         try
         {
-            var tools = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid", false);
+            var tools = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid",
+                false, enableCodexHistory: true);
             var invalidMessages = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = "reject" });
             await AssertThrowsAsync(
                 () => tools.CallAsync("save_conversation_to_codex", new JsonObject { ["title"] = "invalid", ["messages"] = invalidMessages }),
@@ -561,7 +567,8 @@ internal static partial class Program
         var gitVersion = await ProcessRunner.RunAsync("git.exe", ["--version"], timeoutSeconds: 10);
         Assert(gitVersion.ExitCode == 0, "git available");
         var workspace = Path.Combine(root, "git"); Directory.CreateDirectory(workspace);
-        var tools = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid", false);
+        var tools = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid",
+            false, enableGitPush: true);
         await tools.CallAsync("git_init", Obj(("repo_path", "repo")));
         await tools.CallAsync("write_file", Obj(("relative_path", "repo/a.txt"), ("content", "one\n")));
         await tools.CallAsync("git_add", Obj(("repo_path", "repo"), ("paths", "a.txt")));
