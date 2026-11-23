@@ -44,6 +44,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private readonly string? _profileDirectoryOverride;
     private LocalMcpRuntimeState _state = LocalMcpRuntimeState.Stopped;
     private CancellationTokenSource? _startupCts;
+    private int _disposed;
     private LocalMcpServer? _server;
     private ManagedProcess? _tunnelProcess;
     private ProfileLock? _profileLock;
@@ -373,5 +374,18 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         StateChanged?.Invoke(state);
     }
 
-    public async ValueTask DisposeAsync() { await ShutdownAsync().ConfigureAwait(false); _sleepGuard.Dispose(); _serial.Dispose(); _startupCts?.Dispose(); }
+    public async ValueTask DisposeAsync()
+    {
+        // Window teardown, test harnesses and tunnel exit callbacks can
+        // request disposal concurrently. Never Cancel() a disposed CTS.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { await ShutdownAsync().ConfigureAwait(false); }
+        finally
+        {
+            _startupCts?.Dispose();
+            _startupCts = null;
+            _sleepGuard.Dispose();
+            _serial.Dispose();
+        }
+    }
 }
