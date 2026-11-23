@@ -15,11 +15,11 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: jingzhao-l/file-mcp
-          ref: a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51
+          ref: 224d7b0873669564485e32adc1296881a4b8fd9e
           persist-credentials: false
       - name: Verify pinned source
         shell: bash
-        run: test "$(git rev-parse HEAD)" = a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51
+        run: test "$(git rev-parse HEAD)" = 224d7b0873669564485e32adc1296881a4b8fd9e
       - name: Mac command concurrency and security regression
         shell: bash
         run: |
@@ -34,11 +34,11 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: jingzhao-l/file-mcp
-          ref: a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51
+          ref: 224d7b0873669564485e32adc1296881a4b8fd9e
           persist-credentials: false
       - name: Verify pinned source
         shell: pwsh
-        run: if ((git rev-parse HEAD).Trim() -ne 'a04a59e1c1ee9f1f43cd842c8e22b19d885f4f51') { throw 'Unexpected fork revision' }
+        run: if ((git rev-parse HEAD).Trim() -ne '224d7b0873669564485e32adc1296881a4b8fd9e') { throw 'Unexpected fork revision' }
       - name: Set up .NET 8
         uses: actions/setup-dotnet@v6
         with:
