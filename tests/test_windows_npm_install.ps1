@@ -20,16 +20,16 @@ if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
 $TempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $Sandbox = Join-Path $TempRoot ("ctcmcp-npm-clean-" + [Guid]::NewGuid().ToString("N"))
 $Prefix = Join-Path $Sandbox "cli"
-$Home = Join-Path $Sandbox "home"
-$LocalData = Join-Path $Home "AppData/Local"
-$Roaming = Join-Path $Home "AppData/Roaming"
+$FakeHome = Join-Path $Sandbox "home"
+$LocalData = Join-Path $FakeHome "AppData/Local"
+$Roaming = Join-Path $FakeHome "AppData/Roaming"
 $Cache = Join-Path $Sandbox "npm-cache"
-foreach ($directory in @($Prefix, $Home, $LocalData, $Roaming, $Cache)) {
+foreach ($directory in @($Prefix, $FakeHome, $LocalData, $Roaming, $Cache)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 $Overrides = @{
-    USERPROFILE = $Home
-    HOME = $Home
+    USERPROFILE = $FakeHome
+    HOME = $FakeHome
     LOCALAPPDATA = $LocalData
     APPDATA = $Roaming
     NPM_CONFIG_CACHE = $Cache
