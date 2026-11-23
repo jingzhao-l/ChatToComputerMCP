@@ -47,8 +47,15 @@ client's built-in retry/backoff self-heal first. After a further minute of
 confirmed stalling, an auto-connected session may restart its tunnel only if
 there are no active synchronous or asynchronous command jobs. Recovery
 attempts have a five-minute cooldown; deliberate Disconnect turns them off.
-After Mac wake the watchdog rechecks immediately. A healthy poll is not a
+After Mac wake the watchdog rechecks immediately; if the local service has
+already stopped or failed, it schedules an immediate reconnect. The Activity
+log records the wake recheck result when a poll health response arrives.
+The isolated macOS CI test also injects TCP resets into a separate local
+control-plane endpoint while running the real vendored tunnel-client, and
+verifies successful polling resumes without a process restart. This does not
+interrupt production ChatGPT connections. A healthy poll is not a
 substitute for a real ChatGPT tool invocation or permanent network uptime.
+Physical lid-close/sleep is not forced on a user machine during automated tests.
 
 **A new signed Mac app is waiting for Keychain access**
 

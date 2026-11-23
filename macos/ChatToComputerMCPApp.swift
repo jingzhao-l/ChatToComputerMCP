@@ -359,6 +359,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private var cloudStalledSince: Date?
     private var lastStalledRecovery: Date?
     private var recoveryInProgress = false
+    private var awaitingWakeProbe = false
 
     // Never query Keychain while AppDelegate is still constructing its first window.
     // A code-signing identity change can trigger a macOS access prompt, and a
@@ -409,6 +410,17 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         guard selectedProvider == .openAI, runtime.state == .running else { return }
         let old = cloudHealth
         cloudHealth = health
+        if awaitingWakeProbe {
+            awaitingWakeProbe = false
+            switch health {
+            case .connected:
+                appendLog("Wake recovery check: cloud polling healthy.\n")
+            case .awaitingPoll:
+                appendLog("Wake recovery check: waiting for a successful cloud poll.\n")
+            case .stalled:
+                appendLog("Wake recovery check: control plane stalled; automatic recovery remains active.\n")
+            }
+        }
         if health == .connected {
             cloudStalledSince = nil
             reconnectDelay = 3 // A spawned child alone must not reset backoff.
@@ -441,7 +453,16 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     @objc private func handleSystemWake(_ notification: Notification) {
         guard automaticConnectionEnabled else { return }
         appendLog("Mac resumed; checking OpenAI tunnel health.\n")
-        runtime.checkCloudHealthNow()
+        switch runtime.state {
+        case .running:
+            awaitingWakeProbe = true
+            runtime.checkCloudHealthNow()
+        case .stopped, .failed:
+            appendLog("Mac resumed while disconnected; attempting immediate recovery.\n")
+            attemptAutomaticConnection(after: 0)
+        case .starting, .stopping:
+            break
+        }
     }
     private var configurationIsEditable = true
     private var hasStoredAPIKey = false

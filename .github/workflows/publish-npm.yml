@@ -99,6 +99,7 @@ jobs:
           bash tests/test_swift_receipt_ledger.sh
           bash tests/test_swift_agent_tools.sh
           bash tests/test_swift_runtime.sh
+          python3 tests/test_tunnel_transport_recovery.py
           bash build_macos_app.sh
           codesign --verify --deep --strict dist/ChatToComputerMCP.app
           test -x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP

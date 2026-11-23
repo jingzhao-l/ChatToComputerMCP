@@ -7,7 +7,7 @@ import url from 'node:url';
 import cp from 'node:child_process';
 import {validVersion,compareVersions,registry,packageName,
   installedVersion,policyFile,readPolicy,writePolicy,activateMacRelease,
-  assertMacSigningTeamCompatible
+  assertMacSigningTeamCompatible,parseRegistryLatest,selectMacSigningIdentity
 } from './update-support.mjs';
 
 const root = path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
@@ -90,7 +90,34 @@ function macBuild(stage) {
     }
     copy(path.join(root,item),path.join(stage,item));
   }
-  run('/bin/bash',['build_macos_app.sh'],{cwd:stage,env:process.env,timeout:900000});
+  const signingEnvironment={...process.env};
+  if(!signingEnvironment.CHAT_TO_COMPUTER_CODESIGN_IDENTITY) {
+    // Source builds are signed locally. When upgrading a Team-signed app,
+    // reuse an available signing certificate from the exact existing Team
+    // instead of silently producing an ad-hoc bundle that cannot access the
+    // previous Keychain identity.
+    const previousVersion=selectedVersion();
+    if(previousVersion) {
+      const previousBundle=path.join(releaseParent,previousVersion,name+'.app');
+      if(fs.existsSync(previousBundle)) {
+        const signature=cp.spawnSync('/usr/bin/codesign',
+          ['-dv','--verbose=2',previousBundle],{encoding:'utf8',timeout:15000});
+        if(signature.error||signature.status!==0)
+          throw Error('Cannot inspect currently installed Mac signing identity');
+        const details=signature.stderr+'\n'+signature.stdout;
+        const team=details.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim();
+        if(team && team!=='not set') {
+          const identities=cp.spawnSync('/usr/bin/security',
+            ['find-identity','-v','-p','codesigning'],{encoding:'utf8',timeout:15000});
+          if(identities.error||identities.status!==0)
+            throw Error('Could not inspect locally available Mac signing certificates');
+          const matching=selectMacSigningIdentity(details,identities.stdout);
+          if(matching)signingEnvironment.CHAT_TO_COMPUTER_CODESIGN_IDENTITY=matching;
+        }
+      }
+    }
+  }
+  run('/bin/bash',['build_macos_app.sh'],{cwd:stage,env:signingEnvironment,timeout:900000});
   const built=path.join(stage,'dist',name+'.app');
   if(!fs.existsSync(path.join(built,'Contents','MacOS',name))) throw new Error('Mac executable missing after build');
   run('/usr/bin/codesign',['--verify','--deep','--strict',built],{stdio:'ignore',timeout:20000});
@@ -227,12 +254,7 @@ function registryLatest() {
   if(result.error||result.status!==0)
     throw Error('Cannot check npm Registry: '+(result.error?.message||
       (result.stderr||'npm view failed').slice(0,240)));
-  let latest;
-  try {latest=JSON.parse(result.stdout.trim());}
-  catch {latest=result.stdout.trim();}
-  if(!validVersion(latest))
-    throw Error('npm latest is not a valid stable release version');
-  return latest;
+  return parseRegistryLatest(result.stdout);
 }
 function update(action,args) {
   const file=policyFile(platform,home);
@@ -282,11 +304,19 @@ function update(action,args) {
     install([]);
   } else {
     const packageSpec=packageName+'@'+latest;
-    const result=updaterNpm(['exec','--yes','--registry='+registry,
-      '--package='+packageSpec,'--','chat-to-computer-mcp','install'],
-      {stdio:'inherit',timeout:30*60*1000});
-    if(result.error||result.status!==0)
-      throw Error('Failed to build updated app: '+(result.error?.message||String(result.status)));
+    // npm exec may otherwise pick a same-named CLI from the caller's source
+    // repository. Run from a fresh, manifest-free directory so it resolves
+    // exactly the requested official npm package, not a local older build.
+    const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-official-update-'));
+    try {
+      const result=updaterNpm(['exec','--yes','--registry='+registry,
+        '--package='+packageSpec,'--','chat-to-computer-mcp','install'],
+        {stdio:'inherit',timeout:30*60*1000,cwd:isolated});
+      if(result.error||result.status!==0)
+        throw Error('Failed to build updated app: '+(result.error?.message||String(result.status)));
+    } finally {
+      fs.rmSync(isolated,{recursive:true,force:true});
+    }
   }
   if(installedVersion(releaseParent,platform)!==latest)
     throw Error('Updater returned success but the expected release was not installed.');

@@ -29,6 +29,28 @@ static func checkLogs() {
 
 }
 extension MainViewController {
+    static func checkWakeRecoveryNotification() {
+        let controller = MainViewController()
+        controller.loadsSavedConfiguration = false
+        _ = controller.view
+        controller.configureRuntime()
+        controller.automaticConnectionEnabled = false
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification, object: NSWorkspace.shared)
+        controller.flushLogBuffer()
+        precondition(!controller.logView.string.contains("Mac resumed; checking OpenAI tunnel health."))
+        controller.automaticConnectionEnabled = true
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification, object: NSWorkspace.shared)
+        controller.flushLogBuffer()
+        precondition(controller.logView.string.contains("Mac resumed; checking OpenAI tunnel health."))
+        precondition(controller.logView.string.contains("attempting immediate recovery"))
+        precondition(controller.reconnectTask != nil)
+        controller.reconnectTask?.cancel()
+        controller.automaticConnectionEnabled = false
+        print("PASS: injected Mac wake event triggers health recheck only when recovery is enabled")
+    }
+
     static func checkCloudHealthPresentation() {
         let controller = MainViewController()
         controller.loadsSavedConfiguration = false
@@ -51,6 +73,7 @@ extension MainViewController {
 
 func runLogRegressionChecks() {
     MainViewController.checkCloudHealthPresentation()
+    MainViewController.checkWakeRecoveryNotification()
     let preserved = ChatToComputerLaunchAgent.launchEnvironment(
         previous: [
             "CONTROL_PLANE_HTTP_PROXY": "http://localhost:15556",

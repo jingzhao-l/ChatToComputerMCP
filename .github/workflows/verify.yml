@@ -93,6 +93,9 @@ jobs:
       - name: Integration tests
         run: MCP_EXTENDED_SEARCH_TESTS=1 ./tests/test_swift_runtime.sh
 
+      - name: Isolated real tunnel-client TCP reset and recovery
+        run: python3 tests/test_tunnel_transport_recovery.py
+
       - name: Set up Node for source npm package tests
         uses: actions/setup-node@v7
         with:

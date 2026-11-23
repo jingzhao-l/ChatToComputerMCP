@@ -6,7 +6,8 @@ import path from 'node:path';
 import cp from 'node:child_process';
 import url from 'node:url';
 import {validVersion,compareVersions,readPolicy,writePolicy,
-  policyFile,installedVersion,activateMacRelease,assertMacSigningTeamCompatible
+  policyFile,installedVersion,activateMacRelease,assertMacSigningTeamCompatible,
+  parseRegistryLatest,selectMacSigningIdentity
 } from '../bin/update-support.mjs';
 const root=path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
 const entry=path.join(root,'bin','chat-to-computer-mcp.mjs');
@@ -174,6 +175,32 @@ test('updater version ordering rejects malicious or prerelease input',()=>{
   assert.equal(validVersion(x),false,x);
  }
 });
+test('npm Registry latest accepts npm 11 and npm 12 JSON shapes, rejects ambiguity',()=>{
+  for (const [output,expected] of [
+    ['"0.4.3"','0.4.3'],
+    ['["0.4.3"]','0.4.3'],
+    ['0.4.3\n','0.4.3'],
+    ['["1.2.3"]\n','1.2.3']
+  ]) assert.equal(parseRegistryLatest(output),expected);
+  for(const bad of [
+    '[]','["0.4.3","0.4.2"]','{"latest":"0.4.3"}',
+    '"0.4.3-beta.1"','["not-a-version"]','["0.4.3",null]',
+    '0.4.3\n0.4.2','null','42', ''
+  ]) assert.throws(()=>parseRegistryLatest(bad),/not a valid stable release version/);
+});
+
+test('Mac update auto-signing reuses only a locally available original certificate',()=>{
+  const identity='Apple Development: Test Developer (EXAMPLE1)';
+  const info='Identifier=com.example.app\nAuthority='+identity+'\nTeamIdentifier=EXAMPLETEAM\n';
+  const available='  1) ABCDEF123 "'+identity+'"\n    1 valid identities found\n';
+  assert.equal(selectMacSigningIdentity(info,available),identity);
+  assert.equal(selectMacSigningIdentity('Identifier=com.example.app\nTeamIdentifier=not set',''),null);
+  assert.throws(()=>selectMacSigningIdentity(info,'0 valid identities found'),
+    /not available locally/);
+  assert.throws(()=>selectMacSigningIdentity('TeamIdentifier=EXAMPLETEAM\nAuthority=Unknown Cert',available),
+    /Cannot identify/);
+});
+
 test('updater policy is opt-in, stored locally, and defaults to disabled',()=>{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-update-policy-'));
  try {
@@ -264,6 +291,48 @@ test('CLI update check uses registry latest and never executes unverified update
   assert.equal(fs.existsSync(path.join(temp,'Library','LaunchAgents',
     'local.chat-to-computer-mcp.plist')),false);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
+});
+
+test('npm 12 update check and install select official CLI in isolated cwd',()=>{
+  if(process.platform==='win32')return;
+  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-npm12-update-'));
+  try {
+    const bin=path.join(temp,'bin');
+    fs.mkdirSync(bin);
+    const npm=path.join(bin,'npm');
+    const calls=path.join(temp,'npm-calls');
+    const selectedCwd=path.join(temp,'selected-cwd');
+    fs.writeFileSync(npm,[
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "'+calls+'"',
+      'if [ "$1" = "view" ]; then printf \'%s\\n\' "$CTCMCP_TEST_LATEST_JSON"; exit 0; fi',
+      'if [ "$1" = "exec" ]; then',
+      '  pwd > "'+selectedCwd+'"',
+      '  test ! -f package.json || exit 83',
+      '  exit 0',
+      'fi',
+      'exit 4',
+      ''
+    ].join('\n'));
+    fs.chmodSync(npm,0o755);
+    const env={PATH:bin+path.delimiter+process.env.PATH,
+      CTCMCP_TEST_LATEST_JSON:'["99.0.0"]'};
+    const checked=invoke(['update','check'],temp,env);
+    assert.equal(checked.status,0,checked.stderr);
+    assert.match(checked.stdout,/npm latest: 99\.0\.0/);
+    const installed=invoke(['update','install'],temp,env);
+    assert.notEqual(installed.status,0);
+    assert.match(installed.stderr,/expected release was not installed/);
+    const cwd=fs.readFileSync(selectedCwd,'utf8').trim();
+    assert.notEqual(cwd,root);
+    assert.match(path.basename(cwd),/^ctcmcp-official-update-/);
+    assert.match(fs.readFileSync(calls,'utf8'),/--package=chat-to-computer-mcp@99\.0\.0/);
+    const bad=invoke(['update','check'],temp,{
+      ...env,CTCMCP_TEST_LATEST_JSON:'["99.0.0","99.0.1"]'
+    });
+    assert.notEqual(bad.status,0);
+    assert.match(bad.stderr,/not a valid stable release version/);
+  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });
 
 test('Windows user-login startup commands are explicit and platform-scoped',()=>{
