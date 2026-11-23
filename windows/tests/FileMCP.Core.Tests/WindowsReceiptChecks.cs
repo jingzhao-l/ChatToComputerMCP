@@ -50,9 +50,29 @@ internal static partial class Program
         reopened.Reserve("other-scope", "confidential-request-id");
         reopened.Finish("other-scope", "confidential-request-id", "exited", 0);
         Assert(reopened.Summary()["exited"] == 1, "independent scopes store terminal receipts");
+        reopened.Reserve("client-workspace", "secret-owned-id", "oauth-client-one");
+        var own = reopened.OwnReceipt("client-workspace", "secret-owned-id", "oauth-client-one");
+        Assert(own["state"]!.GetValue<string>() == "starting" &&
+               own["reattachable"]!.GetValue<bool>() == false, "authorized owner reads own status");
+        foreach (var denied in new[] { "oauth-client-two", "" })
+        {
+            await AssertThrowsAsync(() => Task.FromResult(reopened.OwnReceipt(
+                "client-workspace", "secret-owned-id", denied)), "inaccessible", "foreign owner denied");
+        }
+        await AssertThrowsAsync(() => Task.FromResult(reopened.OwnReceipt(
+            "default", "confidential-request-id", "oauth-client-one")), "inaccessible",
+            "legacy unowned receipt is not claimable");
+        var hashed = File.ReadAllText(journal);
+        Assert(!hashed.Contains("oauth-client-one", StringComparison.Ordinal) &&
+               !hashed.Contains("secret-owned-id", StringComparison.Ordinal),
+            "only salted owner/request fingerprints saved");
         var again = new CommandReceiptLedger(journal);
-        Assert(again.Summary()["interrupted"] == 1 && again.Summary()["exited"] == 1,
+        Assert(again.Summary()["interrupted"] == 2 && again.Summary()["exited"] == 1,
             "terminal receipts survive app restart");
+        var durable = again.OwnReceipt("client-workspace", "secret-owned-id", "oauth-client-one");
+        Assert(durable["state"]!.GetValue<string>() == "interrupted" &&
+               durable["reattachable"]!.GetValue<bool>() == false,
+            "client identity persists after restart, but task does not reattach");
 
         // Fail closed if the disk is corrupted. Never silently generate a new
         // salt/history that might allow replaying an old non-idempotent job.

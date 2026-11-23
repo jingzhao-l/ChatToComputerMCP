@@ -21,6 +21,7 @@ public sealed class CommandReceiptLedger
         public DateTimeOffset StartedAt { get; set; }
         public DateTimeOffset UpdatedAt { get; set; }
         public int? ExitCode { get; set; }
+        public string? OwnerHash { get; set; }
     }
 
     private sealed class Store
@@ -62,6 +63,7 @@ public sealed class CommandReceiptLedger
                     _store.Entries.Count > 8192 ||
                     _store.Entries.Any(entry =>
                         entry.Identity.Length != 64 || !entry.Identity.All(Uri.IsHexDigit) ||
+                        (entry.OwnerHash is not null && (entry.OwnerHash.Length != 64 || !entry.OwnerHash.All(Uri.IsHexDigit))) ||
                         entry.State is not ("starting" or "interrupted" or "exited" or
                             "cancelled" or "timed_out" or "launch_failed")) ||
                     _store.Entries.Select(entry => entry.Identity)
@@ -101,7 +103,7 @@ public sealed class CommandReceiptLedger
         }
     }
 
-    internal void Reserve(string scopeID, string requestID)
+    internal void Reserve(string scopeID, string requestID, string? ownerID = null)
     {
         lock (_gate)
         {
@@ -113,7 +115,8 @@ public sealed class CommandReceiptLedger
             var now = DateTimeOffset.UtcNow;
             var receipt = new Receipt
             {
-                Identity = identity, State = "starting", StartedAt = now, UpdatedAt = now
+                Identity = identity, State = "starting", StartedAt = now, UpdatedAt = now,
+                OwnerHash = ownerID is null ? null : OwnerIdentity(ownerID)
             };
             _store.Entries.Add(receipt);
             try { Persist(); } catch { _store.Entries.Remove(receipt); throw; }
@@ -144,6 +147,34 @@ public sealed class CommandReceiptLedger
                 throw;
             }
         }
+    }
+
+    /// <summary>Only the owner may read durable state; never reattaches processes.</summary>
+    internal System.Text.Json.Nodes.JsonObject OwnReceipt(string scopeID, string requestID, string ownerID)
+    {
+        if (string.IsNullOrEmpty(ownerID))
+            throw new FileMcpException("Command receipt not found or inaccessible to this authenticated client");
+        lock (_gate)
+        {
+            var identity = Identity(scopeID, requestID);
+            var receipt = _store.Entries.FirstOrDefault(entry => entry.Identity == identity);
+            if (receipt?.OwnerHash is null || receipt.OwnerHash != OwnerIdentity(ownerID))
+                throw new FileMcpException("Command receipt not found or inaccessible to this authenticated client");
+            return new System.Text.Json.Nodes.JsonObject
+            {
+                ["state"] = receipt.State,
+                ["exit_code"] = receipt.ExitCode,
+                ["started_at_unix_ms"] = receipt.StartedAt.ToUnixTimeMilliseconds(),
+                ["updated_at_unix_ms"] = receipt.UpdatedAt.ToUnixTimeMilliseconds(),
+                ["reattachable"] = false,
+            };
+        }
+    }
+
+    private string OwnerIdentity(string owner)
+    {
+        var payload = _store.Salt + ":client:" + Encoding.UTF8.GetByteCount(owner) + ":" + owner;
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
     private string Identity(string scope, string request)
