@@ -337,6 +337,13 @@ func runAgentToolChecks(rootPath: String) throws {
         Thread.sleep(forTimeInterval: 0.03)
     }
     receiptTools.stopCommandSessions()
+    // Session exit becomes visible just before the asynchronous receipt
+    // callback durably commits. Verify the on-disk terminal state first.
+    let persistedDeadline = Date().addingTimeInterval(4)
+    while receiptLedger.summary()["exited"] != 1 && Date() < persistedDeadline {
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    check(receiptLedger.summary()["exited"] == 1)
     let restartedLedger = try CommandReceiptLedger(fileURL: receiptLocation)
     let restartedTools = LocalTools(resolver: resolver, gitUserName: "Test",
                                     gitUserEmail: "test@example.invalid", enableCommands: true,
