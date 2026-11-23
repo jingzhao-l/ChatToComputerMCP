@@ -5,6 +5,20 @@ import path from 'node:path';
 export const packageName='chat-to-computer-mcp';
 export const registry='https://registry.npmjs.org/';
 
+// An active macOS app's Keychain items may be bound to its signing team.
+// Installing a differently signed bundle may remove access without deleting
+// the items. Refuse silent team transitions before changing release pointers.
+export function assertMacSigningTeamCompatible(previous, candidate) {
+  if(typeof previous!=='string'||typeof candidate!=='string'||
+     !previous.trim()||!candidate.trim())
+    throw Error('Invalid macOS signing team metadata');
+  if(previous!=='not set'&&previous!==candidate)
+    throw Error('Mac signing team would change from '+previous+' to '+candidate+
+      '. Supply CHAT_TO_COMPUTER_CODESIGN_IDENTITY for the original team; '+
+      'the existing application and Keychain data have not been replaced.');
+}
+
+
 export function validVersion(value) {
   return typeof value==='string' &&
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value);

@@ -6,7 +6,7 @@ import path from 'node:path';
 import cp from 'node:child_process';
 import url from 'node:url';
 import {validVersion,compareVersions,readPolicy,writePolicy,
-  policyFile,installedVersion,activateMacRelease
+  policyFile,installedVersion,activateMacRelease,assertMacSigningTeamCompatible
 } from '../bin/update-support.mjs';
 const root=path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
 const entry=path.join(root,'bin','chat-to-computer-mcp.mjs');
@@ -97,6 +97,10 @@ test('macOS local build places a real app bundle under versioned release and can
     'mkdir -p dist/ChatToComputerMCP.app/Contents/MacOS',
     'printf "#!/bin/sh\\nexit 0\\n" > dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP',
     'chmod +x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP',
+    "cat > dist/ChatToComputerMCP.app/Contents/Info.plist <<'PLIST'",
+    '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.chat-to-computer-mcp.fixture</string><key>CFBundleExecutable</key><string>ChatToComputerMCP</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>',
+    'PLIST',
+    '/usr/bin/codesign --force --sign - --timestamp=none dist/ChatToComputerMCP.app',
     ''
   ].join('\n'));
   function cli(args) {
@@ -121,6 +125,15 @@ test('macOS local build places a real app bundle under versioned release and can
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });
 
+
+test('Mac updater never silently crosses Keychain signing teams',()=>{
+ assert.doesNotThrow(()=>assertMacSigningTeamCompatible('not set','not set'));
+ assert.doesNotThrow(()=>assertMacSigningTeamCompatible('not set','TEAM123'));
+ assert.doesNotThrow(()=>assertMacSigningTeamCompatible('TEAM123','TEAM123'));
+ assert.throws(()=>assertMacSigningTeamCompatible('TEAM123','not set'),/signing team would change/);
+ assert.throws(()=>assertMacSigningTeamCompatible('TEAM123','DIFFERENT'),/signing team would change/);
+ assert.throws(()=>assertMacSigningTeamCompatible('', 'not set'),/Invalid macOS/);
+});
 
 test('updater version ordering rejects malicious or prerelease input',()=>{
  assert.equal(compareVersions('0.2.1','0.2.0'),1);

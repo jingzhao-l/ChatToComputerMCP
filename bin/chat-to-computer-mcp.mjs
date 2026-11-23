@@ -6,7 +6,8 @@ import os from 'node:os';
 import url from 'node:url';
 import cp from 'node:child_process';
 import {validVersion,compareVersions,registry,packageName,
-  installedVersion,policyFile,readPolicy,writePolicy,activateMacRelease
+  installedVersion,policyFile,readPolicy,writePolicy,activateMacRelease,
+  assertMacSigningTeamCompatible
 } from './update-support.mjs';
 
 const root = path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
@@ -68,6 +69,15 @@ function copy(source,dest) {
   if(!fs.existsSync(source)) throw new Error('Missing npm package file: ' + path.relative(root,source));
   fs.cpSync(source,dest,{recursive:true,force:false,errorOnExist:true,verbatimSymlinks:true});
 }
+function macSigningTeam(bundle) {
+  const result=cp.spawnSync('/usr/bin/codesign',['-dv','--verbose=2',bundle],
+    {encoding:'utf8',timeout:15000});
+  if(result.error||result.status!==0)
+    throw Error('Cannot inspect Mac bundle signing identity before installation');
+  const team=(result.stderr+'\n'+result.stdout).match(/^TeamIdentifier=(.+)$/m)?.[1];
+  if(!team)throw Error('Mac bundle signing metadata did not include TeamIdentifier');
+  return team.trim();
+}
 function macBuild(stage) {
   for(const item of ['macos','vendor','assets','build_macos_app.sh','build_macos_icon.sh','LICENSE']) {
     if(item==='assets') {
@@ -83,6 +93,7 @@ function macBuild(stage) {
   run('/bin/bash',['build_macos_app.sh'],{cwd:stage,env:process.env,timeout:900000});
   const built=path.join(stage,'dist',name+'.app');
   if(!fs.existsSync(path.join(built,'Contents','MacOS',name))) throw new Error('Mac executable missing after build');
+  run('/usr/bin/codesign',['--verify','--deep','--strict',built],{stdio:'ignore',timeout:20000});
   return built;
 }
 function windowsBuild(stage) {
@@ -117,6 +128,14 @@ function install(args) {
   console.log('Compiling ' + name + ' locally for ' + platform + '/' + process.arch);
   try {
     const built = platform==='darwin' ? macBuild(stage) : windowsBuild(stage);
+    if(platform==='darwin') {
+      const active=selectedVersion();
+      if(active) {
+        const installedBundle=path.join(releaseParent,active,name+'.app');
+        if(fs.existsSync(installedBundle))
+          assertMacSigningTeamCompatible(macSigningTeam(installedBundle),macSigningTeam(built));
+      }
+    }
     const completed=path.join(stage,'release');
     if(platform==='darwin') {
       mkdir(completed);
