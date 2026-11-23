@@ -32,7 +32,7 @@ func runAgentToolChecks(rootPath: String) throws {
     check(!restricted.hasTool(named: "git_push") && !restricted.hasTool(named: "save_conversation_to_codex"))
     rejects("disabled Git push") { _ = try call(restricted, "git_push") }
     rejects("disabled Codex history") { _ = try call(restricted, "save_conversation_to_codex", ["title": "disabled", "messages": [["role": "user", "content": "test"]]]) }
-    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 31)
+    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 32)
     for name in ["file_info", "create_directory", "copy_file", "move_file"] {
         check(safe.hasTool(named: name))
     }
@@ -318,6 +318,44 @@ func runAgentToolChecks(rootPath: String) throws {
     check(synchronousDone.wait(timeout: .now() + 3) == .success)
     let childPID = Int32(try String(contentsOf: synchronousPID, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))!
     check(kill(childPID, 0) == -1 && errno == ESRCH)
+    // Exercise the actual tool dispatcher, not only the receipt storage helper.
+    let receiptLocation = root.appendingPathComponent("owner-receipts/receipts.json")
+    let receiptLedger = try CommandReceiptLedger(fileURL: receiptLocation)
+    let receiptTools = LocalTools(resolver: resolver, gitUserName: "Test",
+                                  gitUserEmail: "test@example.invalid", enableCommands: true,
+                                  receiptLedger: receiptLedger)
+    defer { receiptTools.stopCommandSessions() }
+    let owned = try receiptTools.call(name: "start_command", arguments: [
+        "request_id": "owned-via-tool", "command": "true"], verifiedOwnerID: "oauth-client-a")
+        .structuredContent
+    let receiptSessionID = owned["session_id"] as! String
+    let ownedDeadline = Date().addingTimeInterval(8)
+    while Date() < ownedDeadline {
+        let status = try receiptTools.call(name: "read_command_output",
+            arguments: ["session_id": receiptSessionID]).structuredContent
+        if status["state"] as? String == "exited" { break }
+        Thread.sleep(forTimeInterval: 0.03)
+    }
+    receiptTools.stopCommandSessions()
+    let restartedLedger = try CommandReceiptLedger(fileURL: receiptLocation)
+    let restartedTools = LocalTools(resolver: resolver, gitUserName: "Test",
+                                    gitUserEmail: "test@example.invalid", enableCommands: true,
+                                    receiptLedger: restartedLedger)
+    defer { restartedTools.stopCommandSessions() }
+    let ownStatus = try restartedTools.call(name: "command_receipt_status",
+        arguments: ["request_id": "owned-via-tool"], verifiedOwnerID: "oauth-client-a")
+        .structuredContent
+    check(ownStatus["state"] as? String == "exited")
+    check(ownStatus["reattachable"] as? Bool == false)
+    rejects("other OAuth client cannot read durable receipts") {
+        _ = try restartedTools.call(name: "command_receipt_status",
+            arguments: ["request_id": "owned-via-tool"], verifiedOwnerID: "oauth-client-b")
+    }
+    rejects("local tunnel admin cannot impersonate a verified OAuth client") {
+        _ = try restartedTools.call(name: "command_receipt_status",
+            arguments: ["request_id": "owned-via-tool"])
+    }
+    print("PASS: client-owned durable receipt status after app restart and cross-owner denial")
     print("PASS: synchronous command cancellation and descendant cleanup on disconnect")
     print("PASS: command streaming/cursors/exit status/retries/bounds/cancel/timeout/descendant cleanup/shutdown")
 }

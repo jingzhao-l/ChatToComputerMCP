@@ -129,6 +129,15 @@ internal static partial class Program
             Assert(ex.Message.Contains("already recorded", StringComparison.Ordinal),
                 "real MCP start_command replay blocked after restart");
         }
+        var durableByTool = await freshTools.CallAsync("command_receipt_status",
+            new JsonObject { ["request_id"] = "actual-shell-request" });
+        Assert(durableByTool.StructuredContent["state"]!.GetValue<string>() == "exited" &&
+               durableByTool.StructuredContent["reattachable"]!.GetValue<bool>() == false,
+            "actual MCP request durable receipt can be checked after restart");
+        await AssertThrowsAsync(() => freshTools.CallAsync("command_receipt_status",
+            new JsonObject { ["request_id"] = "actual-shell-request" },
+            verifiedOwnerID: "another-authenticated-client"),
+            "inaccessible", "foreign client denied durable MCP receipt");
         freshTools.StopCommandSessions();
         Console.WriteLine("windows-command-receipts: ok");
     }

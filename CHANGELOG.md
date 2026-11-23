@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added owner-verified `command_receipt_status` on macOS and Windows: a verified OAuth client may read its own salted, durable command state after app restart; other clients and legacy unowned receipts fail closed. A receipt is never claimed as a reattached subprocess.
+
 - Fix macOS source-built app bundle sealing: sign the completed bundle
   (ad-hoc by default, explicit local identity optionally) and validate
   `codesign --verify --deep --strict` in source build and CI; see #15.
