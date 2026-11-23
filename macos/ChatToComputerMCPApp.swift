@@ -350,10 +350,15 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private var logFlushScheduled = false
     private let maxLogCharacters = 500_000
     private var loadsSavedConfiguration = true
-    // Enabled only for the managed LaunchAgent instance. Manual disconnect disables retries.
+    // Login auto-connect is opt-in. An explicit Connect also enables
+    // in-session recovery until the user intentionally disconnects.
     private var automaticConnectionEnabled = ProcessInfo.processInfo.environment["FILEMCP_AUTO_CONNECT"] == "1"
     private var reconnectDelay: TimeInterval = 3
     private var reconnectTask: DispatchWorkItem?
+    private var cloudHealth: TunnelCloudHealth = .awaitingPoll
+    private var cloudStalledSince: Date?
+    private var lastStalledRecovery: Date?
+    private var recoveryInProgress = false
 
     // Never query Keychain while AppDelegate is still constructing its first window.
     // A code-signing identity change can trigger a macOS access prompt, and a
@@ -398,6 +403,45 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         reconnectDelay = min(reconnectDelay * 2, 60)
         appendLog("Tunnel unavailable; retrying in \(Int(delay)) seconds.\n")
         attemptAutomaticConnection(after: delay)
+    }
+
+    private func updateCloudHealth(_ health: TunnelCloudHealth) {
+        guard selectedProvider == .openAI, runtime.state == .running else { return }
+        let old = cloudHealth
+        cloudHealth = health
+        if health == .connected {
+            cloudStalledSince = nil
+            reconnectDelay = 3 // A spawned child alone must not reset backoff.
+            recoveryInProgress = false
+        } else if health == .stalled {
+            if old != .stalled { cloudStalledSince = Date() }
+            // Give tunnel-client's own jittered retry logic time to self-heal
+            // before considering a restart. Never interrupt an active job.
+            let now = Date()
+            if automaticConnectionEnabled, !recoveryInProgress,
+               let since = cloudStalledSince,
+               now.timeIntervalSince(since) >= 60,
+               lastStalledRecovery.map({ now.timeIntervalSince($0) >= 300 }) ?? true {
+                recoveryInProgress = true
+                runtime.restartStalledTunnelIfIdle { [weak self] restarted in
+                    guard let self else { return }
+                    self.recoveryInProgress = false
+                    if restarted {
+                        self.lastStalledRecovery = Date()
+                        self.cloudStalledSince = nil
+                    }
+                }
+            }
+        } else {
+            cloudStalledSince = nil
+        }
+        updateRunButton(state: .running)
+    }
+
+    @objc private func handleSystemWake(_ notification: Notification) {
+        guard automaticConnectionEnabled else { return }
+        appendLog("Mac resumed; checking OpenAI tunnel health.\n")
+        runtime.checkCloudHealthNow()
     }
     private var configurationIsEditable = true
     private var hasStoredAPIKey = false
@@ -557,6 +601,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     }
 
     deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         updateTimer?.invalidate()
         shutdownForTermination()
     }
@@ -2535,6 +2580,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         }
 
         do {
+            automaticConnectionEnabled = true
             try persistTypedSecrets()
             let provider = selectedProvider
             let apiKey = provider == .openAI ? try storage.readAPIKey() : ""
@@ -2870,13 +2916,25 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 self?.appendLog(text)
             }
         }
+        runtime.onCloudHealthChange = { [weak self] health in
+            self?.updateCloudHealth(health)
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(handleSystemWake(_:)),
+            name: NSWorkspace.didWakeNotification, object: nil)
         runtime.onStateChange = { [weak self] state in
             guard let self else { return }
+            if state == .starting {
+                self.cloudHealth = .awaitingPoll
+                self.cloudStalledSince = nil
+            }
             self.updateRunButton(state: state)
             self.updateCloudflareActionStates()
             switch state {
             case .running:
-                self.reconnectDelay = 3
+                if self.selectedProvider == .cloudflare {
+                    self.reconnectDelay = 3
+                }
                 self.reconnectTask?.cancel()
             case .failed(let message):
                 self.showFeedback(message, isError: true)
@@ -2916,8 +2974,22 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             connectionStatusLabel.stringValue = "Connecting…"
             connectionStatusLabel.textColor = .secondaryLabelColor
         case .running:
-            connectionStatusLabel.stringValue = "Connected"
-            connectionStatusLabel.textColor = .systemGreen
+            if selectedProvider == .openAI {
+                switch cloudHealth {
+                case .awaitingPoll:
+                    connectionStatusLabel.stringValue = "Connecting to OpenAI…"
+                    connectionStatusLabel.textColor = .secondaryLabelColor
+                case .connected:
+                    connectionStatusLabel.stringValue = "Connected"
+                    connectionStatusLabel.textColor = .systemGreen
+                case .stalled:
+                    connectionStatusLabel.stringValue = "Reconnecting…"
+                    connectionStatusLabel.textColor = .systemOrange
+                }
+            } else {
+                connectionStatusLabel.stringValue = "Connected"
+                connectionStatusLabel.textColor = .systemGreen
+            }
         case .stopping:
             connectionStatusLabel.stringValue = "Disconnecting…"
             connectionStatusLabel.textColor = .secondaryLabelColor
@@ -2973,7 +3045,18 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             connectionDetailLabel.stringValue = "Stopping the tunnel and local server…"
         case .running:
             activityIndicator.stopAnimation(nil)
-            connectionDetailLabel.stringValue = "Your workspace is shared. Disconnect stops access."
+            if selectedProvider == .openAI {
+                switch cloudHealth {
+                case .awaitingPoll:
+                    connectionDetailLabel.stringValue = "Local MCP is ready; verifying the OpenAI tunnel."
+                case .connected:
+                    connectionDetailLabel.stringValue = "Cloud polling verified. Disconnect stops access."
+                case .stalled:
+                    connectionDetailLabel.stringValue = "Cloud polling stalled. Retrying without interrupting active tasks."
+                }
+            } else {
+                connectionDetailLabel.stringValue = "Your workspace is shared. Disconnect stops access."
+            }
         case .failed:
             activityIndicator.stopAnimation(nil)
             connectionDetailLabel.stringValue = "Review the error or open Activity, then retry."

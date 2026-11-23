@@ -4,6 +4,11 @@
 
 ## [0.4.1] — 2026-11-23
 
+- Add macOS OpenAI tunnel supervision using the bundled client health endpoint:
+  verify recent successful cloud polls, distinguish process startup from actual
+  connection, recheck after sleep/wake, and recover sustained idle stalls without
+  interrupting active synchronous commands or long-running sessions.
+- Add bounded retry and watchdog regressions for stale, missing and fresh polls.
 - Added owner-verified `command_receipt_status` on macOS and Windows: a verified OAuth client may read its own salted, durable command state after app restart; other clients and legacy unowned receipts fail closed. A receipt is never claimed as a reattached subprocess.
 - Fix OpenAI Secure MCP Tunnel control-plane proxy handling on macOS:
   forward explicit proxy settings, detect manually configured system HTTP/HTTPS

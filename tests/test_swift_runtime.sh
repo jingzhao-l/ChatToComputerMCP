@@ -225,7 +225,7 @@ for argument in "$@"; do
     if [ "$previous" = "--profile-dir" ]; then profile_dir="$argument"; fi
     previous="$argument"
 done
-if [ -n "${MCP_TEST_PROFILE_DIR_EXPECTED:-}" ] && [ "$profile_dir" != "$MCP_TEST_PROFILE_DIR_EXPECTED" ]; then
+if [ -n "${MCP_TEST_PROFILE_DIR_EXPECTED:-}" ] && [ "$1" != "health" ] && [ "$profile_dir" != "$MCP_TEST_PROFILE_DIR_EXPECTED" ]; then
     echo "unexpected profile directory: $profile_dir" >&2
     exit 3
 fi
@@ -238,7 +238,7 @@ if [ -n "${MCP_TEST_ENV_CAPTURE:-}" ]; then
     [ -z "${HEALTH_UNIX_SOCKET:-}" ] || { echo inherited-health-unix-socket >&2; exit 3; }
     [ -z "${LOG_HTTP_RAW_UNSAFE:-}" ] || { echo inherited-raw-http-logging >&2; exit 3; }
 fi
-if [ -n "${MCP_TEST_ENV_CAPTURE:-}" ]; then
+if [ -n "${MCP_TEST_ENV_CAPTURE:-}" ] && [ "$1" != "health" ]; then
     {
         printf '%s\n' "${MCP_EXTRA_HEADERS:-}"
         printf '%s\n' "${MCP_DISCOVERY_EXTRA_HEADERS:-}"
@@ -257,6 +257,10 @@ case "$1" in
         exit 0
         ;;
     doctor) echo "doctor-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; exit 0 ;;
+    health)
+        [ "$2" = "--url-file" ] && [ -f "$3" ] && [ "$4" = "--json" ] || { echo invalid-health-probe >&2; exit 3; }
+        printf '{"control_plane_poll":{"value":%s,"ok":true}}\n' "$(date +%s)"
+        exit 0 ;;
     run) echo "run-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; trap 'exit 0' TERM INT; while :; do sleep 1; done ;;
     *) echo unsupported-subcommand >&2; exit 2 ;;
 esac
@@ -382,6 +386,22 @@ let invalidProxy = LocalMCPRuntime.baseTunnelEnvironment(
 precondition(invalidProxy["CONTROL_PLANE_HTTP_PROXY"] == nil)
 print("runtime-control-plane-system-proxy: ok")
 
+let cloudHealthJSON = Data(#"{"control_plane_poll":{"value":1795421400,"ok":true}}"#.utf8)
+precondition(TunnelCloudHealth.hasPollComponent(fromJSON: cloudHealthJSON))
+precondition(!TunnelCloudHealth.hasPollComponent(fromJSON: Data("{}".utf8)))
+precondition(TunnelCloudHealth.successfulPollTimestamp(fromJSON: cloudHealthJSON) == 1_795_421_400)
+precondition(TunnelCloudHealth.successfulPollTimestamp(fromJSON: Data("{}".utf8)) == nil)
+precondition(TunnelCloudHealth.successfulPollTimestamp(fromJSON: Data("malformed".utf8)) == nil)
+let now = 1_795_421_450.0
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 30, startedAt: now - 300, now: now) == .connected)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 135, startedAt: now - 300, now: now) == .awaitingPoll)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 190, startedAt: now - 300, now: now) == .stalled)
+precondition(TunnelCloudHealth.evaluate(lastPoll: nil, startedAt: now - 90, now: now) == .awaitingPoll)
+precondition(TunnelCloudHealth.evaluate(lastPoll: nil, startedAt: now - 190, now: now) == .stalled)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now + 60, startedAt: now - 190, now: now) == .stalled)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 600, startedAt: now - 190, now: now) == .stalled)
+print("runtime-cloud-poll-staleness: ok")
+
 func waitFor(_ predicate: () -> Bool, timeout: TimeInterval, label: String) {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
@@ -453,6 +473,9 @@ let secondConfig = LocalMCPConfiguration(
 
 first.start(firstConfig)
 waitFor({ first.state == .running }, timeout: 5, label: "first runtime")
+first.checkCloudHealthNow()
+waitFor({ first.cloudHealthSnapshot == .connected }, timeout: 8,
+        label: "first verified control-plane polling health")
 waitFor({ holdsIdleSleepAssertion() }, timeout: 2, label: "idle sleep assertion while running")
 let authLines = try String(contentsOf: authCapture, encoding: .utf8)
     .split(whereSeparator: { $0.isNewline })

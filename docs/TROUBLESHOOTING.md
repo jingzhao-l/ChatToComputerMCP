@@ -38,6 +38,18 @@ Check whether outbound `api.openai.com:443` is reachable from the Mac. If direct
 
 A manual LaunchAgent override such as `HTTPS_PROXY=http://127.0.0.1:15556` is preserved when the GUI or installer rewrites its own login item. Only explicitly supported network overrides are retained; unrelated environment variables, including API keys, are never copied. After changing the LaunchAgent plist, reload it only when no local MCP tasks are active. `launchctl bootstrap` and `launchctl print` verify the service; an established tunnel proxy connection plus a **real ChatGPT MCP tool call** verifies end-to-end recovery. Installing a new release does not restart running tasks.
 
+On macOS the app also inspects the bundled tunnel-client's last successful
+control-plane poll through its private loopback health endpoint. A newly
+spawned process alone is displayed as **Connecting to OpenAI**, not
+**Connected**. If there has been no successful poll for three minutes the app
+reports **Reconnecting**, preserves ongoing commands and lets the tunnel
+client's built-in retry/backoff self-heal first. After a further minute of
+confirmed stalling, an auto-connected session may restart its tunnel only if
+there are no active synchronous or asynchronous command jobs. Recovery
+attempts have a five-minute cooldown; deliberate Disconnect turns them off.
+After Mac wake the watchdog rechecks immediately. A healthy poll is not a
+substitute for a real ChatGPT tool invocation or permanent network uptime.
+
 **A new signed Mac app is waiting for Keychain access**
 
 macOS may prompt again after a code-signing identity change. Review and approve legitimate OS prompts on the Mac itself. Never edit Keychain ACLs to bypass authorization or disclose credentials in chat.

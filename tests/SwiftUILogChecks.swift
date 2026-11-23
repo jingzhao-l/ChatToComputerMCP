@@ -28,7 +28,29 @@ static func checkLogs() {
 }
 
 }
+extension MainViewController {
+    static func checkCloudHealthPresentation() {
+        let controller = MainViewController()
+        controller.loadsSavedConfiguration = false
+        _ = controller.view
+        controller.providerPopup.selectItem(at: 0)
+        controller.cloudHealth = .awaitingPoll
+        controller.updateRunButton(state: .running)
+        precondition(controller.connectionStatusLabel.stringValue == "Connecting to OpenAI…")
+        controller.cloudHealth = .stalled
+        controller.updateRunButton(state: .running)
+        precondition(controller.connectionStatusLabel.stringValue == "Reconnecting…")
+        precondition(controller.connectionDetailLabel.stringValue.contains("polling stalled"))
+        controller.cloudHealth = .connected
+        controller.updateRunButton(state: .running)
+        precondition(controller.connectionStatusLabel.stringValue == "Connected")
+        controller.updateRunButton(state: .stopped)
+        print("PASS: cloud polling drives connection UI truth, not child process launch")
+    }
+}
+
 func runLogRegressionChecks() {
+    MainViewController.checkCloudHealthPresentation()
     let preserved = ChatToComputerLaunchAgent.launchEnvironment(
         previous: [
             "CONTROL_PLANE_HTTP_PROXY": "http://localhost:15556",

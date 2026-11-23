@@ -89,6 +89,17 @@ variables. Proxy auto-configuration (PAC), proxy authentication and changes
 during an existing live connection may require explicit configuration or
 reconnecting the tunnel.
 
+The macOS Connection page distinguishes a launched local process from recent
+successful OpenAI cloud polling. The app periodically reads the bundled
+tunnel-client's loopback-only health information, checks again after wake,
+and can restart a prolonged stalled connection when the user has enabled
+a session and no local command is running. A deliberate Disconnect disables
+recovery; no app background-login auto-connect is enabled without opting in.
+The tunnel client handles transient network failures with its own backoff.
+Windows uses its separate native connection and login supervision; this
+macOS health watchdog does not imply equivalent Windows live-network
+failover testing.
+
 Inspect and opt out:
 
     chat-to-computer-mcp launchagent status

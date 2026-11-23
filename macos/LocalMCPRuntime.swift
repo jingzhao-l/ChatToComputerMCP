@@ -40,6 +40,40 @@ enum LocalMCPRuntimeState: Equatable {
     case failed(String)
 }
 
+/// A live child process is not proof that OpenAI is still polling it.
+/// The bundled tunnel-client reports the timestamp of its latest successful
+/// control-plane poll through the loopback-only health command.
+enum TunnelCloudHealth: Equatable {
+    case awaitingPoll
+    case connected
+    case stalled
+
+    static func hasPollComponent(fromJSON data: Data) -> Bool {
+        guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return value["control_plane_poll"] is [String: Any]
+    }
+
+    static func successfulPollTimestamp(fromJSON data: Data) -> TimeInterval? {
+        guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let poll = value["control_plane_poll"] as? [String: Any],
+              let timestamp = poll["value"] as? NSNumber else { return nil }
+        let seconds = timestamp.doubleValue
+        return seconds.isFinite && seconds > 0 ? seconds : nil
+    }
+
+    static func evaluate(lastPoll: TimeInterval?, startedAt: TimeInterval,
+                         now: TimeInterval) -> TunnelCloudHealth {
+        let validPoll = lastPoll.flatMap { poll -> TimeInterval? in
+            poll.isFinite && poll >= startedAt - 10 && poll <= now + 30 ? poll : nil
+        }
+        if let validPoll, now - validPoll < 120 { return .connected }
+        if now - (validPoll ?? startedAt) >= 180 { return .stalled }
+        return .awaitingPoll
+    }
+}
+
 private final class ProfileLock {
     private let path: String
     private var descriptor: Int32 = -1
@@ -119,9 +153,16 @@ final class LocalMCPRuntime {
     private var recentOutputLines: [String] = []
     private var cloudflaredTokenFile: String?
     private var tunnelAttempt = UUID()
+    private var tunnelHealthURLFile: URL?
+    private var tunnelStartedAt: TimeInterval = 0
+    private var lastSuccessfulControlPlanePoll: TimeInterval?
+    private var hasObservedPollHealth = false
+    private var cloudHealth: TunnelCloudHealth = .awaitingPoll
+    private var healthCheckGeneration = UUID()
     private let profileDirectoryOverride: URL?
 
     var onStateChange: ((LocalMCPRuntimeState) -> Void)?
+    var onCloudHealthChange: ((TunnelCloudHealth) -> Void)?
     var onLog: ((String) -> Void)?
 
     init(profileDirectory: URL? = nil) {
@@ -135,9 +176,47 @@ final class LocalMCPRuntime {
         return _state
     }
 
+    /// Queue-consistent snapshot for diagnostics and deterministic runtime tests.
+    var cloudHealthSnapshot: TunnelCloudHealth {
+        if DispatchQueue.getSpecific(key: queueSpecificKey) != nil { return cloudHealth }
+        return queue.sync { cloudHealth }
+    }
+
     func start(_ configuration: LocalMCPConfiguration) {
         queue.async { [weak self] in
             self?.startOnQueue(configuration)
+        }
+    }
+
+    /// Immediately recheck after wake or a local network transition without
+    /// introducing a second periodic health-check loop.
+    func checkCloudHealthNow() {
+        queue.async { [weak self] in
+            guard let self, self.state == .running,
+                  self.tunnelHealthURLFile != nil else { return }
+            self.healthCheckGeneration = UUID()
+            self.scheduleControlPlaneHealthCheck(for: self.tunnelAttempt, after: 0)
+        }
+    }
+
+    /// Only an explicitly enabled session may request this recovery. A stalled
+    /// poll is not permission to terminate work the user has in flight.
+    func restartStalledTunnelIfIdle(_ completion: @escaping (Bool) -> Void) {
+        queue.async { [weak self] in
+            guard let self, self.state == .running,
+                  self.cloudHealth == .stalled,
+                  self.tunnelHealthURLFile != nil,
+                  let server = self.server,
+                  !server.hasActiveCommands(), !self.isStopRequested else {
+                DispatchQueue.main.async { completion(false) }
+                return
+            }
+            self.emitLog("Control plane has been unavailable; restarting idle tunnel.\n")
+            self.setStopRequested(true)
+            self.setState(.stopping)
+            self.tunnelProcess?.stop()
+            if self.tunnelProcess == nil { self.finishStop() }
+            DispatchQueue.main.async { completion(true) }
         }
     }
 
@@ -253,6 +332,7 @@ final class LocalMCPRuntime {
     private func shutdownOnQueue() {
         tunnelProcess?.stopSynchronously()
         removeCloudflaredTokenFile()
+        removeTunnelHealthURLFile()
         server?.stop()
         server = nil
         profileLock?.release()
@@ -271,6 +351,12 @@ final class LocalMCPRuntime {
             return
         }
         tunnelAttempt = UUID()
+        healthCheckGeneration = UUID()
+        cloudHealth = .awaitingPoll
+        lastSuccessfulControlPlanePoll = nil
+        hasObservedPollHealth = false
+        tunnelStartedAt = Date().timeIntervalSince1970
+        removeTunnelHealthURLFile()
         setState(.starting)
         recentOutputLock.lock()
         recentOutputLines = []
@@ -388,6 +474,9 @@ final class LocalMCPRuntime {
             }
             try requireSuccess(doctorResult, operation: "tunnel-client doctor", sensitiveValues: sensitiveValues)
 
+            // The tunnel-client health command reads this private, per-run
+            // locator to report actual successful OpenAI control-plane polls.
+            let healthURLFile = try makeTunnelHealthURLFile()
             let managed = try ProcessRunner.startManaged(
                 executable: tunnelClient,
                 arguments: [
@@ -395,6 +484,7 @@ final class LocalMCPRuntime {
                     "--profile", configuration.profile,
                     "--profile-dir", profileDirectory,
                     "--health-listen-addr", healthAddress,
+                    "--health.url-file", healthURLFile.path,
                 ],
                 environment: environment,
                 sensitiveValues: sensitiveValues,
@@ -412,7 +502,9 @@ final class LocalMCPRuntime {
             )
             tunnelProcess = managed
             setState(.running)
-            emitLog("OpenAI Secure MCP Tunnel started. Command execution: \(configuration.enableCommands ? "enabled" : "disabled").\n")
+            notifyCloudHealth(.awaitingPoll)
+            scheduleControlPlaneHealthCheck(for: tunnelAttempt, after: 5)
+            emitLog("OpenAI Secure MCP Tunnel process started; verifying cloud polling. Command execution: \(configuration.enableCommands ? "enabled" : "disabled").\n")
         } catch {
             if isStopRequested {
                 finishStop()
@@ -422,6 +514,7 @@ final class LocalMCPRuntime {
             server = nil
             tunnelProcess = nil
             removeCloudflaredTokenFile()
+            removeTunnelHealthURLFile()
             profileLock?.release()
             profileLock = nil
             setState(.failed(error.localizedDescription))
@@ -486,6 +579,84 @@ final class LocalMCPRuntime {
         )
         tunnelProcess = managed
         emitLog("Waiting for Cloudflare to register the tunnel connection. Public hostname \(configuration.cloudflareHostname) must route to this tunnel and, for token tunnels, point at http://127.0.0.1:\(configuration.port) in the Cloudflare dashboard. Command execution: \(configuration.enableCommands ? "enabled" : "disabled").\n")
+    }
+
+    private func makeTunnelHealthURLFile() throws -> URL {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "chat-to-computer-mcp-health-\(UUID().uuidString).url")
+        guard FileManager.default.createFile(atPath: path.path, contents: Data(),
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw NSError(domain: "ChatToComputerMCP", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Could not create a private tunnel health locator."])
+        }
+        tunnelHealthURLFile = path
+        return path
+    }
+
+    private func removeTunnelHealthURLFile() {
+        guard let file = tunnelHealthURLFile else { return }
+        try? FileManager.default.removeItem(at: file)
+        tunnelHealthURLFile = nil
+    }
+
+    private func notifyCloudHealth(_ status: TunnelCloudHealth) {
+        let previous = cloudHealth
+        cloudHealth = status
+        if status != previous {
+            switch status {
+            case .connected:
+                emitLog("OpenAI control-plane polling verified.\n")
+            case .stalled:
+                emitLog("WARNING: OpenAI control-plane polling has not succeeded recently; waiting for recovery.\n")
+            case .awaitingPoll:
+                break
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.onCloudHealthChange?(status)
+        }
+    }
+
+    private func scheduleControlPlaneHealthCheck(for attempt: UUID, after delay: TimeInterval) {
+        let generation = healthCheckGeneration
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.tunnelAttempt == attempt,
+                  self.healthCheckGeneration == generation,
+                  self.state == .running,
+                  let file = self.tunnelHealthURLFile else { return }
+            var observed: TimeInterval?
+            if let executable = try? self.tunnelClientPath(),
+               let result = try? ProcessRunner.run(
+                   executable: executable,
+                   arguments: ["health", "--url-file", file.path, "--json"],
+                   environment: Self.baseTunnelEnvironment(),
+                   timeoutSeconds: 5,
+                   outputLimitBytes: 16_384,
+                   maxTimeoutSeconds: 5,
+                   shouldCancel: { [weak self] in self?.isStopRequested ?? true }
+               ),
+               let data = result.stdout.data(using: .utf8) {
+                if TunnelCloudHealth.hasPollComponent(fromJSON: data) {
+                    self.hasObservedPollHealth = true
+                }
+                observed = TunnelCloudHealth.successfulPollTimestamp(fromJSON: data)
+            }
+            if let observed, observed >= self.tunnelStartedAt - 10 {
+                self.lastSuccessfulControlPlanePoll = max(
+                    self.lastSuccessfulControlPlanePoll ?? 0, observed)
+            }
+            // A broken/unsupported local health probe is not evidence that
+            // a healthy cloud connection has stopped polling. Never restart
+            // based solely on a health CLI failure.
+            let status: TunnelCloudHealth = self.hasObservedPollHealth
+                ? TunnelCloudHealth.evaluate(
+                    lastPoll: self.lastSuccessfulControlPlanePoll,
+                    startedAt: self.tunnelStartedAt,
+                    now: Date().timeIntervalSince1970)
+                : .awaitingPoll
+            self.notifyCloudHealth(status)
+            self.scheduleControlPlaneHealthCheck(for: attempt, after: 30)
+        }
     }
 
     /// Tunnel tokens are long base64 blobs; anything short that looks like a name or UUID is a CLI tunnel.
@@ -571,6 +742,7 @@ final class LocalMCPRuntime {
     private func tunnelDidExit(exitCode: Int32) {
         tunnelProcess = nil
         removeCloudflaredTokenFile()
+        removeTunnelHealthURLFile()
         server?.stop()
         server = nil
         profileLock?.release()
@@ -595,6 +767,7 @@ final class LocalMCPRuntime {
 
     private func finishStop() {
         removeCloudflaredTokenFile()
+        removeTunnelHealthURLFile()
         server?.stop()
         server = nil
         tunnelProcess = nil
