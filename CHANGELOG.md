@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## [0.4.0] — 2026-11-23
+
+- Raised the minimum supported Node.js version to 24. Users on Node.js 20 must upgrade before using the new CLI. This is a compatibility change relative to v0.3.0.
+- Production acceptance: latest main CI passes macOS, Windows native build/clean npm installation, and security scans.
 - Prevent duplicate full CI runs for pull-request branch pushes; keep `main` push, pull-request and manual verification gates.
 - Made Windows source-installer archive SHA-256 verification independent of the `Get-FileHash` PowerShell command, which failed in isolated Windows PowerShell 5.1 despite successful native compilation.
 - Added a native Windows x64 clean-user npm tarball installation gate (offline source installation, CLI version, real local .NET app build, installed app readback, and legacy profile isolation) to CI and release validation.

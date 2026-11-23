@@ -75,7 +75,7 @@ duplicate instances, the current GUI session is never restarted by the toggle.
 
 Until npm Registry publication, install a prebuilt tarball:
 
-    npm install --global ./chat-to-computer-mcp-0.3.0.tgz
+    npm install --global ./chat-to-computer-mcp-0.4.0.tgz
     chat-to-computer-mcp install
 
 A tarball can be attached to a GitHub release. When the GitHub repository
