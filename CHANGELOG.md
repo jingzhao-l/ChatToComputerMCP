@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Updated GitHub Actions `checkout`, `setup-node`, `setup-go`, `setup-dotnet`, and `upload-artifact` to their verified Node 24 runtime major versions; existing build/test jobs are unchanged.
 - Standardized the supported Node.js CLI runtime to 24+, pinned the repository toolchain, and ensured release tag validation runs after Node 24 setup. The CI guard now checks project engines and setup order in addition to GitHub Actions runtimes.
 - Corrected the Windows concurrent-command MCP description and added a native eight-slot capacity/collision/cancellation regression.
 - Reconciled the Cloudflare Windows parity audit with the implementation already integrated into main; live-provider and ARM64 validation remain outstanding.
@@ -59,7 +60,7 @@ Initial public npm source-installer release for ChatToComputerMCP:
 
 All notable changes will be documented in this file from the first public release onward.
 
-## Unreleased
+## Historical development notes (integrated before v0.3.0)
 
 - Added a compact macOS workspace overview, top navigation and a persistent light/dark appearance toggle.
 - Improved connection-action contrast, workspace alignment and layout regression coverage across tabs, providers and runtime states.
