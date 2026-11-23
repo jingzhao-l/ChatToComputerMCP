@@ -5,6 +5,14 @@ Set-StrictMode -Version Latest
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
+function Get-LoginRunValue {
+    $RunKey = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue
+    if ($null -eq $RunKey) { return $null }
+    $Entry = $RunKey.PSObject.Properties["ChatToComputerMCP"]
+    if ($null -eq $Entry) { return $null }
+    return [string]$Entry.Value
+}
+$PreviousLoginRunValue = Get-LoginRunValue
 $Version = (& node -p "require('./package.json').version").Trim()
 if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Unable to read stable package version"
@@ -68,6 +76,9 @@ try {
     }
     if (Test-Path -LiteralPath (Join-Path $LocalData "FileMCP")) {
         throw "New package touched the legacy FileMCP profile"
+    }
+    if (-not $PreviousLoginRunValue -and (Get-LoginRunValue)) {
+        throw "Installing a source tarball silently enabled login startup"
     }
     Write-Host "windows-npm-clean-install: ok ($Version, native Windows x64)"
     $Success = $true
