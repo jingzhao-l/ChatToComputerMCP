@@ -116,6 +116,14 @@ internal static partial class Program
         Assert(File.Exists(effect) && File.ReadAllText(effect) == "done",
             "MCP command actually wrote test effect");
         tools.StopCommandSessions();
+        // The process may report exit before its durable completion callback
+        // has committed; never treat that race as verified persistence.
+        var persistedDeadline = DateTimeOffset.UtcNow.AddSeconds(4);
+        while ((!ledger.Summary().TryGetValue("exited", out var completed) || completed != 1) &&
+               DateTimeOffset.UtcNow < persistedDeadline)
+            await Task.Delay(25);
+        Assert(ledger.Summary().TryGetValue("exited", out var count) && count == 1,
+            "MCP command terminal receipt has been committed to disk");
         var afterRestart = new CommandReceiptLedger(liveJournalPath);
         var freshTools = new LocalTools(workspace, "Test", "test@example.invalid",
             true, receiptLedger: afterRestart);
