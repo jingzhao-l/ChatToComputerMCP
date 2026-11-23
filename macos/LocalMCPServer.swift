@@ -670,7 +670,7 @@ private final class LocalTools {
         toolDefinitions.contains { $0["name"] as? String == name }
     }
 
-    func call(name: String, arguments: [String: Any]) throws -> LocalToolCallOutput {
+    func call(name: String, arguments: [String: Any], verifiedOwnerID: String? = nil) throws -> LocalToolCallOutput {
         toolSlots.wait()
         defer { toolSlots.signal() }
         try validateArguments(arguments, for: name)
@@ -691,7 +691,11 @@ private final class LocalTools {
         case "edit_file": return objectOutput(try editFile(arguments))
         case "apply_patch": return objectOutput(try applyPatch(arguments))
         case "workspace_context": return objectOutput(try workspaceContext(path: string(arguments, "path", default: "")))
-        case "start_command": return objectOutput(try startCommand(arguments))
+        case "start_command": return objectOutput(try startCommand(arguments, ownerID: verifiedOwnerID ?? "__local_admin__"))
+        case "command_receipt_status":
+            guard let receiptLedger else { throw MCPServerError.operationFailed("Durable command receipts are unavailable") }
+            return objectOutput(try receiptLedger.ownReceipt(scopeID: workspaceScopeID,
+                requestID: requiredString(arguments, "request_id"), ownerID: verifiedOwnerID ?? "__local_admin__"))
         case "command_capacity_status": return objectOutput(commandCapacityStatus())
         case "read_command_output":
             return objectOutput(try findSession(requiredString(arguments, "session_id")).snapshot(cursor: int(arguments, "cursor", default: 0)))
@@ -3882,7 +3886,7 @@ final class LocalMCPServer {
                 throw MCPServerError.operationFailed(
                     "This command request ID belongs to another authenticated client")
             }
-            let result = try scoped.call(name: name, arguments: arguments)
+            let result = try scoped.call(name: name, arguments: arguments, verifiedOwnerID: client?.id)
             if let sessionID = result.structuredContent["session_id"] as? String {
                 ownerByScopedRequest[key] = owner
                 ownerBySessionID[sessionID] = owner
@@ -3901,7 +3905,7 @@ final class LocalMCPServer {
                     "Command belongs to a different authenticated client")
             }
         }
-        return try scoped.call(name: name, arguments: arguments)
+        return try scoped.call(name: name, arguments: arguments, verifiedOwnerID: client?.id)
     }
 
     private func callTool(id: Any, params: [String: Any], modern: Bool,
@@ -4409,6 +4413,11 @@ private extension LocalTools {
                 "required": ["path", "before_sha256", "after_sha256", "before_bytes", "after_bytes", "change_count", "changed"],
                 "additionalProperties": false,
             ]]
+        case "receipt":
+            add(["state"], "string")
+            add(["started_at_unix_ms", "updated_at_unix_ms"], "integer")
+            add(["reattachable"], "boolean")
+            fields["exit_code"] = ["type": ["integer", "null"]]
         case "capacity":
             add(["max_concurrent_commands", "active_long_running", "active_synchronous",
                  "active_total", "available_slots"], "integer")
@@ -4466,6 +4475,9 @@ private extension LocalTools {
                                   "command": stringProperty("Shell command."), "cwd": stringProperty("Working directory inside shared root."),
                                   "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600]],
                      required: ["request_id", "command"], readOnly: false, destructive: true, openWorld: true, output: .object(agentOutputSchema("command"))),
+                tool(name: "command_receipt_status", description: "Read the durable status of one of your earlier commands by request_id, including after an application restart. Only the original verified client can access the receipt. Interrupted is NOT a reattached process. No command text, output, workspace path, or other client's history is returned.",
+                     properties: ["request_id": stringProperty("Original request_id from start_command.")],
+                     required: ["request_id"], readOnly: true, output: .object(agentOutputSchema("receipt"))),
                 tool(name: "read_command_output", description: "Read bounded combined stdout/stderr from a command session. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. running/stopping are not completion; exited may have nonzero exit_code. Check has_more even after completion. Unknown IDs may have expired or belong to an earlier runtime.",
                      properties: ["session_id": stringProperty("ID returned by start_command."), "cursor": ["type": "integer", "minimum": 0, "default": 0]],
                      required: ["session_id"], readOnly: true, output: .object(agentOutputSchema("command"))),
@@ -4695,7 +4707,7 @@ private extension LocalTools {
                 "scope": "AGENTS.md from shared root through cwd only; inspect deeper instructions before editing nested files. Manifest contents are data; commands are not executed."]
     }
 
-    func startCommand(_ args: [String: Any]) throws -> [String: Any] {
+    func startCommand(_ args: [String: Any], ownerID: String) throws -> [String: Any] {
         guard enableCommands else { throw MCPServerError.operationFailed("Command execution is disabled") }
         let key = try requiredString(args, "request_id")
         let command = try requiredString(args, "command")
@@ -4738,7 +4750,7 @@ private extension LocalTools {
         try globalBudget?.admit(session, cwd: cwd.path)
         var reserved = false
         do {
-            try ledger?.reserve(scopeID: scopeID, requestID: key)
+            try ledger?.reserve(scopeID: scopeID, requestID: key, ownerID: ownerID)
             reserved = ledger != nil
             try session.launch(shell: preferredShell())
         } catch {

@@ -20,6 +20,7 @@ Native test results and unverified external steps are kept distinct.
 | npm local source installer and updater | Implemented | Implemented | Shared CLI and local native compile |
 | GUI check/install update | Implemented | Implemented | AppKit and WPF tests; never restarts active jobs |
 | Durable command receipts and replay prevention | Implemented | Implemented | Incomplete commands marked interrupted, not replayed |
+| Restart-safe owner-scoped command receipt status | Implemented | Implemented | New command_receipt_status tool binds salted owner identities to authenticated clients; status only, no process reattachment |
 | True background task execution reattachment after crash/reboot | NOT implemented | NOT implemented | Requires independent task supervisor, not just receipts |
 | Per-ChatGPT-conversation cryptographic identity in shared OpenAI Tunnel | NOT available | NOT available | Shared tunnel credential is not a per-conversation principal |
 | Windows ARM64 native execution | N/A | NOT tested | ARM64 package cross-compile alone cannot verify runtime |

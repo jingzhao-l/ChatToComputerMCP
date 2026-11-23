@@ -501,7 +501,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                     if (_ownerByRequest.TryGetValue(key, out var original) && original != owner)
                         throw new FileMcpException("Command request ID belongs to another authenticated client");
                 }
-                var result = await scoped.CallAsync(tool, args, cancellation).ConfigureAwait(false);
+                var result = await scoped.CallAsync(tool, args, cancellation, verified?.Id).ConfigureAwait(false);
                 var sessionID = result.StructuredContent["session_id"]?.GetValue<string>();
                 if (sessionID is not null)
                 {
@@ -524,7 +524,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                     throw new FileMcpException("Command belongs to another authenticated client");
             }
         }
-        return await scoped.CallAsync(tool, args, cancellation).ConfigureAwait(false);
+        return await scoped.CallAsync(tool, args, cancellation, verified?.Id).ConfigureAwait(false);
     }
 
     /// <summary>Logs timing and response size only; arguments and results may contain workspace content.</summary>
