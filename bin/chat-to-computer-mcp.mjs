@@ -298,9 +298,43 @@ function xmlEscape(s) {
   return s.replaceAll('&','&amp;').replaceAll('<','&lt;')
           .replaceAll('>','&gt;').replaceAll('"','&quot;');
 }
-function launchPlistText(autoConnect,always) {
+const launchProxyKeys = new Set([
+  'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
+  'http_proxy','https_proxy','all_proxy','no_proxy',
+  'CONTROL_PLANE_HTTP_PROXY','TUNNEL_CLIENT_HTTP_PROXY',
+  'MCP_HTTP_PROXY','HARPOON_HTTP_PROXY','CA_BUNDLE',
+  'PROXY_CHECK_INTERVAL'
+]);
+function preservedLaunchEnvironment(previous,autoConnect) {
+  const env={};
+  for(const [key,value] of Object.entries(previous||{})) {
+    if(launchProxyKeys.has(key)&&typeof value==='string'&&value.length)
+      env[key]=value;
+  }
+  env.FILEMCP_AUTO_CONNECT=autoConnect?'1':'0';
+  return env;
+}
+function readLaunchPlist() {
+  const result=cp.spawnSync('/usr/bin/plutil',
+    ['-convert','json','-o','-',agentPlist],
+    {encoding:'utf8',stdio:['ignore','pipe','pipe']});
+  if(result.error||result.status!==0)
+    throw Error('Could not parse existing ChatToComputerMCP LaunchAgent plist');
+  let plist;
+  try { plist=JSON.parse(result.stdout); }
+  catch { throw Error('Existing ChatToComputerMCP LaunchAgent contains invalid plist data'); }
+  if(plist.Label!==label)
+    throw Error('Existing ChatToComputerMCP LaunchAgent is not ours; refusing to update it');
+  return plist;
+}
+function launchPlistText(autoConnect,always,previousEnvironment={}) {
   const logs=path.join(home,'Library','Logs',name);
   mkdir(logs);
+  const variables=preservedLaunchEnvironment(previousEnvironment,autoConnect);
+  const serializedEnvironment=Object.entries(variables)
+    .sort(([left],[right])=>left.localeCompare(right))
+    .map(([key,value])=>'<key>'+xmlEscape(key)+'</key><string>'+xmlEscape(value)+'</string>')
+    .join('');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -309,7 +343,7 @@ function launchPlistText(autoConnect,always) {
     '<key>ProgramArguments</key><array><string>'+xmlEscape(target())+'</string></array>',
     '<key>RunAtLoad</key><true/>',
     '<key>KeepAlive</key>'+(always?'<true/>':'<dict><key>SuccessfulExit</key><false/></dict>'),
-    '<key>EnvironmentVariables</key><dict><key>FILEMCP_AUTO_CONNECT</key><string>'+(autoConnect?'1':'0')+'</string></dict>',
+    '<key>EnvironmentVariables</key><dict>'+serializedEnvironment+'</dict>',
     '<key>StandardOutPath</key><string>'+xmlEscape(path.join(logs,'launchagent.stdout.log'))+'</string>',
     '<key>StandardErrorPath</key><string>'+xmlEscape(path.join(logs,'launchagent.stderr.log'))+'</string>',
     '</dict></plist>',
@@ -318,13 +352,13 @@ function launchPlistText(autoConnect,always) {
 }
 function migrateExistingAgentPlist() {
   if(platform!=='darwin'||!fs.existsSync(agentPlist)) return;
-  const original=fs.readFileSync(agentPlist,'utf8');
-  if(!original.includes('<key>Label</key><string>'+label+'</string>'))
-    throw Error('Existing ChatToComputerMCP LaunchAgent is not ours; refusing to update it');
-  const autoConnect=original.includes(
-    '<key>FILEMCP_AUTO_CONNECT</key><string>1</string>');
-  const always=original.includes('<key>KeepAlive</key><true/>');
-  const rewritten=launchPlistText(autoConnect,always);
+  // plutil accepts both compact/generated XML and user-edited XML or binary
+  // property lists. Do not string-match whitespace-sensitive plist markup.
+  const original=readLaunchPlist();
+  const environment=original.EnvironmentVariables||{};
+  const autoConnect=environment.FILEMCP_AUTO_CONNECT==='1';
+  const always=original.KeepAlive===true;
+  const rewritten=launchPlistText(autoConnect,always,environment);
   const temp=agentPlist+'.update-'+process.pid+'-'+Date.now();
   fs.writeFileSync(temp,rewritten,{flag:'wx',mode:0o600});
   try {
@@ -339,21 +373,31 @@ function launchagent(action,args) {
   if(action==='status') return status();
   const service=domain()+'/'+label;
   if(action==='disable') {
+    // The test suite uses temporary HOME directories under the same real
+    // launchd domain. Never boot out a service unless this HOME owns a
+    // correctly labelled LaunchAgent plist.
+    if(!fs.existsSync(agentPlist)) {
+      console.log('No '+label+' LaunchAgent is registered in this home; nothing to disable.');
+      return;
+    }
+    readLaunchPlist();
     if(agentStatus().loaded) run('/bin/launchctl',['bootout',service]);
-    if(fs.existsSync(agentPlist)) fs.unlinkSync(agentPlist);
+    fs.unlinkSync(agentPlist);
     console.log('Disabled '+label+'. The original local.filemcp remains untouched.');
     return;
   }
   if(action!=='enable') throw new Error('Expected launchagent enable, status or disable');
   if(!fs.existsSync(target())) throw new Error('Run install first');
-  if(agentStatus().enabled || agentStatus().loaded)
-    throw new Error('Already enabled; disable the existing ChatToComputerMCP agent before reconfiguring.');
   const autoConnect=args.includes('--auto-connect');
   const always=args.includes('--always');
+  // A dry-run never touches launchd. In particular, a test using temporary
+  // HOME must not inspect or interfere with the real user's loaded service.
   if(args.includes('--dry-run')) {
     console.log(launchPlistText(autoConnect,always));
     return;
   }
+  if(agentStatus().enabled || agentStatus().loaded)
+    throw new Error('Already enabled; disable the existing ChatToComputerMCP agent before reconfiguring.');
   if(autoConnect && probe('/bin/launchctl',['print',domain()+'/local.filemcp']).ok)
     throw new Error('Existing FileMCP is active: refusing automatic connection with a potentially shared tunnel profile. Create an independent profile and disable the old service deliberately before auto-connect.');
   mkdir(path.dirname(agentPlist));

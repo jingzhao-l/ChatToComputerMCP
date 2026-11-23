@@ -336,6 +336,52 @@ chmod +x "$TMP_DIR/cloudflared"
 cat >"$TMP_DIR/main.swift" <<'SWIFT'
 import Foundation
 
+let systemProxySettings: [String: Any] = [
+    "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 15556,
+    "HTTPEnable": 1, "HTTPProxy": "proxy-fallback.internal", "HTTPPort": 8888,
+]
+let detectedProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: ["PATH": "/usr/bin"], systemProxySettings: systemProxySettings)
+precondition(detectedProxy["CONTROL_PLANE_HTTP_PROXY"] == "http://127.0.0.1:15556")
+precondition(detectedProxy["MCP_HTTP_PROXY"] == nil)
+precondition(detectedProxy["NO_PROXY"]?.contains("127.0.0.1") == true)
+precondition(detectedProxy["NO_PROXY"]?.contains("localhost") == true)
+precondition(detectedProxy["NO_PROXY"]?.contains("::1") == true)
+let explicitProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [
+        "CONTROL_PLANE_HTTP_PROXY": "http://explicit.proxy:8888",
+        "HTTPS_PROXY": "http://fallback.proxy:9999",
+        "MCP_HTTP_PROXY": "http://internal-mcp.proxy:7777",
+        "CA_BUNDLE": "/tmp/custom-ca.pem",
+        "UNSAFE_UNRELATED_SECRET": "should-not-propagate",
+    ], systemProxySettings: systemProxySettings)
+precondition(explicitProxy["CONTROL_PLANE_HTTP_PROXY"] == "http://explicit.proxy:8888")
+precondition(explicitProxy["HTTPS_PROXY"] == "http://fallback.proxy:9999")
+precondition(explicitProxy["MCP_HTTP_PROXY"] == "http://internal-mcp.proxy:7777")
+precondition(explicitProxy["CA_BUNDLE"] == "/tmp/custom-ca.pem")
+precondition(explicitProxy["UNSAFE_UNRELATED_SECRET"] == nil)
+let explicitHTTPS = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: ["HTTPS_PROXY": "http://user-proxy:8080"],
+    systemProxySettings: systemProxySettings)
+precondition(explicitHTTPS["HTTPS_PROXY"] == "http://user-proxy:8080")
+precondition(explicitHTTPS["CONTROL_PLANE_HTTP_PROXY"] == nil)
+let fallbackProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [:],
+    systemProxySettings: [
+        "HTTPSEnable": 0, "HTTPEnable": 1,
+        "HTTPProxy": "fallback.example", "HTTPPort": 3128,
+    ])
+precondition(fallbackProxy["CONTROL_PLANE_HTTP_PROXY"] == "http://fallback.example:3128")
+let disabledProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [:],
+    systemProxySettings: ["HTTPSEnable": 0, "HTTPEnable": 0])
+precondition(disabledProxy["CONTROL_PLANE_HTTP_PROXY"] == nil)
+let invalidProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [:],
+    systemProxySettings: ["HTTPSEnable": 1, "HTTPSProxy": "proxy", "HTTPSPort": 70000])
+precondition(invalidProxy["CONTROL_PLANE_HTTP_PROXY"] == nil)
+print("runtime-control-plane-system-proxy: ok")
+
 func waitFor(_ predicate: () -> Bool, timeout: TimeInterval, label: String) {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
@@ -680,7 +726,7 @@ print("cloudflare-cli-management: ok")
 print("runtime-cloudflare-provider: ok")
 SWIFT
 
-swiftc -framework Network -framework Security -o "$TMP_DIR/runtime-test" \
+swiftc -framework Network -framework Security -framework SystemConfiguration -o "$TMP_DIR/runtime-test" \
     macos/ProcessRunner.swift \
     macos/Ripgrep.swift \
     macos/LocalMCPServer.swift \

@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 import Darwin
 import Security
 
@@ -798,12 +799,21 @@ final class LocalMCPRuntime {
         return environment
     }
 
-    static func baseTunnelEnvironment() -> [String: String] {
-        let inherited = ProcessInfo.processInfo.environment
+    /// Keep explicit tunnel-client proxy settings intact. GUI/launchd processes
+    /// do not inherit macOS Network proxy settings as HTTPS_PROXY, so discover
+    /// the active manual system proxy when no higher-priority override exists.
+    /// Never proxy the loopback MCP server or copy unrelated process variables.
+    static func baseTunnelEnvironment(
+        inherited: [String: String] = ProcessInfo.processInfo.environment,
+        systemProxySettings: [String: Any]? = SCDynamicStoreCopyProxies(nil) as? [String: Any]
+    ) -> [String: String] {
         let passThroughKeys = [
             "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
             "http_proxy", "https_proxy", "all_proxy",
+            "CONTROL_PLANE_HTTP_PROXY", "TUNNEL_CLIENT_HTTP_PROXY",
+            "MCP_HTTP_PROXY", "HARPOON_HTTP_PROXY", "CA_BUNDLE",
+            "PROXY_CHECK_INTERVAL",
         ]
         var environment: [String: String] = [:]
         for key in passThroughKeys {
@@ -811,6 +821,17 @@ final class LocalMCPRuntime {
         }
         for (key, value) in inherited where key.hasPrefix("MCP_TEST_") {
             environment[key] = value
+        }
+
+        let explicitControlProxy = [
+            "CONTROL_PLANE_HTTP_PROXY", "TUNNEL_CLIENT_HTTP_PROXY",
+            "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+        ].contains { environment[$0] != nil }
+        if !explicitControlProxy, let settings = systemProxySettings,
+           let proxy = manualSystemControlProxy(settings) {
+            // Scope the system proxy to OpenAI HTTPS control traffic, not
+            // local MCP HTTP, Cloudflare ingress, or other client connections.
+            environment["CONTROL_PLANE_HTTP_PROXY"] = proxy
         }
 
         var noProxyEntries = (inherited["NO_PROXY"] ?? inherited["no_proxy"] ?? "")
@@ -824,6 +845,29 @@ final class LocalMCPRuntime {
         environment["NO_PROXY"] = noProxy
         environment["no_proxy"] = noProxy
         return environment
+    }
+
+    private static func manualSystemControlProxy(_ settings: [String: Any]) -> String? {
+        for (enabledKey, hostKey, portKey) in [
+            ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+            ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+        ] {
+            guard (settings[enabledKey] as? NSNumber)?.intValue == 1,
+                  let host = settings[hostKey] as? String,
+                  !host.isEmpty,
+                  let port = (settings[portKey] as? NSNumber)?.intValue,
+                  (1...65535).contains(port) else { continue }
+            var url = URLComponents()
+            url.scheme = "http" // HTTPS destination over an HTTP CONNECT proxy
+            url.host = host
+            url.port = port
+            if let proxy = url.url, proxy.host != nil {
+                return proxy.absoluteString
+            }
+        }
+        // PAC/auto-discovery and authenticated proxies must be configured by
+        // the user explicitly rather than guessed from partial settings.
+        return nil
     }
 
     static func defaultTunnelProfilesDirectory() -> URL? {

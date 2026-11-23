@@ -11,7 +11,7 @@ let app = NSApplication.shared
 runLogRegressionChecks()
 SWIFT
 swiftc -module-cache-path "${SWIFT_MODULECACHE_PATH:-$TEST_DIR/cache}" \
-    -framework AppKit -framework Network -framework Security \
+    -framework AppKit -framework Network -framework Security -framework SystemConfiguration \
     -o "$TEST_DIR/check" macos/ProcessRunner.swift macos/Ripgrep.swift macos/LocalMCPServer.swift \
     macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/LocalMCPRuntime.swift \
     macos/LaunchAgentService.swift \

@@ -36,8 +36,9 @@ test('installer is explicit; never auto-starts or creates a launchagent',()=>{
   if(process.platform==='darwin') {
     assert.match(noApp.stderr,/Run install first/);
     assert.equal(disabled.status,0,disabled.stderr);
-    const after=invoke(['status'],tmp);
-    assert.match(after.stdout,/LaunchAgent: disabled, not loaded/);
+    // A temporary HOME shares the real macOS launchd domain; do not
+    // assume the developer has no running ChatToComputerMCP service.
+    assert.equal(fs.existsSync(plist),false);
   } else {
     // Linux is used only for the GitHub OIDC package gate. It must reject
     // macOS-only launchd commands without modifying the computer.
@@ -83,6 +84,24 @@ test('macOS local build places a real app bundle under versioned release and can
   for(const d of ['bin','macos','vendor','assets/branding/chat-to-computer-mcp'])
     fs.mkdirSync(path.join(src,d),{recursive:true});
   fs.mkdirSync(fakeHome,{recursive:true});
+  const previousAgent=path.join(fakeHome,'Library','LaunchAgents',
+    'local.chat-to-computer-mcp.plist');
+  fs.mkdirSync(path.dirname(previousAgent),{recursive:true});
+  // Pretty-printed plist like macOS PlistBuddy emits, not compact CLI markup.
+  fs.writeFileSync(previousAgent,[
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<plist version="1.0"><dict>',
+    '<key>Label</key>',
+    '<string>local.chat-to-computer-mcp</string>',
+    '<key>ProgramArguments</key><array><string>/old/ChatToComputerMCP</string></array>',
+    '<key>KeepAlive</key><true/>',
+    '<key>EnvironmentVariables</key><dict>',
+    '<key>FILEMCP_AUTO_CONNECT</key><string>1</string>',
+    '<key>HTTPS_PROXY</key><string>http://127.0.0.1:15556</string>',
+    '<key>CONTROL_PLANE_HTTP_PROXY</key><string>http://127.0.0.1:15556</string>',
+    '<key>UNSAFE_API_KEY</key><string>must-not-survive</string>',
+    '</dict></dict></plist>'
+  ].join('\n'));
   fs.copyFileSync(entry,path.join(src,'bin','chat-to-computer-mcp.mjs'));
   fs.copyFileSync(path.join(root,'bin','update-support.mjs'),
     path.join(src,'bin','update-support.mjs'));
@@ -110,6 +129,16 @@ test('macOS local build places a real app bundle under versioned release and can
   }
   const result=cli(['install']);
   assert.equal(result.status,0,result.stdout+'\n'+result.stderr);
+  const parsedPlist=cp.spawnSync('/usr/bin/plutil',
+    ['-convert','json','-o','-',previousAgent],{encoding:'utf8'});
+  assert.equal(parsedPlist.status,0,parsedPlist.stderr);
+  const migrated=JSON.parse(parsedPlist.stdout);
+  assert.equal(migrated.EnvironmentVariables.FILEMCP_AUTO_CONNECT,'1');
+  assert.equal(migrated.EnvironmentVariables.HTTPS_PROXY,'http://127.0.0.1:15556');
+  assert.equal(migrated.EnvironmentVariables.CONTROL_PLANE_HTTP_PROXY,'http://127.0.0.1:15556');
+  assert.equal(migrated.EnvironmentVariables.UNSAFE_API_KEY,undefined);
+  assert.equal(migrated.KeepAlive,true);
+  assert.match(migrated.ProgramArguments[0],/releases\/current\/ChatToComputerMCP\.app/);
   const expected=path.join(fakeHome,'.local','share','chat-to-computer-mcp',
     'releases',version,'ChatToComputerMCP.app','Contents','MacOS','ChatToComputerMCP');
   assert.equal(fs.existsSync(expected),true,'expected executable exists in app bundle');

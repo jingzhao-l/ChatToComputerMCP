@@ -52,7 +52,8 @@ Write-Host "windows-overview-navigation: ok"
 
 Write-Host "windows-update-ui-controls: ok"
 
-$Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.4.0-windows-x64.zip"
+$PackageVersion = (Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw | ConvertFrom-Json).version
+$Archive = Join-Path $Root "dist/ChatToComputerMCP-v$PackageVersion-windows-x64.zip"
 if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
     throw "Windows x64 release archive is missing: $Archive"
 }

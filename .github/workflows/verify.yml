@@ -78,6 +78,7 @@ jobs:
             -framework AppKit \
             -framework Network \
             -framework Security \
+            -framework SystemConfiguration \
             macos/ProcessRunner.swift \
             macos/Ripgrep.swift \
             macos/LocalMCPServer.swift \
@@ -104,7 +105,7 @@ jobs:
       - name: Verify npm source package contents
         run: |
           npm pack --dry-run --json > npm-pack-manifest.json
-          node -e 'const p=require("./npm-pack-manifest.json")[0]; if (!p.files.some(f=>f.path==="bin/chat-to-computer-mcp.mjs")) throw Error("missing CLI"); if (!p.files.some(f=>f.path==="macos/LaunchAgentService.swift")) throw Error("missing launchagent");'
+          node -e 'const m=require("./npm-pack-manifest.json"); const p=Array.isArray(m)?m[0]:m["chat-to-computer-mcp"]; if(!p||!Array.isArray(p.files))throw Error("invalid npm pack manifest"); if(!p.files.some(f=>f.path==="bin/chat-to-computer-mcp.mjs")) throw Error("missing CLI"); if(!p.files.some(f=>f.path==="macos/LaunchAgentService.swift")) throw Error("missing launchagent");'
 
       - name: Native updater version, preferences and symlink safety regression
         run: bash tests/test_swift_updater.sh
@@ -244,12 +245,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ChatToComputerMCP-windows-x64
-          path: dist/ChatToComputerMCP-v0.4.0-windows-x64.zip
+          path: dist/ChatToComputerMCP-v*-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload Windows ARM64 package
         uses: actions/upload-artifact@v7
         with:
           name: ChatToComputerMCP-windows-arm64
-          path: dist/ChatToComputerMCP-v0.4.0-windows-arm64.zip
+          path: dist/ChatToComputerMCP-v*-windows-arm64.zip
           if-no-files-found: error

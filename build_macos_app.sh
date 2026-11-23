@@ -68,6 +68,7 @@ chmod 755 "$APP/Contents/MacOS/rg"
     -framework AppKit \
     -framework Network \
     -framework Security \
+    -framework SystemConfiguration \
     -o "$APP/Contents/MacOS/ChatToComputerMCP" \
     "$ROOT/macos/ProcessRunner.swift" \
     "$ROOT/macos/Ripgrep.swift" \
