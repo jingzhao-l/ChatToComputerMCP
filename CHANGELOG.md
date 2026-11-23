@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Prevent duplicate full CI runs for pull-request branch pushes; keep `main` push, pull-request and manual verification gates.
 - Made Windows source-installer archive SHA-256 verification independent of the `Get-FileHash` PowerShell command, which failed in isolated Windows PowerShell 5.1 despite successful native compilation.
 - Added a native Windows x64 clean-user npm tarball installation gate (offline source installation, CLI version, real local .NET app build, installed app readback, and legacy profile isolation) to CI and release validation.
 - Updated GitHub Actions `checkout`, `setup-node`, `setup-go`, `setup-dotnet`, and `upload-artifact` to their verified Node 24 runtime major versions; existing build/test jobs are unchanged.

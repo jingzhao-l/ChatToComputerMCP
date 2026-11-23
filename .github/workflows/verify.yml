@@ -1,8 +1,13 @@
 name: Verify
 
+# Do not run duplicate full suites for both branch pushes and pull requests.
+# Keep direct main pushes covered; PRs from feature/dependabot branches
+# still receive all three jobs. Manual branch checks remain possible.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
