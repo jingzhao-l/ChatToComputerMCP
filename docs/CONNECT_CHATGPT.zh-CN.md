@@ -13,7 +13,7 @@ npx --yes chat-to-computer-mcp@latest install
 npx --yes chat-to-computer-mcp@latest open
 ```
 
-npm 包在你的电脑上编译应用。需要 Node.js 20+；Mac 需安装 Swift/Xcode Command Line Tools，Windows 需 .NET 8 SDK 和 Windows PowerShell。
+npm 包在你的电脑上编译应用。需要 Node.js 24+；Mac 需安装 Swift/Xcode Command Line Tools，Windows 需 .NET 8 SDK 和 Windows PowerShell。
 
 在应用的 **Workspaces（工作区）** 里选择默认目录，也可以添加其他单独批准的文件夹。建议初次连接时**不要打开 Shell**，先验证只读文件操作。保存工作区权限。
 

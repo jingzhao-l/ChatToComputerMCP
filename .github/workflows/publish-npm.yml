@@ -23,6 +23,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
       - name: Validate stable version and main ancestry
         shell: bash
         run: |
@@ -41,11 +46,6 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
             echo "::error::Publish tag not in main history"; exit 1;
           }
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
       - name: npm tests and package allowlist
         shell: bash
         run: |

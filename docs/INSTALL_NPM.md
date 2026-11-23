@@ -6,7 +6,7 @@ pinned tool binaries as the GitHub repository. It compiles the native app
 
 ## Quick installation from npm
 
-On macOS with Xcode Command Line Tools, or Windows with .NET 8 SDK:
+Requires Node.js 24 or newer. On macOS with Xcode Command Line Tools, or Windows with .NET 8 SDK:
 
     npx --yes chat-to-computer-mcp@latest install
 

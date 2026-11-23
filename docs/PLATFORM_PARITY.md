@@ -12,9 +12,9 @@ Native test results and unverified external steps are kept distinct.
 | Multiple approved workspaces and GUI management | Implemented | Implemented | Native GUI and integration suites |
 | Opt-in Shell, Git push and Codex history writes | Implemented | Implemented | Default-off, separately enforced at runtime |
 | OpenAI Secure MCP Tunnel | Implemented | Implemented | Requires user Platform credentials |
-| Cloudflare remotely managed tunnel token | Implemented | Development branch implemented | Windows token-file process tests, not live Cloudflare account verification |
-| Cloudflare named tunnel management | Implemented | Development branch implemented | Fake Cloudflare CLI process integration; real account test still needed |
-| Cloudflare OAuth PKCE and per-client permissions | Implemented | Development branch implemented | Real Windows HTTP test with two OAuth clients, not WAN provider E2E |
+| Cloudflare remotely managed tunnel token | Implemented | Implemented in main | Windows token-file process tests, not live Cloudflare account verification |
+| Cloudflare named tunnel management | Implemented | Implemented in main | Fake Cloudflare CLI process integration; real account test still needed |
+| Cloudflare OAuth PKCE and per-client permissions | Implemented | Implemented in main | Real Windows HTTP test with two OAuth clients, not WAN provider E2E |
 | Credentials | macOS Keychain | Windows Credential Manager | Independent new product namespace |
 | Login start, auto-connect, crash recovery, always-on | launchd user LaunchAgent | HKCU user startup supervisor | Explicit opt-in; not pre-login Windows system services |
 | npm local source installer and updater | Implemented | Implemented | Shared CLI and local native compile |

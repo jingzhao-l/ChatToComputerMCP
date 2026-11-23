@@ -5,6 +5,7 @@ This is a defense-in-depth source guard, not a universal oracle for arbitrary
 third-party or SHA-pinned Actions. Dependabot and CI logs remain authoritative.
 """
 from pathlib import Path
+import json
 import re
 import sys
 
@@ -42,6 +43,18 @@ for filename in sorted(root.glob('*')):
                 f'{filename.name}:{index}: {action}@{ref} may use Node 20; '
                 f'require v{minimum[action]}+'
             )
+# The distributed installer must not advertise EOL Node.js 20 as supported.
+project = root.parent.parent
+package = json.loads((project / 'package.json').read_text())
+if package.get('engines', {}).get('node') != '>=24':
+    bad.append('package.json: supported Node.js runtime must be >=24')
+if (project / '.node-version').read_text().strip() != '24':
+    bad.append('.node-version: repository toolchain must be Node.js 24')
+# Tag validation calls `node` before npm tests; pin its runtime too.
+publisher = (root / 'publish-npm.yml').read_text()
+package_job = publisher.split('  package:\n', 1)[1].split('  macos:\n', 1)[0]
+if package_job.index('      - uses: actions/setup-node@') > package_job.index('      - name: Validate stable version and main ancestry'):
+    bad.append('publish-npm.yml: setup-node must precede node-based tag validation')
 if bad:
     print('\n'.join(bad),file=sys.stderr)
     raise SystemExit(1)

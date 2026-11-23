@@ -93,7 +93,7 @@ ChatGPT / Claude / another compatible MCP client
 
 ### 1. Install from npm
 
-Requires **Node.js 20+** and **macOS with Xcode Command Line Tools/Swift** or **Windows with .NET 8 SDK and Windows PowerShell**.
+Requires **Node.js 24+** and **macOS with Xcode Command Line Tools/Swift** or **Windows with .NET 8 SDK and Windows PowerShell**.
 
 ```bash
 npx --yes chat-to-computer-mcp@latest install
