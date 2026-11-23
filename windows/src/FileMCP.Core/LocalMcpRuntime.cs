@@ -127,14 +127,21 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
                     configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
                     receiptLedger: receipts, oauth: oauth,
-                    publicHost: isCloudflare ? configuration.CloudflareHostname : null);
+                    publicHost: isCloudflare ? configuration.CloudflareHostname : null,
+                    enableGitPush: configuration.EnableGitPush,
+                    enableCodexHistory: configuration.EnableCodexHistory);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
 
                 if (isCloudflare)
                 {
                     var path = WindowsCloudflareRunner.Locate();
-                    var start = WindowsCloudflareRunner.Prepare(path,
-                        configuration.CloudflareToken,configuration.Profile);
+                    var start = configuration.CloudflareMode == "named"
+                        ? WindowsCloudflareRunner.PrepareNamed(path,
+                            configuration.CloudflareTunnelName,
+                            configuration.CloudflareHostname,
+                            configuration.Port,configuration.Profile)
+                        : WindowsCloudflareRunner.Prepare(path,
+                            configuration.CloudflareToken,configuration.Profile);
                     _cloudflareTokenFile = start.TokenFile;
                     _tunnelProcess = ProcessRunner.StartManaged(start.Executable,start.Args,
                         null,start.Environment,
@@ -254,8 +261,17 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         {
             if (!WindowsCloudflareRunner.ValidHostname(configuration.CloudflareHostname))
                 throw new FileMcpException("Cloudflare public hostname is not a valid DNS hostname");
-            if (string.IsNullOrWhiteSpace(configuration.CloudflareToken))
-                throw new FileMcpException("Cloudflare dashboard tunnel token is required");
+            if (configuration.CloudflareMode == "token")
+            {
+                if (string.IsNullOrWhiteSpace(configuration.CloudflareToken))
+                    throw new FileMcpException("Cloudflare dashboard tunnel token is required");
+            }
+            else if (configuration.CloudflareMode == "named")
+            {
+                if (!WindowsCloudflareRunner.IsNamedTunnel(configuration.CloudflareTunnelName))
+                    throw new FileMcpException("Locally managed Cloudflare tunnel name is invalid");
+            }
+            else throw new FileMcpException("Unknown Cloudflare tunnel mode");
             if (configuration.CloudflarePairingCode.Length is < 32 or > 128 ||
                 !configuration.CloudflarePairingCode.All(ch=>char.IsAsciiLetterOrDigit(ch)||ch is '-' or '_'))
                 throw new FileMcpException("Cloudflare OAuth login code is missing or invalid");
@@ -276,6 +292,25 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
 
     public static bool IsValidCloudflareHostname(string value) =>
         WindowsCloudflareRunner.ValidHostname(value);
+
+    public static string CloudflareExecutable() =>
+        WindowsCloudflareRunner.Locate();
+
+    public static bool IsValidCloudflareTunnelName(string value) =>
+        WindowsCloudflareRunner.IsNamedTunnel(value);
+
+    public static IReadOnlyList<CloudflareNamedTunnel> ListCloudflareNamedTunnels() =>
+        WindowsCloudflareRunner.ListNamedTunnels()
+            .Select(item => new CloudflareNamedTunnel(item.Id,item.Name)).ToArray();
+
+    public static void CreateCloudflareNamedTunnel(string name) =>
+        WindowsCloudflareRunner.CreateNamedTunnel(name);
+
+    public static void DeleteCloudflareNamedTunnel(string name) =>
+        WindowsCloudflareRunner.DeleteNamedTunnel(name);
+
+    public static void RouteCloudflareHostname(string name,string hostname) =>
+        WindowsCloudflareRunner.RouteNamedTunnel(name,hostname);
 
     public static bool IsValidTunnelId(string value) => value.Length == 39 && value.StartsWith("tunnel_", StringComparison.Ordinal) && value[7..].All(ch => (ch >= 'a' && ch <= 'z') || char.IsAsciiDigit(ch));
     public static bool IsValidProfileName(string value) => value.Length is >= 1 and <= 128 && char.IsAsciiLetterOrDigit(value[0]) && value.Skip(1).All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '_' or '-');

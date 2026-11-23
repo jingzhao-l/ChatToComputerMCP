@@ -18,7 +18,8 @@ internal static partial class Program
         var root = Path.Combine(testRoot, "agent-tools");
         Directory.CreateDirectory(Path.Combine(root, "nested"));
         var safe = new LocalTools(root, "Test", "test@example.invalid", false);
-        var full = new LocalTools(root, "Test", "test@example.invalid", true);
+        var full = new LocalTools(root, "Test", "test@example.invalid", true,
+            enableGitPush: true, enableCodexHistory: true);
         async Task<JsonObject> Call(LocalTools tools, string name, JsonObject? args = null) => (await tools.CallAsync(name, args ?? new JsonObject())).StructuredContent;
         async Task<JsonObject> Poll(string id, int cursor = 0)
         {

@@ -44,6 +44,7 @@ public static class FileMcpConstants
 }
 
 public sealed record ApprovedWorkspace(string Id, string Name, string Path);
+public sealed record CloudflareNamedTunnel(string Id, string Name);
 public sealed record DesktopCommandInfo(string WorkspaceId, string WorkspaceName,
     string SessionId, string RequestId, string Cwd, string State, bool Active);
 
@@ -62,7 +63,11 @@ public sealed record LocalMcpConfiguration(
     string Provider = "openai",
     string CloudflareHostname = "",
     string CloudflareToken = "",
-    string CloudflarePairingCode = "");
+    string CloudflarePairingCode = "",
+    string CloudflareMode = "token",
+    string CloudflareTunnelName = "",
+    bool EnableGitPush = false,
+    bool EnableCodexHistory = false);
 
 public enum LocalMcpRuntimeStatus
 {
@@ -97,8 +102,12 @@ public sealed class FileMcpSettings
     public string GitUserName { get; set; } = "";
     public string GitUserEmail { get; set; } = "";
     public bool EnableCommands { get; set; }
+    public bool EnableGitPush { get; set; }
+    public bool EnableCodexHistory { get; set; }
     public int MaxConcurrentCommands { get; set; } = 8;
     public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];
     public string Provider { get; set; } = "openai";
     public string CloudflareHostname { get; set; } = "";
+    public string CloudflareMode { get; set; } = "token";
+    public string CloudflareTunnelName { get; set; } = "";
 }

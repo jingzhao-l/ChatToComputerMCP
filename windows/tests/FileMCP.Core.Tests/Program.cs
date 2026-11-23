@@ -132,8 +132,10 @@ internal static partial class Program
     {
         var workspace = Path.Combine(root, "files"); Directory.CreateDirectory(workspace);
         var safe = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid", false);
-        var full = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid", true);
-        Assert(safe.ToolDefinitions.Count == 26 && safe.HasTool("save_conversation_to_codex") && safe.HasTool("search_code") && safe.HasTool("repo_overview") && safe.HasTool("batch_read") && !safe.HasTool("run_command"), "safe tool count");
+        var full = new LocalTools(workspace, "FileMCP Test", "filemcp@example.invalid",
+            true, enableGitPush: true, enableCodexHistory: true);
+        Assert(safe.ToolDefinitions.Count == 24 && !safe.HasTool("save_conversation_to_codex") &&
+            !safe.HasTool("git_push") && safe.HasTool("search_code") && safe.HasTool("repo_overview") && safe.HasTool("batch_read") && !safe.HasTool("run_command"), "safe tool count");
         Assert(full.ToolDefinitions.Count == 31 && full.HasTool("save_conversation_to_codex") && full.HasTool("search_code") && full.HasTool("repo_overview") && full.HasTool("batch_read") && full.HasTool("run_command"), "full tool count");
 
         await safe.CallAsync("write_file", Obj(("relative_path", "docs/note.txt"), ("content", "alpha\nbeta\ngamma\n")));

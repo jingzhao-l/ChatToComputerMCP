@@ -36,6 +36,8 @@ internal sealed partial class LocalTools
     private readonly string _gitUserName;
     private readonly string _gitUserEmail;
     private readonly bool _enableCommands;
+    private readonly bool _enableGitPush;
+    private readonly bool _enableCodexHistory;
     private readonly string? _safeGitEmptyFile;
     private readonly string? _safeGitHooksDirectory;
     private readonly WorkspaceCommandBudget _commandBudget;
@@ -85,7 +87,8 @@ internal sealed partial class LocalTools
 
     public LocalTools(string allowedDirectory, string gitUserName, string gitUserEmail,
         bool enableCommands, Ripgrep? ripgrep = null, WorkspaceCommandBudget? sharedBudget = null,
-        CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default")
+        CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default",
+        bool enableGitPush = false, bool enableCodexHistory = false)
     {
         _resolver = new SafePathResolver(allowedDirectory);
         _receiptLedger = receiptLedger;
@@ -96,6 +99,8 @@ internal sealed partial class LocalTools
         _gitUserName = gitUserName;
         _gitUserEmail = gitUserEmail;
         _enableCommands = enableCommands;
+        _enableGitPush = enableGitPush;
+        _enableCodexHistory = enableCodexHistory;
         if (!enableCommands)
         {
             (_safeGitEmptyFile, _safeGitHooksDirectory) = PrepareSafeGitResources();
@@ -252,6 +257,18 @@ internal sealed partial class LocalTools
                     ("stop_on_error", BooleanProperty(false))),
                 ["operations"], true, output: BatchReadOutputSchema()));
             foreach (var definition in AgentToolDefinitions()) tools.Add(definition);
+            if (!_enableGitPush)
+            {
+                var toRemove = tools.OfType<JsonObject>()
+                    .First(tool => tool["name"]?.GetValue<string>() == "git_push");
+                tools.Remove(toRemove);
+            }
+            if (!_enableCodexHistory)
+            {
+                var toRemove = tools.OfType<JsonObject>()
+                    .First(tool => tool["name"]?.GetValue<string>() == "save_conversation_to_codex");
+                tools.Remove(toRemove);
+            }
             if (_enableCommands) tools.Add(Tool("command_capacity_status", "Read global command capacity without viewing other clients' paths or command contents.",
                 Props(), [], true, output: ObjectSchema(new[] {
                     ("max_concurrent_commands", "integer"),
@@ -268,6 +285,10 @@ internal sealed partial class LocalTools
 
     public async Task<ToolCallOutput> CallAsync(string name, JsonObject arguments, CancellationToken cancellationToken = default)
     {
+        if (name == "git_push" && !_enableGitPush)
+            throw new FileMcpException("Git push permission is disabled");
+        if (name == "save_conversation_to_codex" && !_enableCodexHistory)
+            throw new FileMcpException("Codex history write permission is disabled");
         await _toolSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
         var serialize = SerializedToolNames.Contains(name) ||
             (name == "batch_read" && BatchReadNeedsSerialization(arguments));

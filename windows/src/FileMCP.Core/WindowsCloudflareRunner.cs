@@ -42,6 +42,121 @@ internal static class WindowsCloudflareRunner
             "cloudflared.exe was not found. Install Cloudflare Tunnel for Windows and add it to PATH.");
     }
 
+    public sealed record NamedTunnel(string Id, string Name);
+
+    internal static bool IsNamedTunnel(string value) =>
+        value.Length is >= 1 and <= 100 &&
+        System.Text.RegularExpressions.Regex.IsMatch(value,
+            @"\A[A-Za-z0-9][A-Za-z0-9._-]*\z");
+
+    internal static IReadOnlyList<NamedTunnel> ListNamedTunnels()
+    {
+        var executable = Locate();
+        var result = ProcessRunner.RunAsync(executable,
+            ["tunnel", "list", "-o", "json"], timeoutSeconds: 20,
+            outputLimitBytes: 350_000).GetAwaiter().GetResult();
+        if (result.ExitCode != 0 || result.TimedOut)
+            throw new FileMcpException("Could not list local Cloudflare tunnels; use cloudflared tunnel login first");
+        using var parsed = System.Text.Json.JsonDocument.Parse(result.Stdout);
+        if (parsed.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+            throw new FileMcpException("Cloudflare tunnel listing did not return an array");
+        var names = new List<NamedTunnel>();
+        foreach (var item in parsed.RootElement.EnumerateArray())
+        {
+            var id=item.TryGetProperty("id",out var guid)?guid.GetString():"";
+            var name=item.TryGetProperty("name",out var label)?label.GetString():"";
+            if(id is not null && name is not null && Guid.TryParse(id,out _) &&
+               IsNamedTunnel(name)) names.Add(new NamedTunnel(id,name));
+        }
+        return names;
+    }
+
+    internal static string CreateNamedTunnel(string name)
+    {
+        if (!IsNamedTunnel(name)) throw new FileMcpException("Invalid tunnel name");
+        var executable=Locate();
+        var result=ProcessRunner.RunAsync(executable,
+            ["tunnel", "create", name], timeoutSeconds: 45,
+            outputLimitBytes: 40_000).GetAwaiter().GetResult();
+        if(result.ExitCode != 0 || result.TimedOut)
+            throw new FileMcpException("Creating Cloudflare tunnel failed; check your cloudflared login and DNS account");
+        return ListNamedTunnels().FirstOrDefault(t=>t.Name==name)?.Id ??
+            throw new FileMcpException("Newly created tunnel was not found in Cloudflare account");
+    }
+
+    internal static void DeleteNamedTunnel(string name)
+    {
+        if (!IsNamedTunnel(name)) throw new FileMcpException("Invalid tunnel name");
+        var executable=Locate();
+        var result=ProcessRunner.RunAsync(executable,
+            ["tunnel", "delete", name], timeoutSeconds: 40,
+            outputLimitBytes: 40_000).GetAwaiter().GetResult();
+        if(result.ExitCode!=0||result.TimedOut)
+            throw new FileMcpException("Deleting Cloudflare tunnel failed; check for active connectors");
+    }
+
+    internal static void RouteNamedTunnel(string name,string hostname)
+    {
+        if(!IsNamedTunnel(name)||!ValidHostname(hostname))
+            throw new FileMcpException("Invalid Cloudflare tunnel or hostname");
+        var executable=Locate();
+        var result=ProcessRunner.RunAsync(executable,
+            ["tunnel", "route", "dns", name, hostname],
+            timeoutSeconds:40,outputLimitBytes:40_000).GetAwaiter().GetResult();
+        if(result.ExitCode!=0||result.TimedOut)
+            throw new FileMcpException("Cloudflare DNS route failed; check existing DNS records and account permissions");
+    }
+
+    internal static Startup PrepareNamed(string executable,string name,
+        string hostname,ushort port,string profile)
+    {
+        if(!IsNamedTunnel(name)||!ValidHostname(hostname)||
+           !LocalMcpRuntime.IsValidProfileName(profile))
+            throw new FileMcpException("Invalid local named Cloudflare tunnel configuration");
+        var matching=ListNamedTunnels().FirstOrDefault(item=>item.Name==name) ??
+            throw new FileMcpException("Named tunnel was not found; log in and create or select a tunnel");
+        var identifier=Guid.Parse(matching.Id).ToString();
+        var home=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var candidates=new[] {
+            Path.Combine(home,".cloudflared",identifier+".json"),
+            Path.Combine(home,".cloudflare-warp",identifier+".json"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "cloudflared",identifier+".json")
+        };
+        var credentialFile=candidates.FirstOrDefault(File.Exists) ??
+            throw new FileMcpException("Credentials file for the selected Cloudflare tunnel was not found");
+        var privateDirectory=Path.Combine(Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData),
+            "ChatToComputerMCP","tunnel-profiles");
+        EnsurePrivateDirectory(privateDirectory);
+        var config=Path.Combine(privateDirectory,
+            "cloudflared-"+profile+"-"+Guid.NewGuid().ToString("N")+".yml");
+        var yaml="ingress:\n  - hostname: "+hostname+
+            "\n    service: http://127.0.0.1:"+port+
+            "\n  - service: http_status:404\n";
+        File.WriteAllText(config,yaml,Encoding.UTF8);
+        if(OperatingSystem.IsWindows())
+        {
+            var sid=WindowsIdentity.GetCurrent().User ??
+                throw new FileMcpException("Windows user identity unavailable");
+            var acl=new FileSecurity();
+            acl.SetAccessRuleProtection(true,false);
+            acl.AddAccessRule(new FileSystemAccessRule(sid,
+                FileSystemRights.FullControl,AccessControlType.Allow));
+            new FileInfo(config).SetAccessControl(acl);
+        }
+        var environment=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+        foreach(var key in new[] {"PATH","USERPROFILE","APPDATA","LOCALAPPDATA",
+                "SystemRoot","WINDIR","TEMP","TMP","HTTP_PROXY","HTTPS_PROXY","NO_PROXY"})
+        {
+            var value=Environment.GetEnvironmentVariable(key);
+            if(!string.IsNullOrEmpty(value))environment[key]=value;
+        }
+        return new Startup(executable,
+            ["tunnel","--no-autoupdate","--config",config,
+             "run","--credentials-file",credentialFile,name],environment,config);
+    }
+
     internal static Startup Prepare(string executable,string token,string profile)
     {
         if(!File.Exists(executable)||!LocalMcpRuntime.IsValidProfileName(profile)||

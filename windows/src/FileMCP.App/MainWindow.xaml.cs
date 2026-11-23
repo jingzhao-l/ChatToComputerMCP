@@ -94,6 +94,8 @@ public partial class MainWindow : Window
     {
         ProviderBox.SelectedIndex = settings.Provider == "cloudflare" ? 1 : 0;
         CloudflareHostnameBox.Text = settings.CloudflareHostname;
+        CloudflareModeBox.SelectedIndex = settings.CloudflareMode == "named" ? 1 : 0;
+        CloudflareTunnelNameBox.Text = settings.CloudflareTunnelName;
         TunnelIdBox.Text = settings.TunnelId;
         ProfileBox.Text = settings.Profile;
         PortBox.Text = settings.Port.ToString();
@@ -102,7 +104,10 @@ public partial class MainWindow : Window
         GitNameBox.Text = settings.GitUserName;
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
+        EnableGitPushBox.IsChecked = settings.EnableGitPush;
+        EnableCodexHistoryBox.IsChecked = settings.EnableCodexHistory;
         ApplyProviderSelection();
+        ApplyCloudflareMode();
         _workspaces.Clear();
         _workspaces.AddRange(settings.AdditionalWorkspaces ?? []);
         RefreshWorkspaceList();
@@ -531,6 +536,162 @@ public partial class MainWindow : Window
             RefreshOAuthClients();
     }
 
+    private bool UsesNamedCloudflare =>
+        CloudflareModeBox.SelectedItem is ComboBoxItem chosen &&
+        chosen.Tag?.ToString() == "named";
+
+    private void CloudflareModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (CloudflareTokenGroup is not null && CloudflareNamedGroup is not null)
+            ApplyCloudflareMode();
+    }
+
+    private void ApplyCloudflareMode()
+    {
+        CloudflareNamedGroup.Visibility = UsesNamedCloudflare
+            ? Visibility.Visible : Visibility.Collapsed;
+        CloudflareTokenGroup.Visibility = UsesNamedCloudflare
+            ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private string SelectedCloudflareTunnelName() =>
+        CloudflareTunnelNameBox.Text.Trim();
+
+    private void CloudflareLogin_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var executable = LocalMcpRuntime.CloudflareExecutable();
+            _ = Process.Start(new ProcessStartInfo {
+                FileName = executable,
+                Arguments = "tunnel login",
+                UseShellExecute = true,
+                WorkingDirectory = Environment.GetFolderPath(
+                    Environment.SpecialFolder.UserProfile)
+            }) ?? throw new IOException("cloudflared tunnel login could not be started");
+            CloudflareManagementStatus.Text =
+                "cloudflared login opened. Complete the browser authorization, then refresh the named tunnel list.";
+        }
+        catch (Exception ex) { CloudflareManagementStatus.Text = ex.Message; }
+    }
+
+    private async void CloudflareRefresh_Click(object sender, RoutedEventArgs e) =>
+        await RefreshNamedTunnelsAsync();
+
+    private async Task RefreshNamedTunnelsAsync(string? select = null)
+    {
+        CloudflareRefreshButton.IsEnabled = false;
+        CloudflareManagementStatus.Text = "Reading named tunnels from your Cloudflare account…";
+        try
+        {
+            var records = await Task.Run(LocalMcpRuntime.ListCloudflareNamedTunnels);
+            var target = select ?? CloudflareTunnelNameBox.Text.Trim();
+            CloudflareTunnelNameBox.Items.Clear();
+            foreach (var item in records)
+                CloudflareTunnelNameBox.Items.Add(item.Name);
+            CloudflareTunnelNameBox.Text = target;
+            CloudflareManagementStatus.Text =
+                records.Count + " named Cloudflare tunnel(s) found. Select one or create a new tunnel.";
+        }
+        catch (Exception ex)
+        {
+            CloudflareManagementStatus.Text = "Could not list Cloudflare tunnels: " +
+                ex.Message;
+        }
+        finally { CloudflareRefreshButton.IsEnabled = true; }
+    }
+
+    private async void CloudflareCreate_Click(object sender, RoutedEventArgs e)
+    {
+        var name = SelectedCloudflareTunnelName();
+        if (!LocalMcpRuntime.IsValidCloudflareTunnelName(name))
+        {
+            ShowError("Enter a tunnel name starting with a letter or digit.");
+            return;
+        }
+        if (_runtime.State.Status is LocalMcpRuntimeStatus.Running
+            or LocalMcpRuntimeStatus.Starting)
+        {
+            ShowError("Disconnect before creating a new tunnel.");
+            return;
+        }
+        CloudflareCreateButton.IsEnabled = false;
+        CloudflareManagementStatus.Text = "Creating named tunnel " + name + "…";
+        try
+        {
+            await Task.Run(() => LocalMcpRuntime.CreateCloudflareNamedTunnel(name));
+            CloudflareManagementStatus.Text = "Tunnel created. Set its hostname DNS route before connecting.";
+            await RefreshNamedTunnelsAsync(name);
+        }
+        catch (Exception ex)
+        {
+            CloudflareManagementStatus.Text = "Creation failed: " + ex.Message;
+        }
+        finally { CloudflareCreateButton.IsEnabled = true; }
+    }
+
+    private async void CloudflareRouteDns_Click(object sender, RoutedEventArgs e)
+    {
+        var name = SelectedCloudflareTunnelName();
+        var host = CloudflareHostnameBox.Text.Trim().ToLowerInvariant();
+        if (!LocalMcpRuntime.IsValidCloudflareTunnelName(name) ||
+            !LocalMcpRuntime.IsValidCloudflareHostname(host))
+        {
+            ShowError("Choose a valid named tunnel and HTTPS hostname.");
+            return;
+        }
+        if (System.Windows.MessageBox.Show(this,
+            "Create a Cloudflare DNS route for " + host +
+            " to the selected named tunnel " + name + "? Existing DNS records are not overwritten.",
+            "Configure Cloudflare DNS", MessageBoxButton.YesNo,
+            MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        CloudflareRouteDnsButton.IsEnabled = false;
+        try
+        {
+            await Task.Run(() => LocalMcpRuntime.RouteCloudflareHostname(name,host));
+            CloudflareManagementStatus.Text = "DNS route created for " + host +
+                ". Its ingress is configured when connecting the app.";
+        }
+        catch (Exception ex)
+        {
+            CloudflareManagementStatus.Text = "DNS routing failed: " + ex.Message;
+        }
+        finally { CloudflareRouteDnsButton.IsEnabled = true; }
+    }
+
+    private async void CloudflareDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var name = SelectedCloudflareTunnelName();
+        if (!LocalMcpRuntime.IsValidCloudflareTunnelName(name))
+        {
+            ShowError("Choose a valid Cloudflare named tunnel.");
+            return;
+        }
+        if (_runtime.State.Status is LocalMcpRuntimeStatus.Running
+            or LocalMcpRuntimeStatus.Starting)
+        {
+            ShowError("Disconnect before deleting your Cloudflare tunnel.");
+            return;
+        }
+        if (System.Windows.MessageBox.Show(this,
+            "Permanently delete the named Cloudflare tunnel " + name +
+            " from your Cloudflare account? This may disconnect other clients using it.",
+            "Delete Cloudflare tunnel", MessageBoxButton.YesNo,
+            MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        CloudflareDeleteButton.IsEnabled = false;
+        try
+        {
+            await Task.Run(() => LocalMcpRuntime.DeleteCloudflareNamedTunnel(name));
+            CloudflareManagementStatus.Text = "Cloudflare tunnel deleted from your account.";
+            await RefreshNamedTunnelsAsync();
+        }
+        catch (Exception ex)
+        {
+            CloudflareManagementStatus.Text = "Deletion failed: " + ex.Message;
+        }
+        finally { CloudflareDeleteButton.IsEnabled = true; }
+    }
+
     private void UpdateCloudflareCredentialStatus()
     {
         CloudflareTokenStatusText.Text = _cloudflareCredentialStore.HasSavedApiKey
@@ -709,7 +870,9 @@ public partial class MainWindow : Window
             var cloudflare = _settings.Provider == "cloudflare";
             if ((cloudflare
                     ? (!LocalMcpRuntime.IsValidCloudflareHostname(_settings.CloudflareHostname) ||
-                       !_cloudflareCredentialStore.HasSavedApiKey ||
+                       (_settings.CloudflareMode == "named"
+                          ? !LocalMcpRuntime.IsValidCloudflareTunnelName(_settings.CloudflareTunnelName)
+                          : !_cloudflareCredentialStore.HasSavedApiKey) ||
                        !_cloudflarePairingStore.HasSavedApiKey)
                     : (!LocalMcpRuntime.IsValidTunnelId(_settings.TunnelId) ||
                        !_credentialStore.HasSavedApiKey)) ||
@@ -745,6 +908,8 @@ public partial class MainWindow : Window
             _settings.TunnelId = TunnelIdBox.Text.Trim();
             _settings.Provider = UsesCloudflare ? "cloudflare" : "openai";
             _settings.CloudflareHostname = CloudflareHostnameBox.Text.Trim().ToLowerInvariant();
+            _settings.CloudflareMode = UsesNamedCloudflare ? "named" : "token";
+            _settings.CloudflareTunnelName = CloudflareTunnelNameBox.Text.Trim();
             _settingsStore.Save(_settings);
             UpdateApiKeyStatus();
             UpdateCloudflareCredentialStatus();
@@ -802,11 +967,18 @@ public partial class MainWindow : Window
                 ShowError("Enter a valid Cloudflare HTTPS hostname.");
                 return false;
             }
-            if (requireApiKey && CloudflareTokenBox.Password.Trim().Length == 0 &&
+            if (!UsesNamedCloudflare &&
+                requireApiKey && CloudflareTokenBox.Password.Trim().Length == 0 &&
                 !_cloudflareCredentialStore.HasSavedApiKey)
             {
                 MainTabs.SelectedItem = ConnectionTab;
                 ShowError("Enter a Cloudflare dashboard tunnel token or use an already saved token.");
+                return false;
+            }
+            if (UsesNamedCloudflare && !LocalMcpRuntime.IsValidCloudflareTunnelName(
+                CloudflareTunnelNameBox.Text.Trim()))
+            {
+                ShowError("Choose an existing or newly created Cloudflare named tunnel.");
                 return false;
             }
             return true;
@@ -863,8 +1035,13 @@ public partial class MainWindow : Window
             saved.MaxConcurrentCommands,
             saved.Provider,
             saved.CloudflareHostname,
-            cloudflare ? _cloudflareCredentialStore.ReadApiKey() : "",
-            cloudflare ? _cloudflarePairingStore.ReadApiKey() : "");
+            cloudflare && saved.CloudflareMode != "named"
+                ? _cloudflareCredentialStore.ReadApiKey() : "",
+            cloudflare ? _cloudflarePairingStore.ReadApiKey() : "",
+            saved.CloudflareMode,
+            saved.CloudflareTunnelName,
+            saved.EnableGitPush,
+            saved.EnableCodexHistory);
     }
 
     private void SaveAllSettings()
@@ -872,6 +1049,8 @@ public partial class MainWindow : Window
         _settings.TunnelId = TunnelIdBox.Text.Trim();
         _settings.Provider = UsesCloudflare ? "cloudflare" : "openai";
         _settings.CloudflareHostname = CloudflareHostnameBox.Text.Trim().ToLowerInvariant();
+        _settings.CloudflareMode = UsesNamedCloudflare ? "named" : "token";
+        _settings.CloudflareTunnelName = CloudflareTunnelNameBox.Text.Trim();
         SaveSettingsFields();
         _settingsStore.Save(_settings);
     }
@@ -885,6 +1064,8 @@ public partial class MainWindow : Window
         _settings.GitUserName = GitNameBox.Text.Trim();
         _settings.GitUserEmail = GitEmailBox.Text.Trim();
         _settings.EnableCommands = EnableCommandsCheckBox.IsChecked == true;
+        _settings.EnableGitPush = EnableGitPushBox.IsChecked == true;
+        _settings.EnableCodexHistory = EnableCodexHistoryBox.IsChecked == true;
         _settings.AdditionalWorkspaces = _workspaces.ToList();
         _settings.MaxConcurrentCommands = SelectedCommandCapacity();
     }
@@ -907,6 +1088,8 @@ public partial class MainWindow : Window
         WorkspaceListBox.IsEnabled = editable;
         WorkspaceNameBox.IsEnabled = editable;
         CommandCapacityBox.IsEnabled = editable;
+        EnableGitPushBox.IsEnabled = editable;
+        EnableCodexHistoryBox.IsEnabled = editable;
         AddWorkspaceButton.IsEnabled = editable;
         RenameWorkspaceButton.IsEnabled = editable;
         RemoveWorkspaceButton.IsEnabled = editable;

@@ -29,6 +29,8 @@ public sealed class SettingsStore
             settings.AdditionalWorkspaces ??= [];
             if (settings.Provider is not ("openai" or "cloudflare"))
                 throw new FileMcpException("Unsupported tunnel provider in saved configuration");
+            if (settings.CloudflareMode is not ("token" or "named"))
+                throw new FileMcpException("Invalid Cloudflare connection mode");
             return settings;
         }
         catch (JsonException ex) { throw new FileMcpException("Could not read ChatToComputerMCP settings: " + ex.Message); }

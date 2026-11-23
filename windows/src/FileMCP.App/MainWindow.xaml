@@ -58,8 +58,16 @@
                             <TextBlock Text="Cloudflare public hostname" FontWeight="SemiBold" Margin="0,0,0,6"/>
                             <TextBox x:Name="CloudflareHostnameBox" Margin="0,0,0,10"
                                      ToolTip="DNS hostname for your Cloudflare Tunnel, e.g. mcp.example.com."/>
-                            <TextBlock Text="Cloudflare remotely-managed tunnel token"
-                                       FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <TextBlock Text="Tunnel management" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <ComboBox x:Name="CloudflareModeBox" MinHeight="30"
+                                      SelectionChanged="CloudflareModeChanged"
+                                      Margin="0,0,0,10">
+                                <ComboBoxItem Tag="token" Content="Cloudflare remotely-managed dashboard token"/>
+                                <ComboBoxItem Tag="named" Content="Named tunnel in local Cloudflare account"/>
+                            </ComboBox>
+                            <StackPanel x:Name="CloudflareTokenGroup">
+                                <TextBlock Text="Cloudflare remotely-managed tunnel token"
+                                           FontWeight="SemiBold" Margin="0,0,0,6"/>
                             <PasswordBox x:Name="CloudflareTokenBox" Margin="0,0,0,6"
                                          ToolTip="Stored in Windows Credential Manager; never added to command line arguments."/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,9">
@@ -67,6 +75,28 @@
                                            VerticalAlignment="Center"/>
                                 <Button x:Name="DeleteCloudflareTokenButton" Content="Delete token"
                                         Click="DeleteCloudflareToken_Click" Margin="12,0,0,0"/>
+                            </StackPanel>
+                            </StackPanel>
+                            <StackPanel x:Name="CloudflareNamedGroup" Visibility="Collapsed">
+                                <TextBlock Text="Cloudflare named tunnel" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <ComboBox x:Name="CloudflareTunnelNameBox" MinHeight="30"
+                                          IsEditable="True" Margin="0,0,0,8"
+                                          ToolTip="Select an existing tunnel or type a new name."/>
+                                <WrapPanel Margin="0,0,0,8">
+                                    <Button x:Name="CloudflareLoginButton" Content="Log in"
+                                            Click="CloudflareLogin_Click" Margin="0,0,7,5"/>
+                                    <Button x:Name="CloudflareRefreshButton" Content="Refresh tunnels"
+                                            Click="CloudflareRefresh_Click" Margin="0,0,7,5"/>
+                                    <Button x:Name="CloudflareCreateButton" Content="Create"
+                                            Click="CloudflareCreate_Click" Margin="0,0,7,5"/>
+                                    <Button x:Name="CloudflareRouteDnsButton" Content="Set DNS route"
+                                            Click="CloudflareRouteDns_Click" Margin="0,0,7,5"/>
+                                    <Button x:Name="CloudflareDeleteButton" Content="Delete"
+                                            Click="CloudflareDelete_Click" Margin="0,0,7,5"/>
+                                </WrapPanel>
+                                <TextBlock x:Name="CloudflareManagementStatus" Foreground="Gray"
+                                           TextWrapping="Wrap" Margin="0,0,0,9"
+                                           Text="Install and log in to cloudflared.exe first. Named tunnel credentials stay in your Cloudflare account."/>
                             </StackPanel>
                             <TextBlock Text="Local OAuth pairing code" FontWeight="SemiBold" Margin="0,0,0,6"/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
@@ -150,6 +180,14 @@
                                   ToolTip="Allow ChatToComputerMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
                         <TextBlock Margin="120,5,0,0" Foreground="Gray" TextWrapping="Wrap"
                                    Text="Allows ChatGPT to run PowerShell/CLI commands with the current Windows user's permissions. Enable only for workspaces you trust."/>
+                        <CheckBox x:Name="EnableGitPushBox" Content="Allow Git push to remote servers"
+                                  Margin="120,12,0,0"
+                                  ToolTip="Sends repository contents to configured remote servers and may use existing credentials. Disabled by default."/>
+                        <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow writing to Codex history"
+                                  Margin="120,8,0,0"
+                                  ToolTip="Writes conversation content to the user's Codex history outside approved workspaces. Disabled by default."/>
+                        <TextBlock Margin="120,4,0,0" Foreground="Gray" TextWrapping="Wrap"
+                                   Text="Git push can disclose source to remotes. Codex history writes outside the workspace. Both need separate approval."/>
 
                         <Expander x:Name="AdvancedExpander" Header="Advanced options" Margin="0,16,0,0">
                             <Grid Margin="0,12,0,0">

@@ -42,7 +42,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
         bool enableCommands, string localAuthToken, Action<string> log,
         IReadOnlyList<ApprovedWorkspace>? additionalWorkspaces = null, int maxConcurrentCommands = 8,
         CommandReceiptLedger? receiptLedger = null,
-        WindowsOAuthServer? oauth = null, string? publicHost = null)
+        WindowsOAuthServer? oauth = null, string? publicHost = null,
+        bool enableGitPush = false, bool enableCodexHistory = false)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         _port = port; _localAuthToken = localAuthToken; _log = log;
@@ -58,7 +59,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
         var budget = new WorkspaceCommandBudget(maxConcurrentCommands);
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
             enableCommands, sharedBudget: budget, receiptLedger: receiptLedger,
-            workspaceScopeID: "default");
+            workspaceScopeID: "default", enableGitPush: enableGitPush,
+            enableCodexHistory: enableCodexHistory);
         var roots = new List<string> { _tools.WorkspaceRoot };
         var additional = additionalWorkspaces ?? [];
         if (additional.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
@@ -72,7 +74,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (!Directory.Exists(definition.Path)) throw new FileMcpException("Approved workspace directory is missing");
             var scoped = new LocalTools(definition.Path, gitUserName, gitUserEmail,
                 enableCommands, sharedBudget: budget, receiptLedger: receiptLedger,
-                workspaceScopeID: definition.Id);
+                workspaceScopeID: definition.Id,
+                enableGitPush: enableGitPush, enableCodexHistory: enableCodexHistory);
             var canonical = Path.TrimEndingDirectorySeparator(scoped.WorkspaceRoot);
             if (roots.Any(root => OverlappingRoots(Path.TrimEndingDirectorySeparator(root), canonical)))
                 throw new FileMcpException("Approved workspace folders must not overlap");

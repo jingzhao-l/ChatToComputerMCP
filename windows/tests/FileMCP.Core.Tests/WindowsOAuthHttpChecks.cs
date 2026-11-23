@@ -64,6 +64,39 @@ internal static partial class Program
         Assert(!allowed["isError"]!.GetValue<bool>() &&
             allowed["structuredContent"]!.ToJsonString().Contains("secondary-content"),
             "Approved extra workspace works over real HTTP");
-        Console.WriteLine("windows-oauth-http-scope-isolation: ok");
+        var started = await Call(first, "start_command", new JsonObject {
+            ["request_id"] = "verified-client-task",
+            ["command"] = "Start-Sleep -Seconds 8",
+            ["cwd"] = "",
+            ["timeout_seconds"] = 16
+        });
+        Assert(!started["isError"]!.GetValue<bool>(),
+            "OAuth-verified client owns a new command");
+        var session = started["structuredContent"]!["session_id"]!.GetValue<string>();
+        var foreignRead = await Call(second, "read_command_output",
+            new JsonObject { ["session_id"] = session });
+        Assert(foreignRead["isError"]!.GetValue<bool>(),
+            "Second OAuth client cannot read sibling session output");
+        var foreignCancel = await Call(second, "cancel_command",
+            new JsonObject { ["session_id"] = session });
+        Assert(foreignCancel["isError"]!.GetValue<bool>(),
+            "Second OAuth client cannot cancel sibling session");
+        var foreignID = await Call(second, "start_command", new JsonObject {
+            ["request_id"] = "verified-client-task",
+            ["command"] = "Start-Sleep -Seconds 8",
+            ["cwd"] = "",
+            ["timeout_seconds"] = 16
+        });
+        Assert(foreignID["isError"]!.GetValue<bool>(),
+            "Second OAuth client cannot reuse sibling request ID");
+        var ownerRead = await Call(first, "read_command_output",
+            new JsonObject { ["session_id"] = session });
+        Assert(!ownerRead["isError"]!.GetValue<bool>(),
+            "Task owner may read its own output");
+        var ownerCancel = await Call(first, "cancel_command",
+            new JsonObject { ["session_id"] = session });
+        Assert(!ownerCancel["isError"]!.GetValue<bool>(),
+            "Task owner may cancel its own work");
+        Console.WriteLine("windows-oauth-http-scope-and-task-ownership: ok");
     }
 }
