@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Windows.Controls;
 using System.Drawing;
@@ -16,6 +17,15 @@ public partial class MainWindow : Window
 {
     private readonly SettingsStore _settingsStore = new();
     private readonly WindowsCredentialStore _credentialStore = new();
+    private readonly WindowsCredentialStore _cloudflareCredentialStore =
+        new("ChatToComputerMCP/cloudflare-tunnel-token");
+    private readonly WindowsCredentialStore _cloudflarePairingStore =
+        new("ChatToComputerMCP/cloudflare-oauth-pairing");
+    private sealed record OAuthClientRow(WindowsOAuthServer.DesktopClient Client)
+    {
+        public string Display => Client.Name + " · " +
+            Client.Id[..Math.Min(8, Client.Id.Length)];
+    }
     private readonly LocalMcpRuntime _runtime = new();
     private readonly Forms.NotifyIcon _trayIcon;
     private FileMcpSettings _settings;
@@ -38,6 +48,7 @@ public partial class MainWindow : Window
         ApplySettings(_settings);
         LoadStartupSettings();
         UpdateApiKeyStatus();
+        UpdateCloudflareCredentialStatus();
         LoadUpdateSettings();
         _updateTimer.Interval = TimeSpan.FromHours(12);
         _updateTimer.Tick += (_, _) => _ = CheckUpdatesAsync(automatic: true);
@@ -81,6 +92,8 @@ public partial class MainWindow : Window
 
     private void ApplySettings(FileMcpSettings settings)
     {
+        ProviderBox.SelectedIndex = settings.Provider == "cloudflare" ? 1 : 0;
+        CloudflareHostnameBox.Text = settings.CloudflareHostname;
         TunnelIdBox.Text = settings.TunnelId;
         ProfileBox.Text = settings.Profile;
         PortBox.Text = settings.Port.ToString();
@@ -89,6 +102,7 @@ public partial class MainWindow : Window
         GitNameBox.Text = settings.GitUserName;
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
+        ApplyProviderSelection();
         _workspaces.Clear();
         _workspaces.AddRange(settings.AdditionalWorkspaces ?? []);
         RefreshWorkspaceList();
@@ -496,6 +510,152 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool UsesCloudflare =>
+        ProviderBox.SelectedItem is ComboBoxItem chosen &&
+        chosen.Tag?.ToString() == "cloudflare";
+
+    private void ProviderChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (OpenAIConnectionGroup is not null && CloudflareConnectionGroup is not null)
+            ApplyProviderSelection();
+    }
+
+    private void ApplyProviderSelection()
+    {
+        var cloudflare = UsesCloudflare;
+        CloudflareConnectionGroup.Visibility =
+            cloudflare ? Visibility.Visible : Visibility.Collapsed;
+        OpenAIConnectionGroup.Visibility =
+            cloudflare ? Visibility.Collapsed : Visibility.Visible;
+        if (cloudflare && _runtime.State.Status == LocalMcpRuntimeStatus.Running)
+            RefreshOAuthClients();
+    }
+
+    private void UpdateCloudflareCredentialStatus()
+    {
+        CloudflareTokenStatusText.Text = _cloudflareCredentialStore.HasSavedApiKey
+            ? "Cloudflare tunnel token saved" : "No Cloudflare token saved";
+        CloudflarePairingStatusText.Text = _cloudflarePairingStore.HasSavedApiKey
+            ? "Private OAuth login code is available" : "Login code not configured";
+        CopyCloudflarePairingButton.IsEnabled =
+            _cloudflarePairingStore.HasSavedApiKey;
+        DeleteCloudflareTokenButton.IsEnabled =
+            _cloudflareCredentialStore.HasSavedApiKey;
+    }
+
+    private void SaveCloudflareCredentials()
+    {
+        var supplied = CloudflareTokenBox.Password.Trim();
+        if (supplied.Length > 0)
+        {
+            _cloudflareCredentialStore.SaveApiKey(supplied);
+            CloudflareTokenBox.Clear();
+        }
+        if (!_cloudflarePairingStore.HasSavedApiKey)
+            _cloudflarePairingStore.SaveApiKey(
+                Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant());
+        UpdateCloudflareCredentialStatus();
+    }
+
+    private void DeleteCloudflareToken_Click(object sender, RoutedEventArgs e)
+    {
+        if (_runtime.State.Status is LocalMcpRuntimeStatus.Running
+            or LocalMcpRuntimeStatus.Starting)
+        {
+            ShowError("Disconnect before deleting a Cloudflare tunnel credential.");
+            return;
+        }
+        try
+        {
+            _cloudflareCredentialStore.DeleteApiKey();
+            CloudflareTokenBox.Clear();
+            UpdateCloudflareCredentialStatus();
+        }
+        catch (Exception ex) { ShowError(ex.Message); }
+    }
+
+    private void CopyCloudflarePairing_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_cloudflarePairingStore.HasSavedApiKey) return;
+        try
+        {
+            System.Windows.Clipboard.SetText(_cloudflarePairingStore.ReadApiKey());
+            AppendLog("OAuth pairing code copied on explicit local user request. Clear the clipboard when done.\n");
+        }
+        catch (Exception ex) { ShowError(ex.Message); }
+    }
+
+    private void ResetCloudflarePairing_Click(object sender, RoutedEventArgs e)
+    {
+        if (_runtime.State.Status is LocalMcpRuntimeStatus.Running
+            or LocalMcpRuntimeStatus.Starting)
+        {
+            ShowError("Disconnect first. A new login code revokes old OAuth tokens when reconnecting.");
+            return;
+        }
+        if (System.Windows.MessageBox.Show(this,
+            "Generate a new OAuth login code? Previous OAuth access and refresh tokens become invalid on reconnect.",
+            "Regenerate pairing code", MessageBoxButton.YesNo,
+            MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            _cloudflarePairingStore.SaveApiKey(
+                Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant());
+            UpdateCloudflareCredentialStatus();
+            AppendLog("Cloudflare OAuth pairing code replaced.\n");
+        }
+        catch (Exception ex) { ShowError(ex.Message); }
+    }
+
+    private void RefreshOAuthClients_Click(object sender, RoutedEventArgs e) =>
+        RefreshOAuthClients();
+
+    private void RefreshOAuthClients()
+    {
+        var current = (OAuthClientListBox.SelectedItem as OAuthClientRow)?.Client.Id;
+        var records = _runtime.DesktopOAuthClients()
+            .Select(value => new OAuthClientRow(value)).ToArray();
+        OAuthClientListBox.ItemsSource = records;
+        OAuthClientListBox.SelectedItem = records.FirstOrDefault(value =>
+            value.Client.Id == current);
+        if (records.Length == 0)
+        {
+            OAuthClientScopeText.Text =
+                "No approved OAuth clients; complete pairing from your cloud AI client first.";
+            RevokeOAuthClientButton.IsEnabled = false;
+        }
+    }
+
+    private void OAuthClientSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (OAuthClientListBox.SelectedItem is not OAuthClientRow row)
+        {
+            RevokeOAuthClientButton.IsEnabled = false;
+            return;
+        }
+        OAuthClientScopeText.Text = "Approved workspaces: " +
+            string.Join(", ", row.Client.Workspaces);
+        RevokeOAuthClientButton.IsEnabled =
+            _runtime.State.Status == LocalMcpRuntimeStatus.Running && UsesCloudflare;
+    }
+
+    private void RevokeOAuthClient_Click(object sender, RoutedEventArgs e)
+    {
+        if (OAuthClientListBox.SelectedItem is not OAuthClientRow row) return;
+        if (System.Windows.MessageBox.Show(this,
+            "Revoke " + row.Client.Name +
+            "? Its access and refresh tokens become invalid and its running commands stop.",
+            "Revoke OAuth client", MessageBoxButton.YesNo,
+            MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            _runtime.RevokeDesktopOAuthClient(row.Client.Id);
+            AppendLog("OAuth client revoked; its tasks were cancelled.\n");
+            RefreshOAuthClients();
+        }
+        catch (Exception ex) { ShowError(ex.Message); }
+    }
+
     private void UpdateApiKeyStatus()
     {
         var saved = _credentialStore.HasSavedApiKey;
@@ -516,21 +676,21 @@ public partial class MainWindow : Window
 
         try
         {
-            var typedKey = ApiKeyBox.Password.Trim();
-            if (typedKey.Length > 0)
+            if (UsesCloudflare) SaveCloudflareCredentials();
+            else
             {
-                _credentialStore.SaveApiKey(typedKey);
-                ApiKeyBox.Password = "";
-                UpdateApiKeyStatus();
+                var typedKey = ApiKeyBox.Password.Trim();
+                if (typedKey.Length > 0)
+                {
+                    _credentialStore.SaveApiKey(typedKey);
+                    ApiKeyBox.Clear();
+                    UpdateApiKeyStatus();
+                }
             }
-            var apiKey = _credentialStore.ReadApiKey();
             SaveAllSettings();
-            var configuration = new LocalMcpConfiguration(
-                TunnelIdBox.Text.Trim(), apiKey, ProfileBox.Text.Trim(), checked((ushort)_settings.Port),
-                DirectoryBox.Text.Trim(), HealthAddressBox.Text.Trim(), GitNameBox.Text.Trim(), GitEmailBox.Text.Trim(),
-                EnableCommandsCheckBox.IsChecked == true,
-                _workspaces.ToArray(), SelectedCommandCapacity());
+            var configuration = BuildRuntimeConfiguration();
             await _runtime.StartAsync(configuration);
+            if (UsesCloudflare) RefreshOAuthClients();
         }
         catch (Exception ex) { ShowError(ex.Message); }
     }
@@ -546,27 +706,20 @@ public partial class MainWindow : Window
         // Keychain dialog; user has already explicitly opted into it.
         try
         {
-            if (!LocalMcpRuntime.IsValidTunnelId(_settings.TunnelId) ||
-                !_credentialStore.HasSavedApiKey ||
+            var cloudflare = _settings.Provider == "cloudflare";
+            if ((cloudflare
+                    ? (!LocalMcpRuntime.IsValidCloudflareHostname(_settings.CloudflareHostname) ||
+                       !_cloudflareCredentialStore.HasSavedApiKey ||
+                       !_cloudflarePairingStore.HasSavedApiKey)
+                    : (!LocalMcpRuntime.IsValidTunnelId(_settings.TunnelId) ||
+                       !_credentialStore.HasSavedApiKey)) ||
                 !Directory.Exists(_settings.AllowedDirectory) ||
                 !LocalMcpRuntime.IsValidProfileName(_settings.Profile))
             {
                 AppendLog("Login auto-connect skipped: check tunnel credentials and approved workspace settings.\n");
                 return;
             }
-            var config = new LocalMcpConfiguration(
-                _settings.TunnelId,
-                _credentialStore.ReadApiKey(),
-                _settings.Profile,
-                checked((ushort)_settings.Port),
-                _settings.AllowedDirectory,
-                _settings.HealthAddress,
-                _settings.GitUserName,
-                _settings.GitUserEmail,
-                _settings.EnableCommands,
-                _settings.AdditionalWorkspaces.ToArray(),
-                _settings.MaxConcurrentCommands);
-            await _runtime.StartAsync(config);
+            await _runtime.StartAsync(BuildRuntimeConfiguration(_settings));
         }
         catch (Exception ex)
         {
@@ -579,15 +732,22 @@ public partial class MainWindow : Window
         if (!ValidateConnection(requireApiKey: true)) return;
         try
         {
-            var typedKey = ApiKeyBox.Password.Trim();
-            if (typedKey.Length > 0)
+            if (UsesCloudflare) SaveCloudflareCredentials();
+            else
             {
-                _credentialStore.SaveApiKey(typedKey);
-                ApiKeyBox.Password = "";
+                var typedKey = ApiKeyBox.Password.Trim();
+                if (typedKey.Length > 0)
+                {
+                    _credentialStore.SaveApiKey(typedKey);
+                    ApiKeyBox.Clear();
+                }
             }
             _settings.TunnelId = TunnelIdBox.Text.Trim();
+            _settings.Provider = UsesCloudflare ? "cloudflare" : "openai";
+            _settings.CloudflareHostname = CloudflareHostnameBox.Text.Trim().ToLowerInvariant();
             _settingsStore.Save(_settings);
             UpdateApiKeyStatus();
+            UpdateCloudflareCredentialStatus();
             AppendLog("Connection settings saved.\n");
             if (_runtime.State.Status != LocalMcpRuntimeStatus.Stopped) AppendLog("Changes will take effect the next time the tunnel starts.\n");
         }
@@ -633,10 +793,44 @@ public partial class MainWindow : Window
 
     private bool ValidateConnection(bool requireApiKey)
     {
+        if (UsesCloudflare)
+        {
+            if (!LocalMcpRuntime.IsValidCloudflareHostname(
+                CloudflareHostnameBox.Text.Trim().ToLowerInvariant()))
+            {
+                MainTabs.SelectedItem = ConnectionTab;
+                ShowError("Enter a valid Cloudflare HTTPS hostname.");
+                return false;
+            }
+            if (requireApiKey && CloudflareTokenBox.Password.Trim().Length == 0 &&
+                !_cloudflareCredentialStore.HasSavedApiKey)
+            {
+                MainTabs.SelectedItem = ConnectionTab;
+                ShowError("Enter a Cloudflare dashboard tunnel token or use an already saved token.");
+                return false;
+            }
+            return true;
+        }
         var tunnelId = TunnelIdBox.Text.Trim();
-        if (tunnelId.Length == 0) { MainTabs.SelectedItem = ConnectionTab; ShowError("Enter a Tunnel ID in the Connection tab."); return false; }
-        if (!LocalMcpRuntime.IsValidTunnelId(tunnelId)) { MainTabs.SelectedItem = ConnectionTab; ShowError("Tunnel ID must match tunnel_<32 lowercase letters or digits>."); return false; }
-        if (requireApiKey && ApiKeyBox.Password.Trim().Length == 0 && !_credentialStore.HasSavedApiKey) { MainTabs.SelectedItem = ConnectionTab; ShowError("Enter a Runtime API key in the Connection tab."); return false; }
+        if (tunnelId.Length == 0)
+        {
+            MainTabs.SelectedItem = ConnectionTab;
+            ShowError("Enter a Secure MCP Tunnel ID.");
+            return false;
+        }
+        if (!LocalMcpRuntime.IsValidTunnelId(tunnelId))
+        {
+            MainTabs.SelectedItem = ConnectionTab;
+            ShowError("Tunnel ID must match tunnel_<32 lowercase letters or digits>.");
+            return false;
+        }
+        if (requireApiKey && ApiKeyBox.Password.Trim().Length == 0 &&
+            !_credentialStore.HasSavedApiKey)
+        {
+            MainTabs.SelectedItem = ConnectionTab;
+            ShowError("Enter a Platform Runtime API key.");
+            return false;
+        }
         return true;
     }
 
@@ -650,9 +844,34 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private LocalMcpConfiguration BuildRuntimeConfiguration(
+        FileMcpSettings? source = null)
+    {
+        var saved = source ?? _settings;
+        var cloudflare = saved.Provider == "cloudflare";
+        return new LocalMcpConfiguration(
+            saved.TunnelId,
+            cloudflare ? "" : _credentialStore.ReadApiKey(),
+            saved.Profile,
+            checked((ushort)saved.Port),
+            saved.AllowedDirectory,
+            saved.HealthAddress,
+            saved.GitUserName,
+            saved.GitUserEmail,
+            saved.EnableCommands,
+            (saved.AdditionalWorkspaces ?? []).ToArray(),
+            saved.MaxConcurrentCommands,
+            saved.Provider,
+            saved.CloudflareHostname,
+            cloudflare ? _cloudflareCredentialStore.ReadApiKey() : "",
+            cloudflare ? _cloudflarePairingStore.ReadApiKey() : "");
+    }
+
     private void SaveAllSettings()
     {
         _settings.TunnelId = TunnelIdBox.Text.Trim();
+        _settings.Provider = UsesCloudflare ? "cloudflare" : "openai";
+        _settings.CloudflareHostname = CloudflareHostnameBox.Text.Trim().ToLowerInvariant();
         SaveSettingsFields();
         _settingsStore.Save(_settings);
     }
@@ -692,7 +911,15 @@ public partial class MainWindow : Window
         RenameWorkspaceButton.IsEnabled = editable;
         RemoveWorkspaceButton.IsEnabled = editable;
         RevealWorkspaceButton.IsEnabled = editable;
-        if (state.Status == LocalMcpRuntimeStatus.Running) RefreshTasks();
+        if (state.Status == LocalMcpRuntimeStatus.Running)
+        {
+            RefreshTasks();
+            if (UsesCloudflare) RefreshOAuthClients();
+        }
+        else
+        {
+            RevokeOAuthClientButton.IsEnabled = false;
+        }
         if (state.Status == LocalMcpRuntimeStatus.Failed && !string.IsNullOrEmpty(state.Error)) ShowError(state.Error);
     }
 

@@ -58,7 +58,11 @@ public sealed record LocalMcpConfiguration(
     string GitUserEmail,
     bool EnableCommands,
     IReadOnlyList<ApprovedWorkspace>? AdditionalWorkspaces = null,
-    int MaxConcurrentCommands = 8);
+    int MaxConcurrentCommands = 8,
+    string Provider = "openai",
+    string CloudflareHostname = "",
+    string CloudflareToken = "",
+    string CloudflarePairingCode = "");
 
 public enum LocalMcpRuntimeStatus
 {
@@ -95,4 +99,6 @@ public sealed class FileMcpSettings
     public bool EnableCommands { get; set; }
     public int MaxConcurrentCommands { get; set; } = 8;
     public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];
+    public string Provider { get; set; } = "openai";
+    public string CloudflareHostname { get; set; } = "";
 }

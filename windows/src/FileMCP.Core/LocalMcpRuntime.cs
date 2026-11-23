@@ -47,6 +47,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private LocalMcpServer? _server;
     private ManagedProcess? _tunnelProcess;
     private ProfileLock? _profileLock;
+    private string? _cloudflareTokenFile;
     private readonly SystemSleepGuard _sleepGuard = new();
     private bool _requestedStop;
 
@@ -56,6 +57,15 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     public event Action<string>? Log;
 
     public LocalMcpRuntimeState State { get { lock (_stateGate) return _state; } }
+
+    public IReadOnlyList<WindowsOAuthServer.DesktopClient> DesktopOAuthClients() =>
+        _server?.DesktopOAuthClients() ?? [];
+
+    public void RevokeDesktopOAuthClient(string id)
+    {
+        if (_server is null) throw new FileMcpException("Not connected");
+        _server.RevokeDesktopOAuthClient(id);
+    }
 
     public IReadOnlyDictionary<string, int> DesktopReceiptSummary() =>
         _server?.DesktopReceiptSummary() ?? new Dictionary<string, int>();
@@ -89,17 +99,54 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             try
             {
                 var healthAddress = ValidateConfiguration(configuration);
+                var isCloudflare = configuration.Provider == "cloudflare";
                 _profileLock = new ProfileLock(configuration.Profile); _profileLock.Acquire();
                 var localAuthToken = MakeLocalAuthToken();
                 // A corrupt receipt journal fails closed and cannot allow
                 // blind replays. Never read FileMCP's old Application Data.
                 var receipts = configuration.EnableCommands
                     ? new CommandReceiptLedger() : null;
+                WindowsOAuthServer? oauth = null;
+                if (isCloudflare)
+                {
+                    var approved = configuration.AdditionalWorkspaces ?? [];
+                    var policy = string.Join("|",new[] {
+                        Path.GetFullPath(configuration.AllowedDirectory),
+                        configuration.Port.ToString(), configuration.EnableCommands.ToString(),
+                        configuration.CloudflareHostname.ToLowerInvariant(),
+                        configuration.Profile
+                    }.Concat(approved.OrderBy(item=>item.Id,StringComparer.Ordinal)
+                        .Select(item=>item.Id+":"+Path.GetFullPath(item.Path))));
+                    oauth = new WindowsOAuthServer(
+                        "https://"+configuration.CloudflareHostname,
+                        configuration.CloudflarePairingCode,policy,
+                        "File and Git access; shell commands "+(configuration.EnableCommands ? "enabled" : "disabled"),
+                        approved);
+                }
                 _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
                     configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
-                    receiptLedger: receipts);
+                    receiptLedger: receipts, oauth: oauth,
+                    publicHost: isCloudflare ? configuration.CloudflareHostname : null);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
+
+                if (isCloudflare)
+                {
+                    var path = WindowsCloudflareRunner.Locate();
+                    var start = WindowsCloudflareRunner.Prepare(path,
+                        configuration.CloudflareToken,configuration.Profile);
+                    _cloudflareTokenFile = start.TokenFile;
+                    _tunnelProcess = ProcessRunner.StartManaged(start.Executable,start.Args,
+                        null,start.Environment,
+                        output => EmitLog(Redact(output, [
+                            configuration.CloudflareToken,configuration.CloudflarePairingCode])),
+                        code => _ = Task.Run(() => TunnelDidExitAsync(code)));
+                    EmitLog("Cloudflare Tunnel process started. Confirm it registers, and that the hostname " +
+                        configuration.CloudflareHostname + " routes ALL OAuth and MCP paths to " +
+                        $"http://127.0.0.1:{configuration.Port}.\n");
+                    SetState(LocalMcpRuntimeState.Running);
+                    return;
+                }
 
                 var tunnelClient = TunnelClientPath(); var profileDirectory = TunnelProfileDirectory();
                 var environment = TunnelClientEnvironment(configuration.ApiKey, localAuthToken);
@@ -169,7 +216,13 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         try
         {
             if (_tunnelProcess is null && State.Status == LocalMcpRuntimeStatus.Stopped) return;
-            _tunnelProcess?.Dispose(); _tunnelProcess = null; _server?.Stop(); _server = null; _profileLock?.Dispose(); _profileLock = null;
+            _tunnelProcess?.Dispose(); _tunnelProcess = null; _server?.Stop(); _server = null;
+            _profileLock?.Dispose(); _profileLock = null;
+            if (_cloudflareTokenFile is { } token)
+            {
+                WindowsCloudflareRunner.RemovePrivateToken(token);
+                _cloudflareTokenFile = null;
+            }
             if (_requestedStop) { _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n"); }
             else if (exitCode == 0) { SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n"); }
             else { var message = $"Tunnel stopped unexpectedly (exit status {exitCode})."; SetState(LocalMcpRuntimeState.Failed(message)); EmitLog(message + "\n"); }
@@ -184,18 +237,45 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
 
     private void CleanupRuntime()
     {
-        _server?.Stop(); _server = null; _tunnelProcess?.Dispose(); _tunnelProcess = null; _profileLock?.Dispose(); _profileLock = null;
+        _server?.Stop(); _server = null; _tunnelProcess?.Dispose(); _tunnelProcess = null;
+        _profileLock?.Dispose(); _profileLock = null;
+        if (_cloudflareTokenFile is { } token)
+        {
+            WindowsCloudflareRunner.RemovePrivateToken(token);
+            _cloudflareTokenFile = null;
+        }
     }
 
     public static string ValidateConfiguration(LocalMcpConfiguration configuration)
     {
-        foreach (var (label, value) in new[] { ("Tunnel ID", configuration.TunnelId), ("Runtime API key", configuration.ApiKey), ("Profile", configuration.Profile), ("Shared directory", configuration.AllowedDirectory) })
+        foreach (var (label, value) in new[] { ("Profile", configuration.Profile), ("Shared directory", configuration.AllowedDirectory) })
             if (string.IsNullOrWhiteSpace(value)) throw new FileMcpException($"{label} cannot be empty.");
-        if (!IsValidTunnelId(configuration.TunnelId)) throw new FileMcpException("Tunnel ID must match tunnel_<32 lowercase letters or digits>.");
+        if (configuration.Provider == "cloudflare")
+        {
+            if (!WindowsCloudflareRunner.ValidHostname(configuration.CloudflareHostname))
+                throw new FileMcpException("Cloudflare public hostname is not a valid DNS hostname");
+            if (string.IsNullOrWhiteSpace(configuration.CloudflareToken))
+                throw new FileMcpException("Cloudflare dashboard tunnel token is required");
+            if (configuration.CloudflarePairingCode.Length is < 32 or > 128 ||
+                !configuration.CloudflarePairingCode.All(ch=>char.IsAsciiLetterOrDigit(ch)||ch is '-' or '_'))
+                throw new FileMcpException("Cloudflare OAuth login code is missing or invalid");
+        }
+        else if (configuration.Provider == "openai")
+        {
+            if (string.IsNullOrWhiteSpace(configuration.TunnelId) ||
+                string.IsNullOrWhiteSpace(configuration.ApiKey))
+                throw new FileMcpException("Secure MCP Tunnel ID and runtime API key are required");
+            if (!IsValidTunnelId(configuration.TunnelId))
+                throw new FileMcpException("Tunnel ID must match tunnel_<32 lowercase letters or digits>.");
+        }
+        else throw new FileMcpException("Unknown connection provider");
         if (!IsValidProfileName(configuration.Profile)) throw new FileMcpException("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters).");
         if (configuration.Port == 0) throw new FileMcpException("MCP port must be between 1 and 65535.");
         return NormalizeHealthAddress(configuration.HealthAddress) ?? throw new FileMcpException("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535.");
     }
+
+    public static bool IsValidCloudflareHostname(string value) =>
+        WindowsCloudflareRunner.ValidHostname(value);
 
     public static bool IsValidTunnelId(string value) => value.Length == 39 && value.StartsWith("tunnel_", StringComparison.Ordinal) && value[7..].All(ch => (ch >= 'a' && ch <= 'z') || char.IsAsciiDigit(ch));
     public static bool IsValidProfileName(string value) => value.Length is >= 1 and <= 128 && char.IsAsciiLetterOrDigit(value[0]) && value.Skip(1).All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '_' or '-');

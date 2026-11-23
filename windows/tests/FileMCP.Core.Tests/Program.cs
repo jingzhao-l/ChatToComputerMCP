@@ -46,6 +46,7 @@ internal static partial class Program
             await TestGitSafetyAsync(root);
             await TestHttpAndMcpAsync(root);
             await TestWorkspaceScopeAsync(root);
+            await TestWindowsOAuthAsync(root);
             await TestRuntimeAsync(root);
             Console.WriteLine($"windows-core-tests: ok ({_assertions} assertions)");
             return 0;

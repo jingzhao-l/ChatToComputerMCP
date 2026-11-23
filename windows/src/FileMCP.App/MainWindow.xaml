@@ -26,40 +26,88 @@
 
         <TabControl x:Name="MainTabs" Grid.Row="0" Margin="0,0,0,12">
             <TabItem Header="Connection" x:Name="ConnectionTab">
-                <Grid Margin="16">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="120"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="18"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="18"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock Text="Connection provider" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                        <ComboBox x:Name="ProviderBox" SelectionChanged="ProviderChanged"
+                                  Margin="0,0,0,12" MinHeight="32">
+                            <ComboBoxItem Tag="openai" Content="OpenAI Secure MCP Tunnel"/>
+                            <ComboBoxItem Tag="cloudflare" Content="Cloudflare Tunnel · verified OAuth clients"/>
+                        </ComboBox>
+                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="Select the tunnel that connects cloud AI chats to your approved local computer workspaces. Credentials are saved only in this Windows user's Credential Manager."/>
 
-                    <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Text="Tunnel ID"/>
-                    <TextBox x:Name="TunnelIdBox" Grid.Row="0" Grid.Column="1" ToolTip="OpenAI Secure MCP Tunnel ID (tunnel_ + 32 lowercase letters or digits)."/>
+                        <StackPanel x:Name="OpenAIConnectionGroup">
+                            <TextBlock Text="Secure MCP Tunnel ID" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <TextBox x:Name="TunnelIdBox" ToolTip="tunnel_ followed by 32 lowercase letters/digits."
+                                     Margin="0,0,0,12"/>
+                            <TextBlock Text="OpenAI Platform runtime API key" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <PasswordBox x:Name="ApiKeyBox" Margin="0,0,0,5"
+                                         ToolTip="A Platform runtime key, not your ChatGPT subscription."/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBlock x:Name="ApiKeyStatusText" Foreground="Gray"
+                                           VerticalAlignment="Center"/>
+                                <Button x:Name="DeleteApiKeyButton" Content="Delete API key"
+                                        Margin="12,0,0,0" Click="DeleteApiKey_Click"/>
+                            </StackPanel>
+                            <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"
+                                       Text="Private OpenAI Secure MCP Tunnel uses a shared local connection identity. Individual ChatGPT chats cannot be cryptographically distinguished by this mode."/>
+                        </StackPanel>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Text="Runtime API key"/>
-                    <PasswordBox x:Name="ApiKeyBox" Grid.Row="2" Grid.Column="1" ToolTip="Stored securely in Windows Credential Manager after saving."/>
-                    <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,6,0,0">
-                        <TextBlock x:Name="ApiKeyStatusText" VerticalAlignment="Center" Foreground="Gray"/>
-                        <Button x:Name="DeleteApiKeyButton" Margin="12,0,0,0" Content="Delete API key" Click="DeleteApiKey_Click"/>
+                        <StackPanel x:Name="CloudflareConnectionGroup" Visibility="Collapsed">
+                            <TextBlock Text="Cloudflare public hostname" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <TextBox x:Name="CloudflareHostnameBox" Margin="0,0,0,10"
+                                     ToolTip="DNS hostname for your Cloudflare Tunnel, e.g. mcp.example.com."/>
+                            <TextBlock Text="Cloudflare remotely-managed tunnel token"
+                                       FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <PasswordBox x:Name="CloudflareTokenBox" Margin="0,0,0,6"
+                                         ToolTip="Stored in Windows Credential Manager; never added to command line arguments."/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,9">
+                                <TextBlock x:Name="CloudflareTokenStatusText" Foreground="Gray"
+                                           VerticalAlignment="Center"/>
+                                <Button x:Name="DeleteCloudflareTokenButton" Content="Delete token"
+                                        Click="DeleteCloudflareToken_Click" Margin="12,0,0,0"/>
+                            </StackPanel>
+                            <TextBlock Text="Local OAuth pairing code" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock x:Name="CloudflarePairingStatusText" Foreground="Gray"
+                                           VerticalAlignment="Center"
+                                           Text="A private pairing code is generated when connecting."/>
+                                <Button x:Name="CopyCloudflarePairingButton" Content="Copy login code"
+                                        Margin="10,0,7,0" Click="CopyCloudflarePairing_Click"/>
+                                <Button x:Name="ResetCloudflarePairingButton" Content="Regenerate"
+                                        Click="ResetCloudflarePairing_Click"/>
+                            </StackPanel>
+                            <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"
+                                       Text="Install cloudflared.exe separately and configure the entire hostname, including /mcp, /oauth/* and /.well-known/*, to reach this local MCP server. Default OAuth mode is safer than embedding secrets in URLs."/>
+                            <TextBlock Text="Authorized OAuth clients" FontWeight="SemiBold" Margin="0,8,0,6"/>
+                            <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,6"
+                                       Text="Client names are self-reported. Verified access tokens determine each client identity and approved workspace scope."/>
+                            <ListBox x:Name="OAuthClientListBox" Height="95"
+                                     DisplayMemberPath="Display"
+                                     SelectionChanged="OAuthClientSelectionChanged"
+                                     Margin="0,0,0,6"/>
+                            <TextBlock x:Name="OAuthClientScopeText" Foreground="Gray"
+                                       TextWrapping="Wrap" Margin="0,0,0,7"
+                                       Text="Connect with Cloudflare OAuth to list approved clients."/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <Button x:Name="RefreshOAuthClientsButton" Content="Refresh clients"
+                                        Click="RefreshOAuthClients_Click" Margin="0,0,8,0"/>
+                                <Button x:Name="RevokeOAuthClientButton" Content="Revoke selected"
+                                        Click="RevokeOAuthClient_Click" IsEnabled="False"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,8,0,14"
+                                   Text="The local server listens on loopback. Approve workspaces in Settings first, then save and connect. Changes to provider and access scopes require reconnecting."/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button x:Name="SaveConnectionButton" Content="Save connection"
+                                    Margin="0,0,8,0" Click="SaveConnection_Click"/>
+                            <Button x:Name="ConnectButton" Content="Connect" Width="120"
+                                    Click="Connect_Click"/>
+                        </StackPanel>
                     </StackPanel>
-
-                    <TextBlock Grid.Row="5" Grid.ColumnSpan="2" Foreground="Gray" TextWrapping="Wrap"
-                               Text="ChatToComputerMCP connects this Windows PC to ChatGPT through OpenAI Secure MCP Tunnel. The local MCP server listens only on loopback."/>
-
-                    <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button x:Name="SaveConnectionButton" Content="Save connection" Margin="0,0,8,0" Click="SaveConnection_Click"/>
-                        <Button x:Name="ConnectButton" Content="Connect" Width="120" Click="Connect_Click"/>
-                    </StackPanel>
-                </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="Settings" x:Name="SettingsTab">

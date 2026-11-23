@@ -27,6 +27,8 @@ public sealed class SettingsStore
             settings.MaxConcurrentCommands = settings.MaxConcurrentCommands == 0 ? 8
                 : Math.Clamp(settings.MaxConcurrentCommands, 4, 16);
             settings.AdditionalWorkspaces ??= [];
+            if (settings.Provider is not ("openai" or "cloudflare"))
+                throw new FileMcpException("Unsupported tunnel provider in saved configuration");
             return settings;
         }
         catch (JsonException ex) { throw new FileMcpException("Could not read ChatToComputerMCP settings: " + ex.Message); }
