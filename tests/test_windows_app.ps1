@@ -32,6 +32,24 @@ foreach ($RequiredControl in @("CheckUpdatesButton", "InstallUpdateButton",
         throw "Missing Windows updater UI control: $RequiredControl"
     }
 }
+foreach ($Control in @("OverviewTab", "OverviewConnectionStatus",
+        "OverviewWorkspaceSummary", "OverviewPermissions", "OverviewCommandCapacity")) {
+    if ($Markup -notmatch ('x:Name="' + [regex]::Escape($Control) + '"')) {
+        throw "Missing Windows overview UI control: $Control"
+    }
+}
+$OverviewIndex = $Markup.IndexOf('<TabItem Header="Overview"')
+$ConnectionIndex = $Markup.IndexOf('<TabItem Header="Connection"')
+$SettingsIndex = $Markup.IndexOf('<TabItem Header="Settings"')
+$TasksIndex = $Markup.IndexOf('<TabItem Header="Tasks"')
+$ActivityIndex = $Markup.IndexOf('<TabItem Header="Activity"')
+if ($OverviewIndex -lt 0 -or $OverviewIndex -ge $ConnectionIndex -or
+    $ConnectionIndex -ge $SettingsIndex -or $SettingsIndex -ge $TasksIndex -or
+    $TasksIndex -ge $ActivityIndex) {
+    throw "Windows navigation tabs are missing or out of order"
+}
+Write-Host "windows-overview-navigation: ok"
+
 Write-Host "windows-update-ui-controls: ok"
 
 $Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.3.0-windows-x64.zip"

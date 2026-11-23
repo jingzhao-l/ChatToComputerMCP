@@ -78,6 +78,7 @@ public partial class MainWindow : Window
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(ShowFromTray);
         UpdateRuntimeState(_runtime.State);
+        UpdateOverview();
     }
 
     private FileMcpSettings LoadSettingsSafely()
@@ -155,6 +156,7 @@ public partial class MainWindow : Window
             return;
         }
         RefreshWorkspaceList();
+        UpdateOverview();
         AppendLog("Additional workspace approval added. Save and reconnect to apply.\n");
     }
 
@@ -385,6 +387,50 @@ public partial class MainWindow : Window
             LoginStatusText.Text = "Could not apply login startup: " + ex.Message;
             AppendLog("Windows login startup update failed: " + ex.Message + "\n");
         }
+    }
+
+    private void UpdateOverview()
+    {
+        OverviewConnectionStatus.Text = _runtime.State.Status switch
+        {
+            LocalMcpRuntimeStatus.Running => "Connected",
+            LocalMcpRuntimeStatus.Starting => "Connecting…",
+            LocalMcpRuntimeStatus.Stopping => "Disconnecting…",
+            LocalMcpRuntimeStatus.Failed => "Connection failed",
+            _ => "Disconnected"
+        };
+        OverviewProvider.Text = UsesCloudflare
+            ? "Cloudflare Tunnel · OAuth client approvals"
+            : "OpenAI Secure MCP Tunnel";
+        var root = DirectoryBox.Text.Trim();
+        OverviewWorkspaceSummary.Text =
+            (string.IsNullOrWhiteSpace(root) ? "Choose a default workspace" : root) +
+            " · " + _workspaces.Count +
+            (_workspaces.Count == 1 ? " additional workspace" : " additional workspaces");
+        OverviewCommandCapacity.Text =
+            SelectedCommandCapacity() + " configured concurrent command slots";
+        OverviewPermissions.Text =
+            "Shell " + (EnableCommandsCheckBox.IsChecked == true ? "on" : "off") +
+            " · Git push " + (EnableGitPushBox.IsChecked == true ? "on" : "off") +
+            " · Codex history " + (EnableCodexHistoryBox.IsChecked == true ? "on" : "off");
+    }
+
+    private void OverviewConnection_Click(object sender, RoutedEventArgs e) =>
+        MainTabs.SelectedItem = ConnectionTab;
+
+    private void OverviewWorkspaces_Click(object sender, RoutedEventArgs e) =>
+        MainTabs.SelectedItem = SettingsTab;
+
+    private void OverviewTasks_Click(object sender, RoutedEventArgs e)
+    {
+        MainTabs.SelectedIndex = 3;
+        RefreshTasks();
+    }
+
+    private async void OverviewUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        MainTabs.SelectedItem = SettingsTab;
+        await CheckUpdatesAsync(automatic: false);
     }
 
     private void LoadUpdateSettings()
@@ -927,6 +973,7 @@ public partial class MainWindow : Window
             SaveSettingsFields();
             _settingsStore.Save(_settings);
             AppendLog("Settings saved.\n");
+            UpdateOverview();
             if (_runtime.State.Status != LocalMcpRuntimeStatus.Stopped) AppendLog("Changes will take effect the next time the tunnel starts.\n");
         }
         catch (Exception ex) { ShowError(ex.Message); }
@@ -1114,6 +1161,7 @@ public partial class MainWindow : Window
         {
             RevokeOAuthClientButton.IsEnabled = false;
         }
+        UpdateOverview();
         if (state.Status == LocalMcpRuntimeStatus.Failed && !string.IsNullOrEmpty(state.Error)) ShowError(state.Error);
     }
 

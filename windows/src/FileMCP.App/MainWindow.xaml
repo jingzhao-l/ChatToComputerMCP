@@ -25,6 +25,57 @@
         </Grid.RowDefinitions>
 
         <TabControl x:Name="MainTabs" Grid.Row="0" Margin="0,0,0,12">
+            <TabItem Header="Overview" x:Name="OverviewTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock Text="Your local AI workspace gateway"
+                                   FontSize="22" FontWeight="SemiBold"
+                                   TextWrapping="Wrap" Margin="0,2,0,7"/>
+                        <TextBlock Text="Connect ChatGPT, Claude and other compatible cloud AI chats to approved Windows folders, tools and concurrent commands."
+                                   TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,18"/>
+                        <Border Padding="14" BorderBrush="#8890A5" BorderThickness="1"
+                                CornerRadius="9" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="Connection status" FontWeight="SemiBold"
+                                           Margin="0,0,0,6"/>
+                                <TextBlock x:Name="OverviewConnectionStatus" Text="Disconnected"
+                                           FontSize="17" Margin="0,0,0,4"/>
+                                <TextBlock x:Name="OverviewProvider" Text="OpenAI Secure MCP Tunnel"
+                                           Foreground="Gray" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="14" BorderBrush="#8890A5" BorderThickness="1"
+                                CornerRadius="9" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="Approved workspaces" FontWeight="SemiBold"
+                                           Margin="0,0,0,6"/>
+                                <TextBlock x:Name="OverviewWorkspaceSummary"
+                                           Text="Choose a default workspace"
+                                           TextWrapping="Wrap" Margin="0,0,0,5"/>
+                                <TextBlock x:Name="OverviewCommandCapacity" Text="8 concurrent commands"
+                                           Foreground="Gray" Margin="0,0,0,4"/>
+                                <TextBlock x:Name="OverviewPermissions"
+                                           Text="Shell off · Git push off · Codex history off"
+                                           Foreground="Gray" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                        <TextBlock Text="Quick actions" FontWeight="SemiBold"
+                                   Margin="0,7,0,8"/>
+                        <WrapPanel Margin="0,0,0,11">
+                            <Button Content="Connection" Margin="0,0,8,7"
+                                    Click="OverviewConnection_Click"/>
+                            <Button Content="Manage workspaces" Margin="0,0,8,7"
+                                    Click="OverviewWorkspaces_Click"/>
+                            <Button Content="Running tasks" Margin="0,0,8,7"
+                                    Click="OverviewTasks_Click"/>
+                            <Button Content="Check updates" Margin="0,0,0,7"
+                                    Click="OverviewUpdates_Click"/>
+                        </WrapPanel>
+                        <TextBlock Foreground="Gray" TextWrapping="Wrap"
+                                   Text="Local workspace access requires your approval. Shell commands use your Windows account permissions and are not an operating-system sandbox. OpenAI Secure MCP Tunnel credentials are connection-level; verified per-client grants require Cloudflare OAuth."/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
             <TabItem Header="Connection" x:Name="ConnectionTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="16">
@@ -298,7 +349,7 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Logs">
+            <TabItem Header="Activity">
                 <Grid Margin="10">
                     <TextBox x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
@@ -314,7 +365,7 @@
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" VerticalAlignment="Center" Foreground="Gray"
                        Text="Closing the window keeps ChatToComputerMCP running in the system tray."/>
-            <Button Grid.Column="1" Content="Quit ChatToComputer" Click="Quit_Click"/>
+            <Button Grid.Column="1" Content="Quit ChatToComputerMCP" Click="Quit_Click"/>
         </Grid>
     </Grid>
 </Window>
