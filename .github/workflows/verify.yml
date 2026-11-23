@@ -123,6 +123,8 @@ jobs:
 
       - name: Build app
         run: ./build_macos_app.sh
+      - name: Verify final sealed Mac app bundle
+        run: codesign --verify --deep --strict dist/ChatToComputerMCP.app
 
       - name: Verify bundled legal resources
         shell: bash

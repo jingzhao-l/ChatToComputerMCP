@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix macOS source-built app bundle sealing: sign the completed bundle
+  (ad-hoc by default, explicit local identity optionally) and validate
+  `codesign --verify --deep --strict` in source build and CI; see #15.
+
 ## [0.4.0] — 2026-11-23
 
 - Raised the minimum supported Node.js version to 24. Users on Node.js 20 must upgrade before using the new CLI. This is a compatibility change relative to v0.3.0.
