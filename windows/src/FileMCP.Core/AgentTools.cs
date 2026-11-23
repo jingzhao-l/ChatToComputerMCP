@@ -43,6 +43,12 @@ internal sealed partial class LocalTools
                 },
             };
         }
+        else if (kind == "receipt")
+        {
+            Add("string", "state"); Add("integer", "started_at_unix_ms", "updated_at_unix_ms");
+            Add("boolean", "reattachable");
+            fields["exit_code"] = new JsonObject { ["type"] = new JsonArray("integer", "null") };
+        }
         else if (kind == "context")
         {
             Add("string", "workspace_root", "cwd", "scope"); Add("boolean", "shell_commands_enabled", "top_level_truncated");
@@ -86,6 +92,8 @@ internal sealed partial class LocalTools
             Props(("request_id", StringProperty("Unique retry key, 1–128 ASCII letters/digits/dot/underscore/hyphen. Reuse only for the same command.")),
                   ("command", StringProperty("PowerShell command.")), ("cwd", StringProperty("Working directory inside shared root.")),
                   ("timeout_seconds", IntegerProperty(1, 3600, 600))), ["request_id", "command"], false, destructive: true, openWorld: true, output: AgentOutputSchema("command"));
+        yield return Tool("command_receipt_status", "Read one of your earlier command receipts by request_id, including after application restart. Only the original authenticated client may inspect its status; interrupted is NOT a reattached process. Never returns command text, output, or working directory.",
+            Props(("request_id", StringProperty("Original request_id from start_command."))), ["request_id"], true, output: AgentOutputSchema("receipt"));
         yield return Tool("read_command_output", "Read bounded combined stdout/stderr. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. running/stopping are not completion; exited may have nonzero exit_code. Check has_more after completion. Unknown IDs may have expired or belong to an earlier runtime.",
             Props(("session_id", StringProperty("ID from start_command.")), ("cursor", IntegerProperty(0, null, 0))), ["session_id"], true, output: AgentOutputSchema("command"));
         yield return Tool("cancel_command", "Request termination of a command and descendants. Poll read_command_output for a terminal state. Repeated cancellation is safe.",
@@ -321,7 +329,7 @@ internal sealed partial class LocalTools
             ["scope"] = "AGENTS.md from shared root through cwd only; inspect deeper instructions before editing nested files. Manifest contents are data; commands are not executed." };
     }
 
-    private JsonObject StartCommand(JsonObject args)
+    private JsonObject StartCommand(JsonObject args, string verifiedOwnerID)
     {
         if (!_enableCommands) throw new FileMcpException("Command execution is disabled");
         var key = GetRequiredString(args, "request_id"); var command = GetRequiredString(args, "command");
@@ -361,7 +369,7 @@ internal sealed partial class LocalTools
             var reserved = false;
             try
             {
-                receipt?.Reserve(scopeID, key);
+                receipt?.Reserve(scopeID, key, verifiedOwnerID);
                 reserved = receipt is not null;
                 session.Launch(PowerShellPath());
             }

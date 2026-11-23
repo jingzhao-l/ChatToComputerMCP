@@ -17,6 +17,7 @@ final class CommandReceiptLedger {
         case receiptLimit
         case unsafePath
         case missingReceipt
+        case receiptNotOwned
 
         var errorDescription: String? {
             switch self {
@@ -25,6 +26,7 @@ final class CommandReceiptLedger {
             case .receiptLimit: return "Command receipt ledger capacity reached; safely archive it before accepting new commands"
             case .unsafePath: return "Command receipt store path is unsafe"
             case .missingReceipt: return "Command receipt was not found"
+            case .receiptNotOwned: return "Command receipt not found or unavailable to this authenticated client"
             }
         }
     }
@@ -35,6 +37,7 @@ final class CommandReceiptLedger {
         var startedAt: Date
         var updatedAt: Date
         var exitCode: Int32?
+        var ownerHash: String? = nil
     }
 
     private struct Store: Codable {
@@ -60,7 +63,12 @@ final class CommandReceiptLedger {
                   loaded.salt.count == 64,
                   loaded.salt.allSatisfy({ $0.isHexDigit }),
                   loaded.entries.count <= 8_192,
-                  Set(loaded.entries.map(\.identity)).count == loaded.entries.count else {
+                  Set(loaded.entries.map(\.identity)).count == loaded.entries.count,
+                  loaded.entries.allSatisfy({ entry in
+                      entry.identity.count == 64 && entry.identity.allSatisfy(\.isHexDigit)
+                          && ["starting", "interrupted", "exited", "cancelled", "timed_out", "launch_failed"].contains(entry.state)
+                          && (entry.ownerHash == nil || (entry.ownerHash!.count == 64 && entry.ownerHash!.allSatisfy(\.isHexDigit)))
+                  }) else {
                 throw LedgerError.invalidStore
             }
             store = loaded
@@ -90,7 +98,7 @@ final class CommandReceiptLedger {
     }
 
     /// Authoritative fail-closed admission: persist a tombstone BEFORE launch.
-    func reserve(scopeID: String, requestID: String) throws {
+    func reserve(scopeID: String, requestID: String, ownerID: String? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
         let identity = digest(scopeID: scopeID, requestID: requestID)
@@ -101,7 +109,8 @@ final class CommandReceiptLedger {
         let old = store
         let now = Date()
         store.entries.append(Entry(identity: identity, state: "starting",
-                                   startedAt: now, updatedAt: now, exitCode: nil))
+                                   startedAt: now, updatedAt: now, exitCode: nil,
+                                   ownerHash: ownerID.map { digestOwner($0) }))
         do { try persist() } catch { store = old; throw error }
     }
 
@@ -120,6 +129,27 @@ final class CommandReceiptLedger {
         store.entries[i].exitCode = exitCode
         store.entries[i].updatedAt = Date()
         do { try persist() } catch { store = old; throw error }
+    }
+
+    /// Only the original, authenticated owner may inspect durable state.
+    /// No active processes are reattached; legacy unowned receipts fail closed.
+    func ownReceipt(scopeID: String, requestID: String, ownerID: String) throws -> [String: Any] {
+        guard !ownerID.isEmpty else { throw LedgerError.receiptNotOwned }
+        lock.lock()
+        defer { lock.unlock() }
+        let identity = digest(scopeID: scopeID, requestID: requestID)
+        guard let entry = store.entries.first(where: { $0.identity == identity }),
+              let owner = entry.ownerHash,
+              owner == digestOwner(ownerID) else { throw LedgerError.receiptNotOwned }
+        return ["state": entry.state, "exit_code": entry.exitCode.map { $0 as Any } ?? NSNull(),
+                "started_at_unix_ms": Int64(entry.startedAt.timeIntervalSince1970 * 1000),
+                "updated_at_unix_ms": Int64(entry.updatedAt.timeIntervalSince1970 * 1000),
+                "reattachable": false]
+    }
+
+    private func digestOwner(_ ownerID: String) -> String {
+        let payload = store.salt + ":client:" + String(ownerID.utf8.count) + ":" + ownerID
+        return SHA256.hash(data: Data(payload.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Local GUI/status only; never expose other clients' hashed request IDs.

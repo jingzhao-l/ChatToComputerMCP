@@ -19,7 +19,7 @@
 - [x] Read-only live capacity/active-job diagnostics (no cross-client paths or commands)
 - [x] macOS Cloudflare OAuth: verified token-bound client scopes, task ownership, request-ID collision protection and GUI revocation
 - [ ] Authenticated per-conversation identity in the shared OpenAI Secure MCP Tunnel (no verified chat principal supplied)
-- [ ] Persistent client-to-task ownership after full app restart (current ownership is runtime-scoped)
+- [x] Persist salted OAuth-client ownership of command receipts and support owner-verified status after full app restart (no process reattachment)\n- [ ] Persistent control and cancellation of genuinely live client-owned tasks after restart (requires independent supervisor)
 - [ ] Fair scheduling, durable task recovery and cancellation receipts
 - [x] Mac command receipt journal: durable ID tombstones, interrupted state and protected 0600/0700 audit metadata
 - [x] Windows command receipt journal: durable hashed request IDs, private per-user ACL, interrupted-state and replay protection; x64 execution verification pending CI

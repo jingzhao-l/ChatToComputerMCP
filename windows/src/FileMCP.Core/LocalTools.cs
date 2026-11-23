@@ -283,7 +283,7 @@ internal sealed partial class LocalTools
 
     public bool HasTool(string name) => ToolDefinitions.OfType<JsonObject>().Any(tool => tool["name"]?.GetValue<string>() == name);
 
-    public async Task<ToolCallOutput> CallAsync(string name, JsonObject arguments, CancellationToken cancellationToken = default)
+    public async Task<ToolCallOutput> CallAsync(string name, JsonObject arguments, CancellationToken cancellationToken = default, string? verifiedOwnerID = null)
     {
         if (name == "git_push" && !_enableGitPush)
             throw new FileMcpException("Git push permission is disabled");
@@ -310,7 +310,10 @@ internal sealed partial class LocalTools
                 "edit_file" => ObjectOutput(EditFile(arguments)),
                 "apply_patch" => ObjectOutput(ApplyPatch(arguments)),
                 "workspace_context" => ObjectOutput(await WorkspaceContextAsync(GetString(arguments, "path", ""), cancellationToken).ConfigureAwait(false)),
-                "start_command" => ObjectOutput(StartCommand(arguments)),
+                "start_command" => ObjectOutput(StartCommand(arguments, verifiedOwnerID ?? "__local_admin__")),
+                "command_receipt_status" => ObjectOutput(_receiptLedger?.OwnReceipt(_workspaceScopeID,
+                    GetRequiredString(arguments, "request_id"), verifiedOwnerID ?? "__local_admin__")
+                    ?? throw new FileMcpException("Durable command receipts are unavailable")),
                 "read_command_output" => ObjectOutput(FindSession(GetRequiredString(arguments, "session_id")).Snapshot(GetInt(arguments, "cursor", 0))),
                 "cancel_command" => ObjectOutput(CancelCommand(GetRequiredString(arguments, "session_id"))),
                 "command_capacity_status" => ObjectOutput(_commandBudget.Status()),

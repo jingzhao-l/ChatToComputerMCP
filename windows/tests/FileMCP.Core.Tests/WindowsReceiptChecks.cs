@@ -50,9 +50,29 @@ internal static partial class Program
         reopened.Reserve("other-scope", "confidential-request-id");
         reopened.Finish("other-scope", "confidential-request-id", "exited", 0);
         Assert(reopened.Summary()["exited"] == 1, "independent scopes store terminal receipts");
+        reopened.Reserve("client-workspace", "secret-owned-id", "oauth-client-one");
+        var own = reopened.OwnReceipt("client-workspace", "secret-owned-id", "oauth-client-one");
+        Assert(own["state"]!.GetValue<string>() == "starting" &&
+               own["reattachable"]!.GetValue<bool>() == false, "authorized owner reads own status");
+        foreach (var denied in new[] { "oauth-client-two", "" })
+        {
+            await AssertThrowsAsync(() => Task.FromResult(reopened.OwnReceipt(
+                "client-workspace", "secret-owned-id", denied)), "inaccessible", "foreign owner denied");
+        }
+        await AssertThrowsAsync(() => Task.FromResult(reopened.OwnReceipt(
+            "default", "confidential-request-id", "oauth-client-one")), "inaccessible",
+            "legacy unowned receipt is not claimable");
+        var hashed = File.ReadAllText(journal);
+        Assert(!hashed.Contains("oauth-client-one", StringComparison.Ordinal) &&
+               !hashed.Contains("secret-owned-id", StringComparison.Ordinal),
+            "only salted owner/request fingerprints saved");
         var again = new CommandReceiptLedger(journal);
-        Assert(again.Summary()["interrupted"] == 1 && again.Summary()["exited"] == 1,
+        Assert(again.Summary()["interrupted"] == 2 && again.Summary()["exited"] == 1,
             "terminal receipts survive app restart");
+        var durable = again.OwnReceipt("client-workspace", "secret-owned-id", "oauth-client-one");
+        Assert(durable["state"]!.GetValue<string>() == "interrupted" &&
+               durable["reattachable"]!.GetValue<bool>() == false,
+            "client identity persists after restart, but task does not reattach");
 
         // Fail closed if the disk is corrupted. Never silently generate a new
         // salt/history that might allow replaying an old non-idempotent job.
@@ -96,6 +116,14 @@ internal static partial class Program
         Assert(File.Exists(effect) && File.ReadAllText(effect) == "done",
             "MCP command actually wrote test effect");
         tools.StopCommandSessions();
+        // The process may report exit before its durable completion callback
+        // has committed; never treat that race as verified persistence.
+        var persistedDeadline = DateTimeOffset.UtcNow.AddSeconds(4);
+        while ((!ledger.Summary().TryGetValue("exited", out var completed) || completed != 1) &&
+               DateTimeOffset.UtcNow < persistedDeadline)
+            await Task.Delay(25);
+        Assert(ledger.Summary().TryGetValue("exited", out var count) && count == 1,
+            "MCP command terminal receipt has been committed to disk");
         var afterRestart = new CommandReceiptLedger(liveJournalPath);
         var freshTools = new LocalTools(workspace, "Test", "test@example.invalid",
             true, receiptLedger: afterRestart);
@@ -109,6 +137,15 @@ internal static partial class Program
             Assert(ex.Message.Contains("already recorded", StringComparison.Ordinal),
                 "real MCP start_command replay blocked after restart");
         }
+        var durableByTool = await freshTools.CallAsync("command_receipt_status",
+            new JsonObject { ["request_id"] = "actual-shell-request" });
+        Assert(durableByTool.StructuredContent["state"]!.GetValue<string>() == "exited" &&
+               durableByTool.StructuredContent["reattachable"]!.GetValue<bool>() == false,
+            "actual MCP request durable receipt can be checked after restart");
+        await AssertThrowsAsync(() => freshTools.CallAsync("command_receipt_status",
+            new JsonObject { ["request_id"] = "actual-shell-request" },
+            verifiedOwnerID: "another-authenticated-client"),
+            "inaccessible", "foreign client denied durable MCP receipt");
         freshTools.StopCommandSessions();
         Console.WriteLine("windows-command-receipts: ok");
     }

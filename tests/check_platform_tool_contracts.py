@@ -26,7 +26,7 @@ required = {
     'delete_file', 'delete_directory',
     'git_init', 'git_status', 'git_log', 'git_diff',
     'git_add', 'git_commit', 'git_push',
-    'run_command', 'start_command', 'read_command_output',
+    'run_command', 'start_command', 'command_receipt_status', 'read_command_output',
     'cancel_command', 'command_capacity_status',
     'workspace_context', 'batch_read', 'save_conversation_to_codex',
 }

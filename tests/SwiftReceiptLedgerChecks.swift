@@ -44,10 +44,33 @@ func runReceiptLedgerChecks() throws {
                        state: "cancelled", exitCode: 143)
     require(resumed.summary()["cancelled"] == 1, "cancel terminal receipt")
 
+    try resumed.reserve(scopeID: "owner-scope", requestID: "owned-request", ownerID: "verified-client-one")
+    let owned = try resumed.ownReceipt(scopeID: "owner-scope", requestID: "owned-request",
+                                       ownerID: "verified-client-one")
+    require(owned["state"] as? String == "starting" && owned["reattachable"] as? Bool == false,
+            "the authenticated owner can inspect its own durable receipt")
+    for untrusted in ["verified-client-two", ""] {
+        do {
+            _ = try resumed.ownReceipt(scopeID: "owner-scope", requestID: "owned-request", ownerID: untrusted)
+            fatalError("a different owner read a durable receipt")
+        } catch CommandReceiptLedger.LedgerError.receiptNotOwned { }
+    }
+    do {
+        _ = try resumed.ownReceipt(scopeID: "default", requestID: "alpha", ownerID: "verified-client-one")
+        fatalError("legacy unowned receipt was exposed")
+    } catch CommandReceiptLedger.LedgerError.receiptNotOwned { }
+    let privateText = try String(contentsOf: location, encoding: .utf8)
+    require(!privateText.contains("owned-request") && !privateText.contains("verified-client-one"),
+            "persistent receipt stores salted owner hash, never plaintext owner or request IDs")
+
     let third = try CommandReceiptLedger(fileURL: location)
-    require(third.summary()["interrupted"] == 1, "terminal records preserved across restart")
+    require(third.summary()["interrupted"] == 2, "two incomplete receipts marked interrupted across restart")
     require(third.summary()["exited"] == 1, "completed receipt persisted")
     require(third.summary()["cancelled"] == 1, "cancel receipt persisted")
+    let recovered = try third.ownReceipt(scopeID: "owner-scope", requestID: "owned-request",
+                                         ownerID: "verified-client-one")
+    require(recovered["state"] as? String == "interrupted" && recovered["reattachable"] as? Bool == false,
+            "restart preserves owner while marking an unfinished command interrupted")
     do {
         try third.finish(scopeID: "default", requestID: "unknown",
                          state: "exited", exitCode: 0)
