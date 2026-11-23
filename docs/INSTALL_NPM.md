@@ -78,6 +78,28 @@ Automatic MCP tunnel connection is off by default; enable it explicitly with
 running to prevent profile and credential collision. Configure an independent
 profile and port before migrating a production connection.
 
+On macOS, the OpenAI tunnel auto-detects the active **manual HTTP/HTTPS system
+proxy** when no explicit tunnel control-plane or HTTPS proxy environment is
+provided. The auto-detected proxy only applies to OpenAI control-plane traffic;
+local MCP loopback traffic is not proxied. Explicit
+`CONTROL_PLANE_HTTP_PROXY` or `HTTPS_PROXY` overrides remain supported.
+The app and installer preserve those existing LaunchAgent proxy overrides
+when editing or migrating the service, while ignoring unrelated environment
+variables. Proxy auto-configuration (PAC), proxy authentication and changes
+during an existing live connection may require explicit configuration or
+reconnecting the tunnel.
+
+The macOS Connection page distinguishes a launched local process from recent
+successful OpenAI cloud polling. The app periodically reads the bundled
+tunnel-client's loopback-only health information, checks again after wake,
+and can restart a prolonged stalled connection when the user has enabled
+a session and no local command is running. A deliberate Disconnect disables
+recovery; no app background-login auto-connect is enabled without opting in.
+The tunnel client handles transient network failures with its own backoff.
+Windows uses its separate native connection and login supervision; this
+macOS health watchdog does not imply equivalent Windows live-network
+failover testing.
+
 Inspect and opt out:
 
     chat-to-computer-mcp launchagent status
@@ -90,7 +112,7 @@ duplicate instances, the current GUI session is never restarted by the toggle.
 
 Until npm Registry publication, install a prebuilt tarball:
 
-    npm install --global ./chat-to-computer-mcp-0.4.0.tgz
+    npm install --global ./chat-to-computer-mcp-0.4.1.tgz
     chat-to-computer-mcp install
 
 A tarball can be attached to a GitHub release. When the GitHub repository

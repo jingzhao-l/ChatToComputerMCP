@@ -55,7 +55,9 @@ jobs:
           npm pack --ignore-scripts --dry-run --json > npm-pack-manifest.json
           node - <<'NODE'
           const fs = require('node:fs');
-          const info = JSON.parse(fs.readFileSync('npm-pack-manifest.json','utf8'))[0];
+          const manifest = JSON.parse(fs.readFileSync('npm-pack-manifest.json','utf8'));
+          const info = Array.isArray(manifest) ? manifest[0] : manifest['chat-to-computer-mcp'];
+          if (!info || !Array.isArray(info.files)) throw Error('Invalid npm pack manifest schema');
           const files = new Set(info.files.map(x=>x.path));
           for(const required of [
             'package.json','README.md','README.zh-CN.md',
@@ -73,7 +75,7 @@ jobs:
                filename.endsWith('.pem') || filename.endsWith('.p12') ||
                filename.endsWith('.pfx') || filename.endsWith('/.env'))
               throw Error('Unexpected packed file '+filename);
-          console.log('Source package validated: '+info.entryCount+' files');
+          console.log('Source package validated: '+info.files.length+' files');
           NODE
 
   macos:

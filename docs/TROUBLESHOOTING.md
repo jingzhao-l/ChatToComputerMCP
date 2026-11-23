@@ -32,6 +32,24 @@ API key, ChatGPT workspace association and custom Plugin creation, start with
 
 Verify the selected tunnel provider, profile and credentials, then check the local runtime's connection status and Activity logs. Health listeners should be loopback-only. Remote MCP tools may require connection setup inside the client application.
 
+**The app and tunnel-client run, but ChatGPT reports "Tunnel-client has not been seen"**
+
+Check whether outbound `api.openai.com:443` is reachable from the Mac. If direct HTTPS times out while the macOS system HTTPS proxy works, newer macOS builds automatically derive a **manual system HTTP/HTTPS proxy** for OpenAI tunnel control-plane calls (without routing the local `127.0.0.1` MCP server through it). Explicit `CONTROL_PLANE_HTTP_PROXY`, `TUNNEL_CLIENT_HTTP_PROXY`, `HTTPS_PROXY`, `https_proxy`, `ALL_PROXY` and `all_proxy` still take precedence. PAC-only, authenticated, or unresolvable proxy setups require explicit configuration; the app does not infer credentials.
+
+A manual LaunchAgent override such as `HTTPS_PROXY=http://127.0.0.1:15556` is preserved when the GUI or installer rewrites its own login item. Only explicitly supported network overrides are retained; unrelated environment variables, including API keys, are never copied. After changing the LaunchAgent plist, reload it only when no local MCP tasks are active. `launchctl bootstrap` and `launchctl print` verify the service; an established tunnel proxy connection plus a **real ChatGPT MCP tool call** verifies end-to-end recovery. Installing a new release does not restart running tasks.
+
+On macOS the app also inspects the bundled tunnel-client's last successful
+control-plane poll through its private loopback health endpoint. A newly
+spawned process alone is displayed as **Connecting to OpenAI**, not
+**Connected**. If there has been no successful poll for three minutes the app
+reports **Reconnecting**, preserves ongoing commands and lets the tunnel
+client's built-in retry/backoff self-heal first. After a further minute of
+confirmed stalling, an auto-connected session may restart its tunnel only if
+there are no active synchronous or asynchronous command jobs. Recovery
+attempts have a five-minute cooldown; deliberate Disconnect turns them off.
+After Mac wake the watchdog rechecks immediately. A healthy poll is not a
+substitute for a real ChatGPT tool invocation or permanent network uptime.
+
 **A new signed Mac app is waiting for Keychain access**
 
 macOS may prompt again after a code-signing identity change. Review and approve legitimate OS prompts on the Mac itself. Never edit Keychain ACLs to bypass authorization or disclose credentials in chat.

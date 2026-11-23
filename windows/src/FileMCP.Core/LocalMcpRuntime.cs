@@ -354,7 +354,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private Dictionary<string, string> TunnelClientEnvironment(string apiKey, string localAuthToken)
     {
         var inherited = Environment.GetEnvironmentVariables().Cast<DictionaryEntry>().ToDictionary(e => (string)e.Key, e => (string?)e.Value ?? "", StringComparer.OrdinalIgnoreCase);
-        string[] pass = ["PATH","USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA","TEMP","TMP","SystemRoot","WINDIR","LANG","LC_ALL","LC_CTYPE","HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"];
+        string[] pass = ["PATH","USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA","TEMP","TMP","SystemRoot","WINDIR","LANG","LC_ALL","LC_CTYPE","HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy","CONTROL_PLANE_HTTP_PROXY","TUNNEL_CLIENT_HTTP_PROXY","MCP_HTTP_PROXY","HARPOON_HTTP_PROXY","CA_BUNDLE","PROXY_CHECK_INTERVAL"];
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in pass) if (inherited.TryGetValue(key, out var value) && value.Length > 0) result[key] = value;
         foreach (var pair in inherited.Where(pair => pair.Key.StartsWith("MCP_TEST_", StringComparison.OrdinalIgnoreCase))) result[pair.Key] = pair.Value;

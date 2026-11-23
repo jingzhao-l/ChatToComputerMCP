@@ -28,7 +28,41 @@ static func checkLogs() {
 }
 
 }
+extension MainViewController {
+    static func checkCloudHealthPresentation() {
+        let controller = MainViewController()
+        controller.loadsSavedConfiguration = false
+        _ = controller.view
+        controller.providerPopup.selectItem(at: 0)
+        controller.cloudHealth = .awaitingPoll
+        controller.updateRunButton(state: .running)
+        precondition(controller.connectionStatusLabel.stringValue == "Connecting to OpenAI…")
+        controller.cloudHealth = .stalled
+        controller.updateRunButton(state: .running)
+        precondition(controller.connectionStatusLabel.stringValue == "Reconnecting…")
+        precondition(controller.connectionDetailLabel.stringValue.contains("polling stalled"))
+        controller.cloudHealth = .connected
+        controller.updateRunButton(state: .running)
+        precondition(controller.connectionStatusLabel.stringValue == "Connected")
+        controller.updateRunButton(state: .stopped)
+        print("PASS: cloud polling drives connection UI truth, not child process launch")
+    }
+}
+
 func runLogRegressionChecks() {
+    MainViewController.checkCloudHealthPresentation()
+    let preserved = ChatToComputerLaunchAgent.launchEnvironment(
+        previous: [
+            "CONTROL_PLANE_HTTP_PROXY": "http://localhost:15556",
+            "HTTPS_PROXY": "http://localhost:15556",
+            "UNSAFE_API_KEY": "never-copy",
+            "FILEMCP_AUTO_CONNECT": "0",
+        ], autoConnect: true)
+    precondition(preserved["CONTROL_PLANE_HTTP_PROXY"] == "http://localhost:15556")
+    precondition(preserved["HTTPS_PROXY"] == "http://localhost:15556")
+    precondition(preserved["FILEMCP_AUTO_CONNECT"] == "1")
+    precondition(preserved["UNSAFE_API_KEY"] == nil)
+    print("PASS: GUI login item keeps proxy overrides without leaking unrelated secrets")
     MainViewController.checkLogs()
     MainViewController.checkDeferredCredentialStartup()
     MainViewController.checkWorkspaceCatalog()

@@ -13,7 +13,7 @@ private let mcpModernProtocolVersion = "2026-07-28"
 private let mcpLegacySupportedVersions = ["2025-03-26", "2025-06-18", "2025-11-25"]
 private let mcpAllSupportedVersions = [mcpModernProtocolVersion] + mcpLegacySupportedVersions.reversed()
 private let mcpServerName = "chat-to-computer-mcp"
-private let mcpServerVersion = "0.4.0-swift"
+private let mcpServerVersion = "0.4.1-swift"
 private let maxFileBytes = 5_000_000
 private let maxWriteBytes = 5_000_000
 private let maxPatchAggregateBytes = 32_000_000
@@ -239,6 +239,11 @@ private final class WorkspaceCommandBudget {
     func leaveSynchronous(_ id: UUID) {
         lock.lock(); defer { lock.unlock() }
         synchronous.removeValue(forKey: id)
+    }
+
+    func hasActiveCommands() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !activePaths().isEmpty
     }
 }
 
@@ -3167,6 +3172,7 @@ final class LocalMCPServer {
     private let bearerToken: String?
     private let oauth: LocalMCPOAuthServer?
     private let tools: LocalTools
+    private let commandBudget: WorkspaceCommandBudget
     private let receiptLedger: CommandReceiptLedger?
     private let taskOwnershipLock = NSLock()
     private var ownerByScopedRequest: [String: String] = [:]
@@ -3241,6 +3247,7 @@ final class LocalMCPServer {
         let configuredLimit = maxConcurrentCommands ?? Int(
             ProcessInfo.processInfo.environment["FILEMCP_MAX_CONCURRENT_COMMANDS"] ?? "") ?? 8
         let commandBudget = WorkspaceCommandBudget(capacity: configuredLimit)
+        self.commandBudget = commandBudget
         self.tools = LocalTools(
             resolver: resolver,
             gitUserName: gitUserName,
@@ -3292,6 +3299,12 @@ final class LocalMCPServer {
 
     func desktopReceiptSummary() -> [String: Int] {
         receiptLedger?.summary() ?? [:]
+    }
+
+    /// Includes long-running sessions and synchronous command leases.
+    /// Never restart the tunnel supervisor while user work is in flight.
+    func hasActiveCommands() -> Bool {
+        commandBudget.hasActiveCommands()
     }
 
     func desktopCommandSnapshots() -> [DesktopCommandSnapshot] {

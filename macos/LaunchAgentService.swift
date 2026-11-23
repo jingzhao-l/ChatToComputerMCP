@@ -14,6 +14,21 @@ enum ChatToComputerLaunchAgent {
     }
     static var isLoaded: Bool { serviceLoaded(label) }
 
+    /// Preserve only deliberately configured network overrides across GUI
+    /// changes. Never copy runtime API keys or unrelated launchd environment.
+    static let proxyEnvironmentKeys: Set<String> = [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "CONTROL_PLANE_HTTP_PROXY", "TUNNEL_CLIENT_HTTP_PROXY",
+        "MCP_HTTP_PROXY", "HARPOON_HTTP_PROXY", "CA_BUNDLE",
+        "PROXY_CHECK_INTERVAL",
+    ]
+    static func launchEnvironment(previous: [String: String], autoConnect: Bool) -> [String: String] {
+        var result = previous.filter { proxyEnvironmentKeys.contains($0.key) && !$0.value.isEmpty }
+        result["FILEMCP_AUTO_CONNECT"] = autoConnect ? "1" : "0"
+        return result
+    }
+
     private static func serviceLoaded(_ serviceLabel: String) -> Bool {
         let tool = Process()
         tool.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -65,12 +80,19 @@ enum ChatToComputerLaunchAgent {
             throw NSError(domain: label, code: 4, userInfo: [
                 NSLocalizedDescriptionKey: "Original FileMCP remains active. Automatic connection may collide with its tunnel. Configure an independent profile and deliberately disable the old service before enabling auto-connect."])
         }
+        var previousEnvironment: [String: String] = [:]
         if manager.fileExists(atPath: file.path) {
             // Never overwrite another service's launch plist.
             let current = settings()
             guard current.enabled else {
                 throw NSError(domain: label, code: 3, userInfo: [
                     NSLocalizedDescriptionKey: "An unrecognized login item already uses this label."])
+            }
+            let data = try Data(contentsOf: file)
+            let value = try PropertyListSerialization.propertyList(from: data, format: nil)
+            if let plist = value as? [String: Any],
+               let environment = plist["EnvironmentVariables"] as? [String: String] {
+                previousEnvironment = environment
             }
         }
         let logDir = manager.homeDirectoryForCurrentUser
@@ -80,7 +102,7 @@ enum ChatToComputerLaunchAgent {
         let data: [String: Any] = [
             "Label": label, "ProgramArguments": [executable.path],
             "RunAtLoad": true, "KeepAlive": keepAlive,
-            "EnvironmentVariables": ["FILEMCP_AUTO_CONNECT": autoConnect ? "1" : "0"],
+            "EnvironmentVariables": launchEnvironment(previous: previousEnvironment, autoConnect: autoConnect),
             "StandardOutPath": logDir.appendingPathComponent("launchagent.stdout.log").path,
             "StandardErrorPath": logDir.appendingPathComponent("launchagent.stderr.log").path
         ]

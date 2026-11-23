@@ -225,7 +225,7 @@ for argument in "$@"; do
     if [ "$previous" = "--profile-dir" ]; then profile_dir="$argument"; fi
     previous="$argument"
 done
-if [ -n "${MCP_TEST_PROFILE_DIR_EXPECTED:-}" ] && [ "$profile_dir" != "$MCP_TEST_PROFILE_DIR_EXPECTED" ]; then
+if [ -n "${MCP_TEST_PROFILE_DIR_EXPECTED:-}" ] && [ "$1" != "health" ] && [ "$profile_dir" != "$MCP_TEST_PROFILE_DIR_EXPECTED" ]; then
     echo "unexpected profile directory: $profile_dir" >&2
     exit 3
 fi
@@ -238,7 +238,7 @@ if [ -n "${MCP_TEST_ENV_CAPTURE:-}" ]; then
     [ -z "${HEALTH_UNIX_SOCKET:-}" ] || { echo inherited-health-unix-socket >&2; exit 3; }
     [ -z "${LOG_HTTP_RAW_UNSAFE:-}" ] || { echo inherited-raw-http-logging >&2; exit 3; }
 fi
-if [ -n "${MCP_TEST_ENV_CAPTURE:-}" ]; then
+if [ -n "${MCP_TEST_ENV_CAPTURE:-}" ] && [ "$1" != "health" ]; then
     {
         printf '%s\n' "${MCP_EXTRA_HEADERS:-}"
         printf '%s\n' "${MCP_DISCOVERY_EXTRA_HEADERS:-}"
@@ -257,6 +257,10 @@ case "$1" in
         exit 0
         ;;
     doctor) echo "doctor-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; exit 0 ;;
+    health)
+        [ "$2" = "--url-file" ] && [ -f "$3" ] && [ "$4" = "--json" ] || { echo invalid-health-probe >&2; exit 3; }
+        printf '{"control_plane_poll":{"value":%s,"ok":true}}\n' "$(date +%s)"
+        exit 0 ;;
     run) echo "run-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; trap 'exit 0' TERM INT; while :; do sleep 1; done ;;
     *) echo unsupported-subcommand >&2; exit 2 ;;
 esac
@@ -336,6 +340,68 @@ chmod +x "$TMP_DIR/cloudflared"
 cat >"$TMP_DIR/main.swift" <<'SWIFT'
 import Foundation
 
+let systemProxySettings: [String: Any] = [
+    "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 15556,
+    "HTTPEnable": 1, "HTTPProxy": "proxy-fallback.internal", "HTTPPort": 8888,
+]
+let detectedProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: ["PATH": "/usr/bin"], systemProxySettings: systemProxySettings)
+precondition(detectedProxy["CONTROL_PLANE_HTTP_PROXY"] == "http://127.0.0.1:15556")
+precondition(detectedProxy["MCP_HTTP_PROXY"] == nil)
+precondition(detectedProxy["NO_PROXY"]?.contains("127.0.0.1") == true)
+precondition(detectedProxy["NO_PROXY"]?.contains("localhost") == true)
+precondition(detectedProxy["NO_PROXY"]?.contains("::1") == true)
+let explicitProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [
+        "CONTROL_PLANE_HTTP_PROXY": "http://explicit.proxy:8888",
+        "HTTPS_PROXY": "http://fallback.proxy:9999",
+        "MCP_HTTP_PROXY": "http://internal-mcp.proxy:7777",
+        "CA_BUNDLE": "/tmp/custom-ca.pem",
+        "UNSAFE_UNRELATED_SECRET": "should-not-propagate",
+    ], systemProxySettings: systemProxySettings)
+precondition(explicitProxy["CONTROL_PLANE_HTTP_PROXY"] == "http://explicit.proxy:8888")
+precondition(explicitProxy["HTTPS_PROXY"] == "http://fallback.proxy:9999")
+precondition(explicitProxy["MCP_HTTP_PROXY"] == "http://internal-mcp.proxy:7777")
+precondition(explicitProxy["CA_BUNDLE"] == "/tmp/custom-ca.pem")
+precondition(explicitProxy["UNSAFE_UNRELATED_SECRET"] == nil)
+let explicitHTTPS = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: ["HTTPS_PROXY": "http://user-proxy:8080"],
+    systemProxySettings: systemProxySettings)
+precondition(explicitHTTPS["HTTPS_PROXY"] == "http://user-proxy:8080")
+precondition(explicitHTTPS["CONTROL_PLANE_HTTP_PROXY"] == nil)
+let fallbackProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [:],
+    systemProxySettings: [
+        "HTTPSEnable": 0, "HTTPEnable": 1,
+        "HTTPProxy": "fallback.example", "HTTPPort": 3128,
+    ])
+precondition(fallbackProxy["CONTROL_PLANE_HTTP_PROXY"] == "http://fallback.example:3128")
+let disabledProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [:],
+    systemProxySettings: ["HTTPSEnable": 0, "HTTPEnable": 0])
+precondition(disabledProxy["CONTROL_PLANE_HTTP_PROXY"] == nil)
+let invalidProxy = LocalMCPRuntime.baseTunnelEnvironment(
+    inherited: [:],
+    systemProxySettings: ["HTTPSEnable": 1, "HTTPSProxy": "proxy", "HTTPSPort": 70000])
+precondition(invalidProxy["CONTROL_PLANE_HTTP_PROXY"] == nil)
+print("runtime-control-plane-system-proxy: ok")
+
+let cloudHealthJSON = Data(#"{"control_plane_poll":{"value":1795421400,"ok":true}}"#.utf8)
+precondition(TunnelCloudHealth.hasPollComponent(fromJSON: cloudHealthJSON))
+precondition(!TunnelCloudHealth.hasPollComponent(fromJSON: Data("{}".utf8)))
+precondition(TunnelCloudHealth.successfulPollTimestamp(fromJSON: cloudHealthJSON) == 1_795_421_400)
+precondition(TunnelCloudHealth.successfulPollTimestamp(fromJSON: Data("{}".utf8)) == nil)
+precondition(TunnelCloudHealth.successfulPollTimestamp(fromJSON: Data("malformed".utf8)) == nil)
+let now = 1_795_421_450.0
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 30, startedAt: now - 300, now: now) == .connected)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 135, startedAt: now - 300, now: now) == .awaitingPoll)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 190, startedAt: now - 300, now: now) == .stalled)
+precondition(TunnelCloudHealth.evaluate(lastPoll: nil, startedAt: now - 90, now: now) == .awaitingPoll)
+precondition(TunnelCloudHealth.evaluate(lastPoll: nil, startedAt: now - 190, now: now) == .stalled)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now + 60, startedAt: now - 190, now: now) == .stalled)
+precondition(TunnelCloudHealth.evaluate(lastPoll: now - 600, startedAt: now - 190, now: now) == .stalled)
+print("runtime-cloud-poll-staleness: ok")
+
 func waitFor(_ predicate: () -> Bool, timeout: TimeInterval, label: String) {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
@@ -407,6 +473,9 @@ let secondConfig = LocalMCPConfiguration(
 
 first.start(firstConfig)
 waitFor({ first.state == .running }, timeout: 5, label: "first runtime")
+first.checkCloudHealthNow()
+waitFor({ first.cloudHealthSnapshot == .connected }, timeout: 8,
+        label: "first verified control-plane polling health")
 waitFor({ holdsIdleSleepAssertion() }, timeout: 2, label: "idle sleep assertion while running")
 let authLines = try String(contentsOf: authCapture, encoding: .utf8)
     .split(whereSeparator: { $0.isNewline })
@@ -680,7 +749,7 @@ print("cloudflare-cli-management: ok")
 print("runtime-cloudflare-provider: ok")
 SWIFT
 
-swiftc -framework Network -framework Security -o "$TMP_DIR/runtime-test" \
+swiftc -framework Network -framework Security -framework SystemConfiguration -o "$TMP_DIR/runtime-test" \
     macos/ProcessRunner.swift \
     macos/Ripgrep.swift \
     macos/LocalMCPServer.swift \
