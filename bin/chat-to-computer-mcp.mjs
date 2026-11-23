@@ -5,6 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import url from 'node:url';
 import cp from 'node:child_process';
+import {validVersion,compareVersions,registry,packageName,
+  installedVersion,policyFile,readPolicy,writePolicy,activateMacRelease
+} from './update-support.mjs';
 
 const root = path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
 const metadata = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -30,6 +33,11 @@ function help() {
     ' chat-to-computer-mcp install [--rebuild]',
     ' chat-to-computer-mcp open',
     ' chat-to-computer-mcp status',
+    ' chat-to-computer-mcp update check',
+    ' chat-to-computer-mcp update install',
+    ' chat-to-computer-mcp update status',
+    ' chat-to-computer-mcp update enable [--auto-install]',
+    ' chat-to-computer-mcp update disable',
     ' chat-to-computer-mcp launchagent enable [--always] [--auto-connect]',
     ' chat-to-computer-mcp launchagent status',
     ' chat-to-computer-mcp launchagent disable',
@@ -38,6 +46,8 @@ function help() {
     ' npx --yes chat-to-computer-mcp@latest install',
     '',
     'Requirements: macOS with Swift/Xcode Command Line Tools or Windows with .NET 8 SDK.',
+    'Update install builds a new version without replacing the running app.',
+    'Automatic update checking and background installation are opt-in.',
     'Install never launches a service; LaunchAgent is explicitly opt-in.',
   ].join('\n'));
 }
@@ -86,6 +96,11 @@ function windowsBuild(stage) {
 function install(args) {
   if(!['darwin','win32'].includes(platform)) throw new Error('macOS and Windows are supported');
   if(fs.existsSync(app) && !args.includes('--rebuild')) {
+    // A first post-upgrade invocation can migrate an old installation to
+    // the stable, version-independent LaunchAgent target without rebuilding.
+    if(platform==='darwin' && selectedVersion()===version &&
+       !fs.existsSync(path.join(releaseParent,'current')))
+      activateMacRelease(releaseParent,version);
     console.log('Already installed at ' + app + '. Use install --rebuild for a new local build.');
     return;
   }
@@ -121,11 +136,34 @@ function install(args) {
       if(backup && !fs.existsSync(versionDir)) fs.renameSync(backup,versionDir);
       throw e;
     }
+    if(platform==='darwin') {
+      const active=installedVersion(releaseParent,platform);
+      // A stale npm CLI may still install an older version, but cannot
+      // silently replace a newer successfully activated application.
+      if(!active || compareVersions(version,active)>=0)
+        activateMacRelease(releaseParent,version);
+    }
+    if(platform==='darwin' && selectedVersion()===version)
+      migrateExistingAgentPlist();
     console.log('Installed: ' + app);
     console.log('Not started. Use chat-to-computer-mcp open to launch.');
   } finally { fs.rmSync(stage,{recursive:true,force:true}); }
 }
-function target() { return path.join(app,'Contents','MacOS',name); }
+function selectedVersion() {
+  return installedVersion(releaseParent,platform);
+}
+function selectedApp() {
+  const selected=selectedVersion();
+  return selected ? path.join(releaseParent,selected,
+    platform==='win32'?name+'.exe':name+'.app') : app;
+}
+function target() {
+  if(platform!=='darwin')return selectedApp();
+  const pointer=path.join(releaseParent,'current');
+  const isLink=fs.existsSync(pointer) && fs.lstatSync(pointer).isSymbolicLink();
+  return path.join(isLink?pointer:selectedApp(),
+    ...(isLink?[name+'.app']:[]),'Contents','MacOS',name);
+}
 function domain() { return 'gui/'+process.getuid(); }
 function agentStatus() {
   if(platform!=='darwin') return {enabled:false,loaded:false};
@@ -133,13 +171,99 @@ function agentStatus() {
           loaded:probe('/bin/launchctl',['print',domain()+'/'+label]).ok};
 }
 function status() {
+  const selected=selectedApp();
   console.log('Version: '+version);
-  console.log('Installed: '+(fs.existsSync(app)?'yes':'no'));
-  console.log('Path: '+app);
+  console.log('Installed: '+(fs.existsSync(selected)?'yes':'no'));
+  console.log('Installed version: '+(selectedVersion()??'none'));
+  console.log('Path: '+selected);
   if(platform==='darwin') {
     const s=agentStatus();
     console.log('LaunchAgent: '+(s.enabled?'installed':'disabled')+', '+(s.loaded?'loaded':'not loaded'));
   }
+}
+function updaterNpm(args,options={}) {
+  // The arguments are authored here; the only dynamic package version has
+  // already passed strict SemVer validation, never from shell arguments.
+  if(platform==='win32') {
+    return cp.spawnSync(process.env.ComSpec||'cmd.exe',
+      ['/d','/s','/c','npm '+args.join(' ')],
+      {...options,windowsHide:true});
+  }
+  return cp.spawnSync('npm',args,options);
+}
+function registryLatest() {
+  const result=updaterNpm(['view',packageName,'dist-tags.latest',
+    '--json','--registry='+registry,'--fetch-retries=0','--fetch-timeout=20000'],
+    {encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:30000});
+  if(result.error||result.status!==0)
+    throw Error('Cannot check npm Registry: '+(result.error?.message||
+      (result.stderr||'npm view failed').slice(0,240)));
+  let latest;
+  try {latest=JSON.parse(result.stdout.trim());}
+  catch {latest=result.stdout.trim();}
+  if(!validVersion(latest))
+    throw Error('npm latest is not a valid stable release version');
+  return latest;
+}
+function update(action,args) {
+  const file=policyFile(platform,home);
+  if(action==='status') {
+    const policy=readPolicy(file);
+    console.log('Installed version: '+(selectedVersion()??'none'));
+    console.log('Check automatically: '+(policy.checkAutomatically?'enabled':'disabled'));
+    console.log('Install automatically: '+(policy.installAutomatically?'enabled':'disabled'));
+    return;
+  }
+  if(action==='enable') {
+    const autoInstall=args.includes('--auto-install');
+    if(args.some(arg=>arg!=='--auto-install'))
+      throw Error('Expected update enable [--auto-install]');
+    writePolicy(file,{checkAutomatically:true,installAutomatically:autoInstall});
+    console.log('Automatic update checks enabled; automatic installs '+
+      (autoInstall?'enabled':'disabled')+'. The running app is never restarted.');
+    return;
+  }
+  if(action==='disable') {
+    writePolicy(file,{checkAutomatically:false,installAutomatically:false});
+    console.log('Automatic update checks and installs disabled.');
+    return;
+  }
+  if(!['check','install'].includes(action))
+    throw Error('Expected update check, install, status, enable or disable');
+  const current=selectedVersion();
+  const latest=registryLatest();
+  console.log('Installed version: '+(current??'none'));
+  console.log('npm latest: '+latest);
+  if(compareVersions(latest,version)<0 && !current) {
+    console.log('This local source build is newer than npm latest; no downgrade.');
+    return;
+  }
+  if(current && compareVersions(latest,current)<=0) {
+    console.log('Already up to date.');
+    return;
+  }
+  if(action==='check') {
+    console.log('Update available. Run: chat-to-computer-mcp update install');
+    return;
+  }
+  if(!current) {
+    console.log('No installed app. Installing the current npm release.');
+  }
+  if(latest===version) {
+    install([]);
+  } else {
+    const packageSpec=packageName+'@'+latest;
+    const result=updaterNpm(['exec','--yes','--registry='+registry,
+      '--package='+packageSpec,'--','chat-to-computer-mcp','install'],
+      {stdio:'inherit',timeout:30*60*1000});
+    if(result.error||result.status!==0)
+      throw Error('Failed to build updated app: '+(result.error?.message||String(result.status)));
+  }
+  if(installedVersion(releaseParent,platform)!==latest)
+    throw Error('Updater returned success but the expected release was not installed.');
+  console.log('Version '+latest+' installed. Quit and reopen the desktop app to use it.');
+  if(platform==='darwin'&&agentStatus().loaded)
+    console.log('Loaded LaunchAgent is not restarted. The updated app starts at the next login.');
 }
 function xmlEscape(s) {
   return s.replaceAll('&','&amp;').replaceAll('<','&lt;')
@@ -162,6 +286,24 @@ function launchPlistText(autoConnect,always) {
     '</dict></plist>',
     ''
   ].join('\n');
+}
+function migrateExistingAgentPlist() {
+  if(platform!=='darwin'||!fs.existsSync(agentPlist)) return;
+  const original=fs.readFileSync(agentPlist,'utf8');
+  if(!original.includes('<key>Label</key><string>'+label+'</string>'))
+    throw Error('Existing ChatToComputerMCP LaunchAgent is not ours; refusing to update it');
+  const autoConnect=original.includes(
+    '<key>FILEMCP_AUTO_CONNECT</key><string>1</string>');
+  const always=original.includes('<key>KeepAlive</key><true/>');
+  const rewritten=launchPlistText(autoConnect,always);
+  const temp=agentPlist+'.update-'+process.pid+'-'+Date.now();
+  fs.writeFileSync(temp,rewritten,{flag:'wx',mode:0o600});
+  try {
+    run('/usr/bin/plutil',['-lint',temp],{stdio:'ignore'});
+    fs.renameSync(temp,agentPlist);
+  } finally {if(fs.existsSync(temp))fs.unlinkSync(temp);}
+  console.log('LaunchAgent configuration prepared for the next user login; '+
+    'the currently loaded service was not restarted.');
 }
 function launchagent(action,args) {
   if(platform!=='darwin') throw new Error('LaunchAgent is available only on macOS');
@@ -205,18 +347,19 @@ function main() {
     case 'version':case '--version':return console.log(version);
     case 'install':return install(process.argv.slice(3));
     case 'open':
-      if(!fs.existsSync(app)) throw new Error('Run install first');
-      if(platform==='darwin') return run('/usr/bin/open',['-a',app]);
+      if(!fs.existsSync(selectedApp())) throw new Error('Run install first');
+      if(platform==='darwin') return run('/usr/bin/open',['-a',selectedApp()]);
       // A native Windows GUI runs independently of the invoking terminal;
       // blocking the CLI here would make "open" appear hung until Quit.
       {
-        const child=cp.spawn(app,[],{stdio:'ignore',detached:true,windowsHide:false});
+        const child=cp.spawn(selectedApp(),[],{stdio:'ignore',detached:true,windowsHide:false});
         child.on('error',e=>console.error('Could not launch desktop app: '+e.message));
         child.unref();
         console.log('Desktop application launch requested.');
         return;
       }
     case 'status':return status();
+    case 'update':return update(subcommand,rest);
     case 'launchagent':return launchagent(subcommand,rest);
     default:throw new Error('Unknown command: '+command);
   }

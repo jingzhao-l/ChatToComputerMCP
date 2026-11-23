@@ -44,7 +44,7 @@ Windows runner (run 45028574644). Native ARM64 execution and complete upgrade
 and restart scenarios remain unverified; ARM64 packages build successfully.
 
 
-## Expanded native controls in 0.2.1
+## Expanded native controls in 0.3.0
 
 - macOS Tasks: retain selection after refresh, inspect bounded stdout/stderr
   and exit codes, reveal the owning folder and explicitly copy command output.
@@ -58,3 +58,15 @@ and restart scenarios remain unverified; ARM64 packages build successfully.
 - Additional non-shell MCP tools on Mac and Windows: file_info,
   create_directory, copy_file and move_file. Paths stay in approved roots,
   source symlinks are refused and existing destinations are never overwritten.
+
+
+## Native updates (0.3.0)
+
+macOS Workspaces and Windows Settings now include Check for updates,
+Install update, Check automatically and Install automatically controls.
+These fetch a verified stable release from the official npm Registry and
+compile a separate versioned native app. All automation is opt-in and
+running AI tasks or tunnels are never restarted by the updater.
+
+The native GUIs and CLI share Boolean update preferences. See
+[UPDATES.md](UPDATES.md).

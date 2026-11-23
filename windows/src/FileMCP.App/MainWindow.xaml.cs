@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 using FileMCP.Core;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
@@ -25,6 +26,9 @@ public partial class MainWindow : Window
     }
     private bool _quitting;
     private string _logBuffer = "";
+    private readonly DispatcherTimer _updateTimer = new();
+    private bool _updateBusy;
+    private string? _availableUpdateVersion;
     private const int MaxLogCharacters = 500_000;
 
     public MainWindow()
@@ -33,6 +37,15 @@ public partial class MainWindow : Window
         _settings = LoadSettingsSafely();
         ApplySettings(_settings);
         UpdateApiKeyStatus();
+        LoadUpdateSettings();
+        _updateTimer.Interval = TimeSpan.FromHours(12);
+        _updateTimer.Tick += (_, _) => _ = CheckUpdatesAsync(automatic: true);
+        Loaded += (_, _) =>
+        {
+            ConfigureUpdateTimer();
+            if (AutoCheckUpdatesBox.IsChecked == true)
+                _ = CheckUpdatesAsync(automatic: true);
+        };
 
         _runtime.Log += text => Dispatcher.BeginInvoke(new Action(() => AppendLog(text)));
         _runtime.StateChanged += state => Dispatcher.BeginInvoke(new Action(() => UpdateRuntimeState(state)));
@@ -280,6 +293,134 @@ public partial class MainWindow : Window
         RefreshTasks();
     }
 
+    private void LoadUpdateSettings()
+    {
+        try
+        {
+            var policy = DesktopUpdates.ReadPreferences();
+            AutoCheckUpdatesBox.IsChecked = policy.CheckAutomatically;
+            AutoInstallUpdatesBox.IsChecked = policy.InstallAutomatically;
+            AutoInstallUpdatesBox.IsEnabled = policy.CheckAutomatically;
+        }
+        catch (Exception ex)
+        {
+            AutoCheckUpdatesBox.IsChecked = false;
+            AutoInstallUpdatesBox.IsChecked = false;
+            AutoInstallUpdatesBox.IsEnabled = false;
+            UpdateStatusText.Text = "Could not safely load update policy: " + ex.Message;
+        }
+    }
+
+    private void ConfigureUpdateTimer()
+    {
+        _updateTimer.Stop();
+        if (AutoCheckUpdatesBox.IsChecked == true) _updateTimer.Start();
+    }
+
+    private void UpdateOptions_Click(object sender, RoutedEventArgs e)
+    {
+        if (AutoCheckUpdatesBox.IsChecked != true)
+            AutoInstallUpdatesBox.IsChecked = false;
+        AutoInstallUpdatesBox.IsEnabled = AutoCheckUpdatesBox.IsChecked == true;
+        try
+        {
+            DesktopUpdates.SavePreferences(new DesktopUpdates.Preferences(
+                1, AutoCheckUpdatesBox.IsChecked == true,
+                AutoInstallUpdatesBox.IsChecked == true));
+            ConfigureUpdateTimer();
+            UpdateStatusText.Text = AutoCheckUpdatesBox.IsChecked == true
+                ? "Automatic checks enabled while this app is running. " +
+                  (AutoInstallUpdatesBox.IsChecked == true
+                      ? "New versions install without restarting."
+                      : "New versions require manual installation.")
+                : "Automatic checks and installs disabled.";
+            if (AutoCheckUpdatesBox.IsChecked == true) _ = CheckUpdatesAsync(automatic: true);
+        }
+        catch (Exception ex)
+        {
+            AutoCheckUpdatesBox.IsChecked = false;
+            AutoInstallUpdatesBox.IsChecked = false;
+            AutoInstallUpdatesBox.IsEnabled = false;
+            _updateTimer.Stop();
+            UpdateStatusText.Text = "Could not save update preferences: " + ex.Message;
+        }
+    }
+
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e) =>
+        await CheckUpdatesAsync(automatic: false);
+
+    private async Task CheckUpdatesAsync(bool automatic)
+    {
+        if (_updateBusy) return;
+        _updateBusy = true;
+        _availableUpdateVersion = null;
+        CheckUpdatesButton.IsEnabled = false;
+        InstallUpdateButton.IsEnabled = false;
+        UpdateStatusText.Text = "Checking official npm Registry…";
+        try
+        {
+            var latest = await DesktopUpdates.CheckLatestAsync();
+            _availableUpdateVersion = latest;
+            if (!DesktopUpdates.IsNewer(latest, DesktopUpdates.CurrentVersion))
+            {
+                UpdateStatusText.Text = "Up to date (running v" +
+                    DesktopUpdates.CurrentVersion + ", npm latest v" + latest + ").";
+                return;
+            }
+            if (DesktopUpdates.Installed(latest))
+            {
+                UpdateStatusText.Text = "v" + latest +
+                    " is already installed. Quit and reopen ChatToComputerMCP to use it.";
+                return;
+            }
+            UpdateStatusText.Text = "Update available: v" + DesktopUpdates.CurrentVersion +
+                " → v" + latest + ". Local .NET compilation required.";
+            InstallUpdateButton.IsEnabled = true;
+        }
+        catch (Exception ex) { UpdateStatusText.Text = "Update check failed: " + ex.Message; }
+        finally
+        {
+            _updateBusy = false;
+            CheckUpdatesButton.IsEnabled = true;
+        }
+        if (automatic && AutoInstallUpdatesBox.IsChecked == true &&
+            InstallUpdateButton.IsEnabled)
+            await InstallUpdateAsync();
+    }
+
+    private async void InstallUpdate_Click(object sender, RoutedEventArgs e) =>
+        await InstallUpdateAsync();
+
+    private async Task InstallUpdateAsync()
+    {
+        if (_updateBusy || _availableUpdateVersion is null ||
+            !DesktopUpdates.IsNewer(_availableUpdateVersion,
+                DesktopUpdates.CurrentVersion))
+            return;
+        var target = _availableUpdateVersion;
+        _updateBusy = true;
+        CheckUpdatesButton.IsEnabled = false;
+        InstallUpdateButton.IsEnabled = false;
+        UpdateStatusText.Text = "Compiling v" + target +
+            " into a separate version directory. Existing AI tasks remain running…";
+        try
+        {
+            await DesktopUpdates.InstallAsync(target);
+            UpdateStatusText.Text = "v" + target +
+                " installed. Quit and reopen the app to use it; active tasks and tunnel were not restarted.";
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = "Update failed: " + ex.Message;
+            InstallUpdateButton.IsEnabled = true;
+        }
+        finally
+        {
+            _updateBusy = false;
+            CheckUpdatesButton.IsEnabled = true;
+        }
+    }
+
     private void UpdateApiKeyStatus()
     {
         var saved = _credentialStore.HasSavedApiKey;
@@ -456,7 +597,7 @@ public partial class MainWindow : Window
     {
         System.Windows.MessageBox.Show(
             this,
-            "ChatToComputerMCP 0.2.1\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
+            "ChatToComputerMCP 0.3.0\n\nNative Windows MCP bridge for controlled local file, Git, and optional command access.",
             "About ChatToComputerMCP",
             MessageBoxButton.OK,
             MessageBoxImage.Information);

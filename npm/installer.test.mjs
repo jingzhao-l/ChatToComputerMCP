@@ -5,12 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import cp from 'node:child_process';
 import url from 'node:url';
+import {validVersion,compareVersions,readPolicy,writePolicy,
+  policyFile,installedVersion,activateMacRelease
+} from '../bin/update-support.mjs';
 const root=path.dirname(path.dirname(url.fileURLToPath(import.meta.url)));
 const entry=path.join(root,'bin','chat-to-computer-mcp.mjs');
 const version=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version;
-function invoke(args,home) {
+function invoke(args,home,extraEnv={}) {
+  const sandboxEnv={...process.env,HOME:home,...extraEnv};
+  if(process.platform==='win32') {
+    sandboxEnv.USERPROFILE=home;
+    sandboxEnv.LOCALAPPDATA=path.join(home,'AppData','Local');
+  }
   return cp.spawnSync(process.execPath,[entry,...args],{
-    encoding:'utf8',env:{...process.env,HOME:home},timeout:6000
+    encoding:'utf8',env:sandboxEnv,timeout:6000
   });
 }
 test('installer is explicit; never auto-starts or creates a launchagent',()=>{
@@ -76,6 +84,8 @@ test('macOS local build places a real app bundle under versioned release and can
     fs.mkdirSync(path.join(src,d),{recursive:true});
   fs.mkdirSync(fakeHome,{recursive:true});
   fs.copyFileSync(entry,path.join(src,'bin','chat-to-computer-mcp.mjs'));
+  fs.copyFileSync(path.join(root,'bin','update-support.mjs'),
+    path.join(src,'bin','update-support.mjs'));
   fs.writeFileSync(path.join(src,'package.json'),JSON.stringify({
     name:'chat-to-computer-mcp',version:version
   }));
@@ -108,5 +118,108 @@ test('macOS local build places a real app bundle under versioned release and can
   const duplicate=cli(['install']);
   assert.equal(duplicate.status,0,duplicate.stderr);
   assert.match(duplicate.stdout,/Already installed/);
+ } finally {fs.rmSync(temp,{recursive:true,force:true});}
+});
+
+
+test('updater version ordering rejects malicious or prerelease input',()=>{
+ assert.equal(compareVersions('0.2.1','0.2.0'),1);
+ assert.equal(compareVersions('0.2.1','0.2.1'),0);
+ assert.equal(compareVersions('0.2.0','0.10.0'),-1);
+ assert.equal(compareVersions('1.0.0','0.999.999'),1);
+ for(const x of ['1.0.0;rm -rf ~','0.0.0-stage','1.0.0-beta','1.2','../etc',
+                   'v1.2.3','999.1.1 && echo injected','01.1.1']) {
+  assert.equal(validVersion(x),false,x);
+ }
+});
+test('updater policy is opt-in, stored locally, and defaults to disabled',()=>{
+ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-update-policy-'));
+ try {
+  const file=policyFile('darwin',temp);
+  assert.deepEqual(readPolicy(file),{checkAutomatically:false,installAutomatically:false});
+  writePolicy(file,{checkAutomatically:true,installAutomatically:true});
+  assert.deepEqual(readPolicy(file),{checkAutomatically:true,installAutomatically:true});
+  assert.throws(()=>writePolicy(file,{checkAutomatically:false,installAutomatically:true}));
+  fs.writeFileSync(file,JSON.stringify({
+    schema:1,checkAutomatically:false,installAutomatically:true
+  }));
+  assert.throws(()=>readPolicy(file),/Invalid updater configuration/);
+  fs.writeFileSync(file,'{corrupted');
+  assert.throws(()=>readPolicy(file),'corrupt policies must fail closed');
+  if(process.platform!=='win32') {
+    // Windows runner may not grant the symlink-creation privilege.
+    fs.rmSync(file);
+    fs.symlinkSync(path.join(temp,'outside'),file);
+    assert.throws(()=>writePolicy(file,{checkAutomatically:true,installAutomatically:true}));
+  }
+ } finally {fs.rmSync(temp,{recursive:true,force:true});}
+});
+test('CLI updater policy commands do not enable launchagent or access credentials',()=>{
+ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-update-cli-'));
+ try {
+  const enabled=invoke(['update','enable','--auto-install'],temp);
+  assert.equal(enabled.status,0,enabled.stderr);
+  const status=invoke(['update','status'],temp);
+  assert.equal(status.status,0,status.stderr);
+  assert.match(status.stdout,/Check automatically: enabled/);
+  assert.match(status.stdout,/Install automatically: enabled/);
+  const disable=invoke(['update','disable'],temp);
+  assert.equal(disable.status,0,disable.stderr);
+  const after=invoke(['update','status'],temp);
+  assert.match(after.stdout,/Install automatically: disabled/);
+  assert.equal(fs.existsSync(path.join(temp,'Library','LaunchAgents',
+    'local.chat-to-computer-mcp.plist')),false);
+ } finally {fs.rmSync(temp,{recursive:true,force:true});}
+});
+test('macOS stable active symlink is atomic, validates targets and avoids old FileMCP',()=>{
+ if(process.platform!=='darwin')return;
+ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-version-pointer-'));
+ try {
+  for(const release of ['0.1.0','0.2.1']) {
+   const binary=path.join(temp,release,'ChatToComputerMCP.app','Contents',
+     'MacOS','ChatToComputerMCP');
+   fs.mkdirSync(path.dirname(binary),{recursive:true});
+   fs.writeFileSync(binary,'fixture');
+  }
+  assert.equal(installedVersion(temp,'darwin'),'0.2.1');
+  activateMacRelease(temp,'0.1.0');
+  assert.equal(installedVersion(temp,'darwin'),'0.1.0');
+  activateMacRelease(temp,'0.2.1');
+  assert.equal(installedVersion(temp,'darwin'),'0.2.1');
+  assert.equal(fs.readlinkSync(path.join(temp,'current')),'0.2.1');
+  fs.rmSync(path.join(temp,'current'));
+  fs.symlinkSync('../../outside',path.join(temp,'current'));
+  assert.throws(()=>installedVersion(temp,'darwin'),/Unsafe current release pointer/);
+  assert.throws(()=>activateMacRelease(temp,'0.2.1'),/Unsafe current release pointer/);
+ } finally {fs.rmSync(temp,{recursive:true,force:true});}
+});
+
+
+test('CLI update check uses registry latest and never executes unverified updates',()=>{
+ if(process.platform==='win32')return;
+ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-update-check-'));
+ try {
+  const bin=path.join(temp,'bin');
+  fs.mkdirSync(bin);
+  const npm=path.join(bin,'npm');
+  const calls=path.join(temp,'npm-args.log');
+  fs.writeFileSync(npm,
+    '#!/bin/sh\n' +
+    'printf "%s\\n" "$*" >> "' + calls + '"\n' +
+    'if [ "$1" = "view" ]; then echo "\\\"99.0.0\\\""; exit 0; fi\n' +
+    'exit 0\n');
+  fs.chmodSync(npm,0o755);
+  const env={PATH:bin+path.delimiter+process.env.PATH};
+  const checked=invoke(['update','check'],temp,env);
+  assert.equal(checked.status,0,checked.stderr);
+  assert.match(checked.stdout,/npm latest: 99\.0\.0/);
+  assert.match(checked.stdout,/Update available/);
+  assert.doesNotMatch(fs.readFileSync(calls,'utf8'),/exec/);
+  const installed=invoke(['update','install'],temp,env);
+  assert.notEqual(installed.status,0);
+  assert.match(installed.stderr,/expected release was not installed/);
+  assert.match(fs.readFileSync(calls,'utf8'),/--package=chat-to-computer-mcp@99\.0\.0/);
+  assert.equal(fs.existsSync(path.join(temp,'Library','LaunchAgents',
+    'local.chat-to-computer-mcp.plist')),false);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });

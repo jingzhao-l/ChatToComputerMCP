@@ -1,6 +1,19 @@
 # Changelog
 
-## [0.2.1] — 2026-11-22
+## [0.3.0] — 2026-11-23
+
+- Added native, opt-in update management on macOS and Windows:
+  check and install a newer official npm release from the GUI without restarting
+  active MCP sessions; automatic checks/installs while the app is running are
+  off by default and configurable.
+- Added CLI update check/install/status/enable/disable; atomic active-release
+  pointer for Mac, retained versioned native builds, and an installer success
+  postcondition. Existing FileMCP is never changed by updates.
+- Regression tests cover SemVer validation, cross-platform updater policy,
+  corrupt/symlinked configuration, launchagent safety, and native update GUI.
+- The v0.2.0 tag did not publish to npm due to an OS-specific Linux npm
+  test. v0.2.1 remained an internal release candidate; these features
+  are included in the next stable 0.3.0 release.
 
 The v0.2.0 Git tag was retained for audit but its npm publish workflow
 stopped at the Linux package-test gate **before publication**. Version 0.2.1

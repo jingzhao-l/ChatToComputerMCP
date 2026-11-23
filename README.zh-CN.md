@@ -27,6 +27,7 @@
 - [快速开始](#-快速开始)
 - [配置 ChatGPT Secure MCP Tunnel](#-配置-chatgpt-secure-mcp-tunnel)
 - [安装与命令](#-安装与命令)
+- [安全更新](#-安全更新)
 - [多工作区和界面](#-多工作区和界面)
 - [技术架构](#-技术架构)
 - [MCP 使用示例](#-mcp-使用示例)
@@ -81,6 +82,7 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 | **连接方案** | Mac/Windows 支持 OpenAI Secure MCP Tunnel；Mac 另有 Cloudflare 连接方式。 |
 | **本机编译安装** | npm 包提供源码和固定版本工具，在用户自己的设备上编译应用。 |
 | **可选保活** | Mac 可开启 LaunchAgent 登录自启、异常恢复及自主选择的持续保活。 |
+| **安全自动更新** | Mac/Windows GUI 都有检查和安装更新按钮，可选择自动检查/安装；版本化本机编译不打断 AI 任务。 |
 
 ## 🚀 快速开始
 
@@ -153,6 +155,28 @@ chat-to-computer-mcp launchagent disable
 ```
 
 这是**用户登录后生效的 LaunchAgent**，不是用户未登录时也能工作的系统守护服务。`--always` 和 `--auto-connect` 均需主动选择；自动连接默认关闭。
+
+## 🔄 安全更新
+
+Mac 和 Windows 原生 GUI 都已增加 **Check for updates（检查更新）**、
+**Install update（安装更新）** 按钮，以及可选自动检查、自动安装开关。
+默认全部关闭。更新只从官方 npm Registry 获取稳定版本，在本机编译
+到独立目录，**不会主动停止 MCP 服务、隧道或 AI 任务**。
+
+```bash
+chat-to-computer-mcp update check
+chat-to-computer-mcp update install
+chat-to-computer-mcp update status
+chat-to-computer-mcp update enable --auto-install
+chat-to-computer-mcp update disable
+```
+
+旧版 0.1.0 CLI 没有更新子命令，可使用
+`npx --yes chat-to-computer-mcp@latest update install`。
+新版本安装后需要在任务完成时**自行退出并重新打开**。
+自动检查仅在应用运行时执行，不安装隐藏系统服务。
+
+详见 [自动更新完整说明](docs/UPDATES.md)。
 
 ## 🗂 多工作区和界面
 
@@ -276,6 +300,7 @@ ChatToComputerMCP 解决的是**云端 AI 对话如何经授权操作本地电�
 |---|---|
 | [ChatGPT Tunnel 中文教程](docs/CONNECT_CHATGPT.zh-CN.md) / [English](docs/CONNECT_CHATGPT.md) | Tunnel 创建、API Key、插件接入与验收 |
 | [npm 安装](docs/INSTALL_NPM.md) | 环境、CLI、保活 |
+| [安全自动更新](docs/UPDATES.md) | CLI 子命令、GUI 按钮与切换策略 |
 | [系统架构](docs/ARCHITECTURE.md) | 客户端、连接和命令执行 |
 | [工作区安全](docs/MULTI_WORKSPACE_SECURITY.md) | 授权、路由与边界 |
 | [OAuth 客户端身份与权限](docs/VERIFIED_CLIENT_ACCESS.md) | 令牌验证、工作区授权、任务隔离和撤销 |

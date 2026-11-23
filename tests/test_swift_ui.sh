@@ -15,5 +15,6 @@ swiftc -module-cache-path "${SWIFT_MODULECACHE_PATH:-$TEST_DIR/cache}" \
     -o "$TEST_DIR/check" macos/ProcessRunner.swift macos/Ripgrep.swift macos/LocalMCPServer.swift \
     macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/LocalMCPRuntime.swift \
     macos/LaunchAgentService.swift \
+    macos/AppUpdates.swift \
     "$TEST_DIR/ChatToComputerMCPApp.swift" "$TEST_DIR/main.swift"
 "$TEST_DIR/check"

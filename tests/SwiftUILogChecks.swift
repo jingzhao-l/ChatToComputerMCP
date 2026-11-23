@@ -316,6 +316,15 @@ extension MainViewController {
         precondition(controller.taskOutputScroll.hasVerticalScroller)
         precondition(!controller.taskOutputView.isEditable)
         precondition(!controller.copyTaskOutputButton.isEnabled)
+        precondition(controller.updateAutoCheckCheckbox.state == .off)
+        precondition(controller.updateAutoInstallCheckbox.state == .off)
+        precondition(!controller.updateInstallButton.isEnabled)
+        controller.updateAutoCheckCheckbox.state = .on
+        controller.updatePreferencesChanged() // loadsSavedConfiguration=false: no disk writes
+        precondition(controller.updateAutoInstallCheckbox.isEnabled)
+        controller.updateAutoCheckCheckbox.state = .off
+        controller.updatePreferencesChanged()
+        precondition(!controller.updateAutoInstallCheckbox.isEnabled)
         controller.loginStartCheckbox.state = .on
         controller.loginItemOptionsChanged()
         precondition(controller.loginAutoConnectCheckbox.isEnabled &&

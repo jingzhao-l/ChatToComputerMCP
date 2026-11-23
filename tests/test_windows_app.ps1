@@ -17,7 +17,18 @@ if ($env:OS -ne "Windows_NT") {
     throw "Windows app smoke test must run on Windows."
 }
 
-$Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.2.1-windows-x64.zip"
+# Source-side GUI assertions complement the real native window smoke below.
+# The XAML compiler also verifies that handlers exist at build time.
+$Markup = Get-Content (Join-Path $Root "windows/src/FileMCP.App/MainWindow.xaml") -Raw
+foreach ($RequiredControl in @("CheckUpdatesButton", "InstallUpdateButton",
+    "AutoCheckUpdatesBox", "AutoInstallUpdatesBox", "UpdateStatusText")) {
+    if ($Markup -notmatch ('x:Name="' + [regex]::Escape($RequiredControl) + '"')) {
+        throw "Missing Windows updater UI control: $RequiredControl"
+    }
+}
+Write-Host "windows-update-ui-controls: ok"
+
+$Archive = Join-Path $Root "dist/ChatToComputerMCP-v0.3.0-windows-x64.zip"
 if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
     throw "Windows x64 release archive is missing: $Archive"
 }

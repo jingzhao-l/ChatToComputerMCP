@@ -30,6 +30,24 @@ To rebuild after quitting the installed instance:
 
 A previous successful release is retained. Running macOS apps are not replaced.
 
+## Updating native applications
+
+Both native GUIs offer **Check for updates** and **Install update** buttons,
+alongside optional automatic checks/installation while the app is running.
+All automatic modes are OFF by default, and neither the current app nor its
+AI tasks are restarted by an update.
+
+For a current CLI:
+
+    chat-to-computer-mcp update check
+    chat-to-computer-mcp update install
+    chat-to-computer-mcp update enable --auto-install
+    chat-to-computer-mcp update disable
+
+An old 0.1.0 CLI does not have these commands; use a fresh npx invocation.
+See [update guide](UPDATES.md) for versioned install directories and safe
+activation.
+
 ## Optional background service (macOS)
 
 Enable login launch with crash recovery:
@@ -57,7 +75,7 @@ duplicate instances, the current GUI session is never restarted by the toggle.
 
 Until npm Registry publication, install a prebuilt tarball:
 
-    npm install --global ./chat-to-computer-mcp-0.2.1.tgz
+    npm install --global ./chat-to-computer-mcp-0.3.0.tgz
     chat-to-computer-mcp install
 
 A tarball can be attached to a GitHub release. When the GitHub repository

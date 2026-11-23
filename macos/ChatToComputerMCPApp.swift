@@ -1,7 +1,7 @@
 import AppKit
 import Security
 
-private let appName = "ChatToComputer"
+private let appName = "ChatToComputerMCP"
 
 private enum Layout {
     static let windowWidth: CGFloat = 620
@@ -464,6 +464,20 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let loginAlwaysCheckbox = NSButton(checkboxWithTitle: "Always keep running (even after Quit)", target: nil, action: nil)
     private let applyLoginSettingsButton = NSButton(title: "Apply login settings", target: nil, action: nil)
     private let loginItemStatusLabel = NSTextField(wrappingLabelWithString: "Background service is not configured")
+    private let updateStatusLabel = NSTextField(wrappingLabelWithString:
+        "Check npm for a newer release. Updates install separately; running tasks are never interrupted.")
+    private let updateCheckButton = NSButton(title: "Check for updates", target: nil, action: nil)
+    private let updateInstallButton = NSButton(title: "Install update", target: nil, action: nil)
+    private let updateAutoCheckCheckbox = NSButton(
+        checkboxWithTitle: "Check for updates automatically while the app is open",
+        target: nil, action: nil)
+    private let updateAutoInstallCheckbox = NSButton(
+        checkboxWithTitle: "Automatically install new releases (never auto-restart)",
+        target: nil, action: nil)
+    private var updateLatestVersion: String?
+    private var updateTimer: Timer?
+    private var updateMonitoringStarted = false
+    private var updateBusy = false
     private let addWorkspaceButton = NSButton(title: "Add folders…", target: nil, action: nil)
     private let removeWorkspaceButton = NSButton(title: "Remove", target: nil, action: nil)
     private let renameWorkspaceButton = NSButton(title: "Rename…", target: nil, action: nil)
@@ -535,6 +549,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         super.viewDidLoad()
         buildUI()
         refreshLoginItemStatus()
+        if loadsSavedConfiguration { loadUpdatePreferences() }
         // Credential loading is deferred until AppDelegate has displayed the
         // window; otherwise macOS Keychain prompts can block initial activation.
         applyAppearance((loadsSavedConfiguration ? UserDefaults.standard.string(forKey: Self.appearanceKey) : nil)
@@ -542,6 +557,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     }
 
     deinit {
+        updateTimer?.invalidate()
         shutdownForTermination()
     }
 
@@ -1090,6 +1106,33 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         loginItemStatusLabel.textColor = .secondaryLabelColor
         loginItemStatusLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
 
+        let updateTitle = NSTextField(labelWithString: "Application updates")
+        updateTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        let updateHelp = NSTextField(wrappingLabelWithString:
+            "Official npm releases only. Download and compile into a new versioned directory; the running MCP session is never restarted. Updates become active after you quit and reopen the app.")
+        updateHelp.font = .systemFont(ofSize: 11)
+        updateHelp.textColor = .secondaryLabelColor
+        updateHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        updateStatusLabel.font = .systemFont(ofSize: 11)
+        updateStatusLabel.textColor = .secondaryLabelColor
+        updateStatusLabel.maximumNumberOfLines = 4
+        updateStatusLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        updateAutoCheckCheckbox.target = self
+        updateAutoCheckCheckbox.action = #selector(updatePreferencesChanged)
+        updateAutoInstallCheckbox.target = self
+        updateAutoInstallCheckbox.action = #selector(updatePreferencesChanged)
+        for button in [updateCheckButton, updateInstallButton] {
+            button.target = self
+            button.bezelStyle = .rounded
+            button.setAccessibilityLabel(button.title)
+        }
+        updateCheckButton.action = #selector(checkUpdatesNow)
+        updateInstallButton.action = #selector(installSelectedUpdate)
+        updateInstallButton.isEnabled = false
+        let updateButtons = NSStackView(views: [updateCheckButton, updateInstallButton])
+        updateButtons.orientation = .horizontal
+        updateButtons.spacing = 8
+
         let settingsForm = NSStackView(views: [
             workspaceTitle,
             workspaceHelp,
@@ -1112,6 +1155,12 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             loginAlwaysCheckbox,
             applyLoginSettingsButton,
             loginItemStatusLabel,
+            updateTitle,
+            updateHelp,
+            updateStatusLabel,
+            updateAutoCheckCheckbox,
+            updateAutoInstallCheckbox,
+            updateButtons,
             advancedToggleButton,
             advancedSettingsGroup,
         ])
@@ -1595,6 +1644,138 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         }
     }
 
+    private func loadUpdatePreferences() {
+        do {
+            let prefs = try DesktopUpdater.readPreferences()
+            updateAutoCheckCheckbox.state = prefs.checkAutomatically ? .on : .off
+            updateAutoInstallCheckbox.state = prefs.installAutomatically ? .on : .off
+            updateAutoInstallCheckbox.isEnabled = prefs.checkAutomatically
+        } catch {
+            updateAutoCheckCheckbox.state = .off
+            updateAutoInstallCheckbox.state = .off
+            updateAutoInstallCheckbox.isEnabled = false
+            updateStatusLabel.stringValue =
+                "Updater preferences could not be read safely: " + error.localizedDescription
+        }
+    }
+
+    private func refreshUpdateMonitoring() {
+        updateTimer?.invalidate()
+        updateTimer = nil
+        guard loadsSavedConfiguration, updateAutoCheckCheckbox.state == .on else { return }
+        // Automatic actions happen only while this GUI is running. No hidden
+        // system agent, privileged command or background daemon is installed.
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 12 * 3_600,
+                                           repeats: true) { [weak self] _ in
+            self?.performUpdateCheck(automatic: true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.updateAutoCheckCheckbox.state == .on else { return }
+            self.performUpdateCheck(automatic: true)
+        }
+    }
+
+    @objc private func updatePreferencesChanged() {
+        if updateAutoCheckCheckbox.state != .on {
+            updateAutoInstallCheckbox.state = .off
+        }
+        updateAutoInstallCheckbox.isEnabled = updateAutoCheckCheckbox.state == .on
+        guard loadsSavedConfiguration else { return }
+        let prefs = DesktopUpdatePreferences(schema: 1,
+            checkAutomatically: updateAutoCheckCheckbox.state == .on,
+            installAutomatically: updateAutoInstallCheckbox.state == .on)
+        do {
+            try DesktopUpdater.writePreferences(prefs)
+            updateStatusLabel.stringValue = prefs.checkAutomatically
+                ? "Automatic checks enabled while the app is open. New versions " +
+                  (prefs.installAutomatically ? "will install without restarting." :
+                                             "will need your approval to install.")
+                : "Automatic update checks and installs are disabled."
+            refreshUpdateMonitoring()
+        } catch {
+            updateStatusLabel.stringValue =
+                "Could not save updater preferences: " + error.localizedDescription
+            updateAutoCheckCheckbox.state = .off
+            updateAutoInstallCheckbox.state = .off
+            updateAutoInstallCheckbox.isEnabled = false
+            updateTimer?.invalidate()
+            updateTimer = nil
+        }
+    }
+
+    @objc private func checkUpdatesNow() {
+        performUpdateCheck(automatic: false)
+    }
+
+    private func performUpdateCheck(automatic: Bool) {
+        guard !updateBusy else { return }
+        updateBusy = true
+        updateLatestVersion = nil
+        updateCheckButton.isEnabled = false
+        updateInstallButton.isEnabled = false
+        updateStatusLabel.stringValue = "Checking official npm Registry…"
+        DesktopUpdater.check { [weak self] result in
+            guard let self else { return }
+            self.updateBusy = false
+            self.updateCheckButton.isEnabled = true
+            switch result {
+            case .failure(let error):
+                self.updateStatusLabel.stringValue =
+                    "Could not check for an update: " + error.localizedDescription
+            case .success(let latest):
+                self.updateLatestVersion = latest
+                let current = DesktopUpdater.currentVersion()
+                guard DesktopUpdater.isNewer(latest, than: current) else {
+                    self.updateStatusLabel.stringValue =
+                        "You're up to date (running v\(current), npm latest v\(latest))."
+                    return
+                }
+                if DesktopUpdater.alreadyInstalled(latest) {
+                    self.updateStatusLabel.stringValue =
+                        "v\(latest) is installed. Quit and reopen the app to use it; " +
+                        "the current connection is not interrupted."
+                    return
+                }
+                self.updateStatusLabel.stringValue =
+                    "Update available: v\(current) → v\(latest). Local native compilation required."
+                self.updateInstallButton.isEnabled = true
+                if automatic && self.updateAutoInstallCheckbox.state == .on {
+                    self.performUpdateInstall()
+                }
+            }
+        }
+    }
+
+    @objc private func installSelectedUpdate() {
+        performUpdateInstall()
+    }
+
+    private func performUpdateInstall() {
+        guard !updateBusy, let version = updateLatestVersion,
+              DesktopUpdater.isNewer(version, than: DesktopUpdater.currentVersion()) else { return }
+        updateBusy = true
+        updateCheckButton.isEnabled = false
+        updateInstallButton.isEnabled = false
+        updateStatusLabel.stringValue =
+            "Downloading source and compiling v\(version) into a separate release directory. " +
+            "The current app and AI tasks continue running…"
+        DesktopUpdater.install(version: version) { [weak self] result in
+            guard let self else { return }
+            self.updateBusy = false
+            self.updateCheckButton.isEnabled = true
+            switch result {
+            case .success:
+                self.updateStatusLabel.stringValue =
+                    "v\(version) installed successfully. Quit and reopen ChatToComputerMCP " +
+                    "to use it. No active tasks, tunnel or LaunchAgent were restarted."
+            case .failure(let error):
+                self.updateStatusLabel.stringValue =
+                    "Update failed: " + error.localizedDescription
+                self.updateInstallButton.isEnabled = true
+            }
+        }
+    }
+
     @objc private func refreshDesktopTasks() {
         runtime.fetchDesktopReceiptSummary { [weak self] summary in
             guard let self else { return }
@@ -1734,6 +1915,10 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.appearance = view.appearance
+        if loadsSavedConfiguration && !updateMonitoringStarted {
+            updateMonitoringStarted = true
+            refreshUpdateMonitoring()
+        }
     }
 
     private func refreshAppearanceColors() {

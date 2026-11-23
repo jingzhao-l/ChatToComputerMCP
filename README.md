@@ -31,6 +31,7 @@ Free, open-source MCP alternative to paid computer-access plugins · Multiple wo
 - [Quick start](#-quick-start)
 - [Connect ChatGPT with Secure MCP Tunnel](#-connect-chatgpt-with-secure-mcp-tunnel)
 - [Installation and CLI](#-installation-and-cli)
+- [Safe updates](#-safe-updates)
 - [Workspace workflow](#-workspace-workflow)
 - [Desktop experience](#-desktop-experience)
 - [Architecture](#-architecture)
@@ -86,6 +87,7 @@ ChatGPT / Claude / another compatible MCP client
 | **Connection providers** | OpenAI Secure MCP Tunnel on Mac/Windows; Cloudflare alternative on Mac. |
 | **Local installation** | npm ships native source and pinned vendor binaries; installation **compiles locally**. |
 | **Optional background mode** | macOS login LaunchAgent, crash recovery, optional always-on and explicit auto-connect. |
+| **Safe auto-updates** | CLI update commands and Mac/Windows GUI buttons, optional auto-check/auto-install while app is open, with versioned native builds. |
 
 ## 🚀 Quick start
 
@@ -159,6 +161,28 @@ chat-to-computer-mcp launchagent disable
 ```
 
 This is a **per-user login agent**, not a system daemon available before login. Auto-connect is **off by default**. The Mac GUI also offers next-login options without restarting another running app. See [Install guide](docs/INSTALL_NPM.md).
+
+## 🔄 Safe updates
+
+Both native apps now offer **Check for updates**, **Install update**, and
+opt-in automatic checking/installation. Published source packages come only
+from the official npm Registry, compile locally, and install into a new
+versioned directory. **Running MCP sessions and tasks are not restarted.**
+
+```bash
+chat-to-computer-mcp update check
+chat-to-computer-mcp update install
+chat-to-computer-mcp update status
+chat-to-computer-mcp update enable --auto-install
+chat-to-computer-mcp update disable
+```
+
+If your CLI is still 0.1.0, start with
+`npx --yes chat-to-computer-mcp@latest update install`. Updates become active
+after you quit and reopen the native app. Automatic checks run while the
+app is open, not from a hidden background daemon.
+
+See [Safe update guide](docs/UPDATES.md).
 
 ## 🗂 Workspace workflow
 
@@ -290,6 +314,7 @@ ChatToComputerMCP gives compatible AI conversations an approved local execution 
 |---|---|
 | [Connect ChatGPT](docs/CONNECT_CHATGPT.md) / [中文教程](docs/CONNECT_CHATGPT.zh-CN.md) | Tunnel setup, Platform API key, ChatGPT Plugins and verification |
 | [Install from npm](docs/INSTALL_NPM.md) | System requirements, CLI, background service |
+| [Safe updates](docs/UPDATES.md) | CLI subcommands, GUI update controls, versioned installation and safety |
 | [Architecture](docs/ARCHITECTURE.md) | Client, tunnel, host runtime and workspace scopes |
 | [Multi-workspace security](docs/MULTI_WORKSPACE_SECURITY.md) | Permission and path guarantees |
 | [Verified OAuth clients](docs/VERIFIED_CLIENT_ACCESS.md) | Client scopes, command ownership, token revocation and tunnel limits |

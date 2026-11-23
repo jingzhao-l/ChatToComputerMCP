@@ -129,6 +129,27 @@
                             </Grid>
                         </Expander>
 
+                        <TextBlock Text="Application updates" FontWeight="SemiBold"
+                                   Margin="0,18,0,7"/>
+                        <TextBlock Text="Updates use official npm releases and compile a separate app version. The running connection and tasks are never restarted automatically."
+                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="UpdateStatusText" Foreground="Gray"
+                                   TextWrapping="Wrap" Margin="0,0,0,7"
+                                   Text="Check npm for a newer release."/>
+                        <CheckBox x:Name="AutoCheckUpdatesBox"
+                                  Content="Check for updates automatically while the app is open"
+                                  Click="UpdateOptions_Click" Margin="0,0,0,5"/>
+                        <CheckBox x:Name="AutoInstallUpdatesBox"
+                                  Content="Automatically install new releases (never auto-restart)"
+                                  Click="UpdateOptions_Click" Margin="0,0,0,8"
+                                  IsEnabled="False"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="CheckUpdatesButton" Content="Check for updates"
+                                    Click="CheckUpdates_Click" Margin="0,0,8,0"/>
+                            <Button x:Name="InstallUpdateButton" Content="Install update"
+                                    Click="InstallUpdate_Click" IsEnabled="False"/>
+                        </StackPanel>
+
                         <Button x:Name="SaveSettingsButton" Content="Save settings" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
                     </StackPanel>
                 </ScrollViewer>

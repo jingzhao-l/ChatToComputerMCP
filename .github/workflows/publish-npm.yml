@@ -59,7 +59,9 @@ jobs:
           const files = new Set(info.files.map(x=>x.path));
           for(const required of [
             'package.json','README.md','README.zh-CN.md',
-            'bin/chat-to-computer-mcp.mjs','macos/LaunchAgentService.swift',
+            'bin/chat-to-computer-mcp.mjs','bin/update-support.mjs',
+            'macos/AppUpdates.swift','macos/LaunchAgentService.swift',
+            'windows/src/FileMCP.App/DesktopUpdates.cs',
             'macos/ChatToComputerMCPApp.swift',
             'windows/src/FileMCP.Core/WorkspaceCommandBudget.cs',
             'vendor/tunnel-client/darwin-arm64/tunnel-client',
@@ -89,6 +91,7 @@ jobs:
           MCP_HTTP_FUZZ_ITERATIONS: '20'
         run: |
           set -Eeuo pipefail
+          bash tests/test_swift_updater.sh
           bash tests/test_swift_ui.sh
           bash tests/test_swift_workspace_scope.sh
           bash tests/test_swift_receipt_ledger.sh
@@ -109,6 +112,15 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Windows updater CLI tests
+        shell: pwsh
+        run: npm test
+
       - name: Windows build, integration, release and GUI
         shell: pwsh
         env:

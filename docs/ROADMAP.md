@@ -47,3 +47,14 @@
 - [ ] Cryptographically signed/notarized public macOS distribution
 - [ ] Authenticated per-client scopes beyond shared tunnel credentials
 - [ ] Independent durable task supervisor and real cross-restart process reattachment (receipts are not reattachment)
+
+
+## Native update channel (0.3.0)
+
+- [x] CLI update check/install/status/enable/disable with shared preferences
+- [x] Official npm stable SemVer validation and installer success verification
+- [x] Versioned builds with atomic macOS active-release pointer
+- [x] macOS and Windows GUI update buttons, optional automatic checks/installation while open
+- [x] No forced app, tunnel or AI task restart during update
+- [ ] Independent always-on updater daemon (intentionally not installed)
+- [ ] Signed public installer and independent cross-restart task supervisor

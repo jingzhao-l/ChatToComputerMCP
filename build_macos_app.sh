@@ -76,6 +76,7 @@ chmod 755 "$APP/Contents/MacOS/rg"
     "$ROOT/macos/CommandReceiptLedger.swift" \
     "$ROOT/macos/LocalMCPRuntime.swift" \
     "$ROOT/macos/LaunchAgentService.swift" \
+    "$ROOT/macos/AppUpdates.swift" \
     "$ROOT/macos/ChatToComputerMCPApp.swift" \
     "$ROOT/macos/main.swift"
 

@@ -74,6 +74,7 @@ jobs:
             macos/CommandReceiptLedger.swift \
             macos/LocalMCPRuntime.swift \
             macos/LaunchAgentService.swift \
+            macos/AppUpdates.swift \
             macos/ChatToComputerMCPApp.swift \
             macos/main.swift
 
@@ -93,6 +94,9 @@ jobs:
         run: |
           npm pack --dry-run --json > npm-pack-manifest.json
           node -e 'const p=require("./npm-pack-manifest.json")[0]; if (!p.files.some(f=>f.path==="bin/chat-to-computer-mcp.mjs")) throw Error("missing CLI"); if (!p.files.some(f=>f.path==="macos/LaunchAgentService.swift")) throw Error("missing launchagent");'
+
+      - name: Native updater version, preferences and symlink safety regression
+        run: bash tests/test_swift_updater.sh
 
       - name: UI state regression tests
         run: bash tests/test_swift_ui.sh
@@ -168,6 +172,15 @@ jobs:
         shell: pwsh
         run: dotnet build windows/FileMCP.Windows.sln -c Release -warnaserror
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Windows updater CLI regression
+        shell: pwsh
+        run: npm test
+
       - name: Windows integration tests
         shell: pwsh
         run: ./tests/test_windows_runtime.ps1
@@ -214,12 +227,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ChatToComputerMCP-windows-x64
-          path: dist/ChatToComputerMCP-v0.2.1-windows-x64.zip
+          path: dist/ChatToComputerMCP-v0.3.0-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload Windows ARM64 package
         uses: actions/upload-artifact@v4
         with:
           name: ChatToComputerMCP-windows-arm64
-          path: dist/ChatToComputerMCP-v0.2.1-windows-arm64.zip
+          path: dist/ChatToComputerMCP-v0.3.0-windows-arm64.zip
           if-no-files-found: error
