@@ -233,7 +233,7 @@ test('Windows user-login startup commands are explicit and platform-scoped',()=>
       assert.match(before.stdout,/Windows login startup:/);
       const enable=invoke(['startup','enable'],home);
       assert.notEqual(enable.status,0);
-      assert.match(enable.stderr,/Install the application locally first/);
+      assert.match(enable.stderr,/Install the application locally before configuring login startup/);
     } else {
       assert.notEqual(before.status,0);
       assert.match(before.stderr,/Windows startup is available only on Windows/);
