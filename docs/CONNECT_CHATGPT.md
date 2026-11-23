@@ -13,7 +13,7 @@ npx --yes chat-to-computer-mcp@latest install
 npx --yes chat-to-computer-mcp@latest open
 ```
 
-The npm installer compiles a native application locally. You need Node.js 20+, plus Xcode Command Line Tools/Swift on macOS or .NET 8 SDK and Windows PowerShell on Windows.
+The npm installer compiles a native application locally. You need Node.js 24+, plus Xcode Command Line Tools/Swift on macOS or .NET 8 SDK and Windows PowerShell on Windows.
 
 In **Workspaces**, select a default local directory and optionally add separately approved folders. Leave Shell disabled until you explicitly need it. Save workspace permissions.
 

@@ -126,6 +126,46 @@ internal static partial class Program
             var completed = await Poll(id, partial["next_cursor"]!.GetValue<int>());
             Assert(completed["exit_code"]!.GetValue<int>() == 7 && completed["output"]!.GetValue<string>().Contains("second") && !completed["output"]!.GetValue<string>().Contains("first"), "cursor and nonzero exit");
             await AssertThrowsAsync(() => Call(full, "read_command_output", Obj(("session_id", id), ("cursor", 999999))), "cursor", "future cursor refused");
+            // One local runtime must admit the same bounded independent worktree
+            // parallelism as macOS, not merely advertise the same MCP tool name.
+            var runningSlots = new List<string>();
+            for (var n = 0; n < 8; n++)
+            {
+                Directory.CreateDirectory(Path.Combine(root, "sessions", $"slot{n}"));
+                if (n == 1)
+                {
+                    Directory.CreateDirectory(Path.Combine(root, "sessions", "slot0", "child"));
+                    await AssertThrowsAsync(() => Call(full, "start_command",
+                        Obj(("request_id", "overlap-reject"), ("command", "Start-Sleep -Seconds 30"),
+                            ("cwd", "sessions/slot0/child"))), "occupies", "nested session overlaps existing task");
+                }
+                var slot = await Call(full, "start_command", Obj(
+                    ("request_id", $"parallel-{n}"), ("command", "Start-Sleep -Seconds 30"),
+                    ("cwd", $"sessions/slot{n}")));
+                Assert(slot["state"]!.GetValue<string>() == "running", "independent command slot admitted");
+                runningSlots.Add(slot["session_id"]!.GetValue<string>());
+            }
+            var utilization = await Call(full, "command_capacity_status");
+            Assert(utilization["active_total"]!.GetValue<int>() == 8 &&
+                utilization["available_slots"]!.GetValue<int>() == 0, "8 independent sessions share configured capacity");
+            Directory.CreateDirectory(Path.Combine(root, "sessions", "slot8"));
+            await AssertThrowsAsync(() => Call(full, "start_command", Obj(
+                ("request_id", "parallel-over-cap"), ("command", "Start-Sleep -Seconds 30"),
+                ("cwd", "sessions/slot8"))), "limit", "ninth session refused");
+            await Call(full, "cancel_command", Obj(("session_id", runningSlots[0])));
+            Assert((await Poll(runningSlots[0]))["state"]!.GetValue<string>() == "cancelled", "first parallel session cancelled independently");
+            var replacement = await Call(full, "start_command", Obj(
+                ("request_id", "parallel-replacement"), ("command", "Start-Sleep -Seconds 30"),
+                ("cwd", "sessions/slot8")));
+            Assert(replacement["state"]!.GetValue<string>() == "running", "released slot is reusable");
+            for (var n = 1; n < runningSlots.Count; n++)
+                await Call(full, "cancel_command", Obj(("session_id", runningSlots[n])));
+            await Call(full, "cancel_command", Obj(("session_id", replacement["session_id"]!.GetValue<string>())));
+            for (var n = 1; n < runningSlots.Count; n++)
+                Assert((await Poll(runningSlots[n]))["state"]!.GetValue<string>() == "cancelled", "parallel cancellation is isolated");
+            Assert((await Poll(replacement["session_id"]!.GetValue<string>()))["state"]!.GetValue<string>() == "cancelled", "replacement cancelled");
+            utilization = await Call(full, "command_capacity_status");
+            Assert(utilization["active_total"]!.GetValue<int>() == 0, "all independent sessions released");
             var cancel = await Call(full, "start_command", Obj(("request_id", "cancel"), ("command", "$child = Start-Process ping.exe -ArgumentList '-t 127.0.0.1' -PassThru -WindowStyle Hidden; $child.Id | Set-Content child.pid; Start-Sleep -Seconds 30")));
             var cancelId = cancel["session_id"]!.GetValue<string>();
             watch.Restart();

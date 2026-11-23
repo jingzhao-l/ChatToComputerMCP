@@ -88,7 +88,7 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 
 ### 1. 安装并在本机编译
 
-需要 **Node.js 20+**，此外 Mac 需要 Xcode Command Line Tools / Swift；Windows 需要 .NET 8 SDK 和 Windows PowerShell。
+需要 **Node.js 24+**，此外 Mac 需要 Xcode Command Line Tools / Swift；Windows 需要 .NET 8 SDK 和 Windows PowerShell。
 
 ```bash
 npx --yes chat-to-computer-mcp@latest install

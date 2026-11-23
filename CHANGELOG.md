@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Standardized the supported Node.js CLI runtime to 24+, pinned the repository toolchain, and ensured release tag validation runs after Node 24 setup. The CI guard now checks project engines and setup order in addition to GitHub Actions runtimes.
+- Corrected the Windows concurrent-command MCP description and added a native eight-slot capacity/collision/cancellation regression.
+- Reconciled the Cloudflare Windows parity audit with the implementation already integrated into main; live-provider and ARM64 validation remain outstanding.
+
 ## [0.3.0] — 2026-11-23
 
 - Added native, opt-in update management on macOS and Windows:
