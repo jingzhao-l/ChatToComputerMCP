@@ -230,14 +230,14 @@ jobs:
           }
 
       - name: Upload Windows x64 package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ChatToComputerMCP-windows-x64
           path: dist/ChatToComputerMCP-v0.3.0-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload Windows ARM64 package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ChatToComputerMCP-windows-arm64
           path: dist/ChatToComputerMCP-v0.3.0-windows-arm64.zip
