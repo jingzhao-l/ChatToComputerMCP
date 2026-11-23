@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Made Windows source-installer archive SHA-256 verification independent of the `Get-FileHash` PowerShell command, which failed in isolated Windows PowerShell 5.1 despite successful native compilation.
 - Added a native Windows x64 clean-user npm tarball installation gate (offline source installation, CLI version, real local .NET app build, installed app readback, and legacy profile isolation) to CI and release validation.
 - Updated GitHub Actions `checkout`, `setup-node`, `setup-go`, `setup-dotnet`, and `upload-artifact` to their verified Node 24 runtime major versions; existing build/test jobs are unchanged.
 - Standardized the supported Node.js CLI runtime to 24+, pinned the repository toolchain, and ensured release tag validation runs after Node 24 setup. The CI guard now checks project engines and setup order in addition to GitHub Actions runtimes.
