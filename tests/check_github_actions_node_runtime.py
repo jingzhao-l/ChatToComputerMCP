@@ -50,6 +50,10 @@ if package.get('engines', {}).get('node') != '>=24':
     bad.append('package.json: supported Node.js runtime must be >=24')
 if (project / '.node-version').read_text().strip() != '24':
     bad.append('.node-version: repository toolchain must be Node.js 24')
+# Avoid wasting runner capacity with two full runs for each PR commit.
+verify = (root / 'verify.yml').read_text()
+if not re.search(r"(?m)^on:\n  push:\n    branches: \[main\]\n  pull_request:\n  workflow_dispatch:", verify):
+    bad.append('verify.yml: run PR checks once and keep main/manual verification')
 # Tag validation calls `node` before npm tests; pin its runtime too.
 publisher = (root / 'publish-npm.yml').read_text()
 package_job = publisher.split('  package:\n', 1)[1].split('  macos:\n', 1)[0]
