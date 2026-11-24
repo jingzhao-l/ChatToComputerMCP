@@ -1105,7 +1105,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         advancedSettingsGroup.translatesAutoresizingMaskIntoConstraints = false
 
         let workspaceHelp = NSTextField(wrappingLabelWithString:
-            "Choose a default workspace for existing clients, then add separately approved folders. AI clients can explicitly select another folder using list_workspaces and workspace_call. All folders use the access permissions below.")
+            "Choose a default workspace for existing clients, then add separately approved folders. AI clients can discover folders using list_workspaces and pass workspace_id directly to their tools. All folders use the access permissions below.")
         workspaceHelp.font = .systemFont(ofSize: 12)
         workspaceHelp.textColor = .secondaryLabelColor
         workspaceHelp.preferredMaxLayoutWidth = Layout.contentWidth
@@ -3282,8 +3282,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let selected = workspaceMenu.indexOfSelectedItem - 1
         guard additionalWorkspaces.indices.contains(selected) else { return }
         let entry = additionalWorkspaces[selected]
-        let instruction = "Use list_workspaces then workspace_call with workspace_id=" + entry.id
-            + " and your tool_name/arguments to operate in " + entry.name + "."
+        let instruction = "Use list_workspaces to discover the approved scopes. Pass workspace_id=" + entry.id
+            + " directly to each tool call to operate in " + entry.name + ", including command output and cancellation."
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(instruction, forType: .string)
         showFeedback("Workspace scope instructions copied.")

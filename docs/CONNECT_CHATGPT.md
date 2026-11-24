@@ -63,7 +63,7 @@ In a **new ChatGPT chat**, type `@` and select your ChatToComputerMCP Plugin. St
 
 > Use ChatToComputerMCP to show my default workspace and list its top-level files. Do not edit anything or run commands.
 
-For multiple approved workspaces, ask it to call `list_workspaces`, then `workspace_call` to read `README.md` in an explicitly selected scope.
+For multiple approved workspaces, ask it to call `list_workspaces`, then `read_file` with the selected `workspace_id` to read `README.md`. Refresh the imported connector tools if the client still shows the older schema.
 
 Confirm that ChatGPT actually calls the tools and that the app's **Activity** page records the call. **Connected alone does not mean end-to-end verification passed.** Keep the app running for future calls.
 

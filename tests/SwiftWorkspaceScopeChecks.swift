@@ -131,6 +131,12 @@ extension LocalMCPServer {
         try checkCall("workspace_call", scopedArgs, bob, expectedError: false,
                       "Appropriate scoped grant can read its approved workspace")
 
+        let directScope: [String: Any] = ["workspace_id": "second", "relative_path": "second.txt"]
+        try checkCall("read_file", directScope, alice, expectedError: true,
+                      "Direct scope parameter cannot bypass OAuth grant")
+        try checkCall("read_file", directScope, bob, expectedError: false,
+                      "Direct scope parameter respects OAuth grant")
+
         let started = try call("start_command", [
             "request_id": "owned-command",
             "command": "printf owner-ready; sleep 20",
@@ -256,6 +262,25 @@ extension LocalMCPServer {
 
         let direct = try call("read_file", ["relative_path": "only-default.txt"])
         precondition(direct["isError"] as? Bool == false)
+        let schema = server.publishedToolDefinitions.first { $0["name"] as? String == "read_file" }!
+        let input = schema["inputSchema"] as! [String: Any]
+        precondition((input["properties"] as! [String: Any])["workspace_id"] != nil)
+        precondition(!(input["required"] as! [String]).contains("workspace_id"))
+        let directScoped = try call("read_file", ["workspace_id": "second", "relative_path": "only-second.txt"])
+        precondition(directScoped["isError"] as? Bool == false)
+        precondition(String(describing: directScoped["structuredContent"]).contains("only-in-second"))
+        for invalid: Any in ["unknown", "", 1, NSNull()] {
+            let denied = try call("read_file", ["workspace_id": invalid, "relative_path": "only-default.txt"])
+            precondition(denied["isError"] as? Bool == true)
+        }
+        let nestedScope = try call("workspace_call", ["workspace_id": "second", "tool_name": "read_file",
+            "arguments": ["workspace_id": "default", "relative_path": "only-default.txt"]])
+        precondition(nestedScope["isError"] as? Bool == true)
+        let defaultWrapper = try call("workspace_call", ["workspace_id": "default", "tool_name": "read_file",
+            "arguments": ["relative_path": "only-default.txt"]])
+        precondition(defaultWrapper["isError"] as? Bool == false)
+        let again = try call("read_file", ["relative_path": "only-default.txt"])
+        precondition(again["isError"] as? Bool == false, "Direct routing must not change the global default")
         let secondary = try call("workspace_call", ["workspace_id": "second",
             "tool_name": "read_file", "arguments": ["relative_path": "only-second.txt"]])
         precondition(secondary["isError"] as? Bool == false)
@@ -292,12 +317,10 @@ extension LocalMCPServer {
                 "command": "sleep 4", "timeout_seconds": 10]
             let response = index % 2 == 0
                 ? try call("start_command", args)
-                : try call("workspace_call", ["workspace_id": "second",
-                    "tool_name": "start_command", "arguments": args])
+                : try call("start_command", args.merging(["workspace_id": "second"]) { _, new in new })
             precondition(response["isError"] as? Bool == false)
             let payload = response["structuredContent"] as! [String: Any]
-            let started = (index % 2 == 0 ? payload :
-                payload["result"] as! [String: Any])
+            let started = payload
             ids.append((index % 2 == 0 ? "default" : "second",
                         started["session_id"] as! String))
         }
@@ -311,8 +334,7 @@ extension LocalMCPServer {
             let arguments: [String: Any] = ["session_id": id]
             let result = scope == "default"
                 ? try call("cancel_command", arguments)
-                : try call("workspace_call", ["workspace_id": scope,
-                    "tool_name": "cancel_command", "arguments": arguments])
+                : try call("cancel_command", arguments.merging(["workspace_id": scope]) { _, new in new })
             precondition(result["isError"] as? Bool == false)
         }
         print("PASS: shared 4–16 budget across independently scoped workspaces")

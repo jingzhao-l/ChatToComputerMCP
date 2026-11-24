@@ -73,7 +73,7 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 |---|---|
 | **付费插件替代选择** | 让 ChatGPT 等兼容的云端 AI 对话使用开源本地文件、Git 与可选 Shell 工具，不必额外购买同类电脑访问插件。 |
 | **多个工作区** | 一个默认工作区，另可添加最多 12 个命名、互不重叠的工作区。 |
-| **按工作区调用工具** | `list_workspaces` 查看已批准的工作区；`workspace_call` 显式选择执行范围。 |
+| **按工作区调用工具** | `list_workspaces` 查看已批准的工作区；各工具可直接传入 `workspace_id`。 |
 | **多 AI 并发命令** | 总容量可设为 **4–16**，默认 **8**；拒绝重叠目录的冲突命令。 |
 | **任务管理** | 查询命令会话、分页读取输出、取消指定任务。 |
 | **安全文件操作** | 不开启 Shell 即可查看文件属性、创建目录、复制和移动/重命名文件；目标文件存在时不覆盖。 |
@@ -233,16 +233,15 @@ Windows 有自己的 WPF 控件。其编译检查已经通过，但**Windows 实
 
 ```json
 {
-  "name":"workspace_call",
+  "name":"read_file",
   "arguments":{
     "workspace_id":"approved-workspace-id",
-    "tool_name":"read_file",
-    "arguments":{"relative_path":"README.md"}
+    "relative_path":"README.md"
   }
 }
 ```
 
-直接调用 `read_file`、`grep`、`git_status` 等工具仍默认使用原工作区。远端客户端不能借 `workspace_call` 为自己新建授权目录。
+不指定 `workspace_id` 时仍使用默认工作区；旧版 `workspace_call` 包装接口继续兼容。远端客户端不能自行扩大授权范围。
 
 ## 🔒 权限与安全
 

@@ -64,6 +64,11 @@ internal static partial class Program
         Assert(!allowed["isError"]!.GetValue<bool>() &&
             allowed["structuredContent"]!.ToJsonString().Contains("secondary-content"),
             "Approved extra workspace works over real HTTP");
+        var directScope = new JsonObject { ["workspace_id"] = "second", ["relative_path"] = "second.txt" };
+        Assert((await Call(first, "read_file", (JsonObject)directScope.DeepClone()))["isError"]!.GetValue<bool>(),
+            "direct scope cannot bypass verified OAuth permission");
+        Assert(!(await Call(second, "read_file", (JsonObject)directScope.DeepClone()))["isError"]!.GetValue<bool>(),
+            "direct scope honors verified OAuth permission");
         var started = await Call(first, "start_command", new JsonObject {
             ["request_id"] = "verified-client-task",
             ["command"] = "Start-Sleep -Seconds 8",

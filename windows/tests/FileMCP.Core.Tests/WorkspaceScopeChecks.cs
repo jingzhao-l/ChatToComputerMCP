@@ -41,6 +41,23 @@ internal static partial class Program
             "workspace list is user approved");
         var direct = await Rpc("read_file", Obj(("relative_path", "in-default.txt")));
         Assert(direct["isError"]!.GetValue<bool>() == false, "legacy default workspace supported");
+        var directScope = await Rpc("read_file", Obj(("workspace_id", "second"), ("relative_path", "in-second.txt")));
+        Assert(!directScope["isError"]!.GetValue<bool>() && directScope["structuredContent"]!.ToJsonString().Contains("second-only"),
+            "direct workspace parameter selects second scope");
+        foreach (var invalid in new JsonNode?[] { JsonValue.Create("unknown"), JsonValue.Create(""), JsonValue.Create(1), null })
+        {
+            var args = Obj(("relative_path", "in-default.txt"));
+            args["workspace_id"] = invalid;
+            Assert((await Rpc("read_file", args))["isError"]!.GetValue<bool>(), "invalid direct scope rejected");
+        }
+        var nestedScope = await Rpc("workspace_call", Obj(("workspace_id", "second"), ("tool_name", "read_file"),
+            ("arguments", Obj(("workspace_id", "default"), ("relative_path", "in-default.txt")))));
+        Assert(nestedScope["isError"]!.GetValue<bool>(), "nested scope cannot override wrapper");
+        var defaultWrapper = await Rpc("workspace_call", Obj(("workspace_id", "default"), ("tool_name", "read_file"),
+            ("arguments", Obj(("relative_path", "in-default.txt")))));
+        Assert(!defaultWrapper["isError"]!.GetValue<bool>(), "wrapper supports explicit default");
+        Assert(!(await Rpc("read_file", Obj(("relative_path", "in-default.txt"))))["isError"]!.GetValue<bool>(),
+            "direct scope routing does not change global default");
         var scoped = await Rpc("workspace_call", Obj(("workspace_id", "second"),
             ("tool_name", "read_file"),
             ("arguments", Obj(("relative_path", "in-second.txt")))));
@@ -80,13 +97,11 @@ internal static partial class Program
             Directory.CreateDirectory(Path.Combine(scopeRoot, path));
             var args = Obj(("request_id", "workspace-job-" + n),
                 ("command", "Start-Sleep -Seconds 6"), ("cwd", path), ("timeout_seconds", 15));
-            var response = isDefault
-                ? await Rpc("start_command", args)
-                : await Rpc("workspace_call", Obj(("workspace_id", "second"),
-                    ("tool_name", "start_command"), ("arguments", args)));
+            if (!isDefault) args["workspace_id"] = "second";
+            var response = await Rpc("start_command", args);
             Assert(!response["isError"]!.GetValue<bool>(), "parallel job admitted");
             var content = response["structuredContent"]!;
-            if (!isDefault) content = content["result"]!;
+
             sessions.Add((isDefault ? "default" : "second",
                 content["session_id"]!.GetValue<string>()));
         }
@@ -103,9 +118,7 @@ internal static partial class Program
         {
             var response = scopeID == "default"
                 ? await Rpc("cancel_command", Obj(("session_id", id)))
-                : await Rpc("workspace_call", Obj(("workspace_id", scopeID),
-                    ("tool_name", "cancel_command"),
-                    ("arguments", Obj(("session_id", id)))));
+                : await Rpc("cancel_command", Obj(("workspace_id", scopeID), ("session_id", id)));
             Assert(!response["isError"]!.GetValue<bool>(), "targeted workspace task cancellation");
         }
         Console.WriteLine("windows-workspace-scope-and-global-concurrency: ok");
