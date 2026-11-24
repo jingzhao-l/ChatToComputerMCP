@@ -1954,7 +1954,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             self.desktopTaskList = entries
             let queued = entries.filter { $0.state == "queued" }.count
             let active = entries.filter { $0.active && $0.state != "queued" }.count
-            self.tasksSummaryLabel.stringValue = "\(active) running or stopping · \(queued) queued across approved workspaces. Short commands are recorded separately in history."
+            let short = entries.filter { $0.active && $0.sessionID.hasPrefix("sync-") }.count
+            self.tasksSummaryLabel.stringValue = "\(active) running or stopping (\(short) short) · \(queued) queued across approved workspaces."
             if changed || self.taskPicker.numberOfItems == 0 {
                 self.taskPicker.removeAllItems()
                 if entries.isEmpty {

@@ -373,8 +373,8 @@ public partial class MainWindow : Window
             }
             else _ = RefreshSelectedTaskAsync();
             TasksSummaryText.Text = tasks.Count(task => task.Active && task.State != "queued") +
-                " running or stopping · " + tasks.Count(task => task.State == "queued") +
-                " queued. Short commands are recorded separately in history.";
+                " running or stopping (" + tasks.Count(task => task.Active && task.SessionId.StartsWith("sync-", StringComparison.Ordinal)) +
+                " short) · " + tasks.Count(task => task.State == "queued") + " queued.";
             var receipts = _runtime.DesktopReceiptSummary();
             var interrupted = receipts.GetValueOrDefault("interrupted");
             ReceiptStatusText.Text = interrupted > 0
