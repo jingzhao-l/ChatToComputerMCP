@@ -55,10 +55,12 @@ Write-Host "windows-overview-navigation: ok"
 
 Write-Host "windows-update-ui-controls: ok"
 
+$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+if ($Architecture -notin @("x64", "arm64")) { throw "Unsupported native architecture: $Architecture" }
 $PackageVersion = (Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw | ConvertFrom-Json).version
-$Archive = Join-Path $Root "dist/ChatToComputerMCP-v$PackageVersion-windows-x64.zip"
+$Archive = Join-Path $Root "dist/ChatToComputerMCP-v$PackageVersion-windows-$Architecture.zip"
 if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
-    throw "Windows x64 release archive is missing: $Archive"
+    throw "Windows $Architecture release archive is missing: $Archive"
 }
 
 $SmokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("filemcp-windows-app-smoke-" + [Guid]::NewGuid().ToString("N"))
@@ -67,14 +69,14 @@ Expand-Archive -LiteralPath $Archive -DestinationPath $SmokeRoot -Force
 $Exe = Join-Path $SmokeRoot "ChatToComputerMCP.exe"
 $TunnelClient = Join-Path $SmokeRoot "tunnel-client.exe"
 if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
-    throw "ChatToComputerMCP.exe is missing from the Windows x64 release archive."
+    throw "ChatToComputerMCP.exe is missing from the Windows $Architecture release archive."
 }
 if (-not (Test-Path -LiteralPath $TunnelClient -PathType Leaf)) {
-    throw "tunnel-client.exe is missing from the Windows x64 release archive."
+    throw "tunnel-client.exe is missing from the Windows $Architecture release archive."
 }
 $Ripgrep = Join-Path $SmokeRoot "rg.exe"
 if (-not (Test-Path -LiteralPath $Ripgrep -PathType Leaf)) {
-    throw "rg.exe is missing from the Windows x64 release archive."
+    throw "rg.exe is missing from the Windows $Architecture release archive."
 }
 $RipgrepVersion = & $Ripgrep --version
 if ($LASTEXITCODE -ne 0 -or ($RipgrepVersion | Select-Object -First 1) -notmatch '^ripgrep 15\.2\.0 ') {

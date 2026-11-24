@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bound Windows HTTP concurrency and absolute request/response deadlines to the macOS limits; close tracked sockets on shutdown and test resource exhaustion with real loopback connections.
+- Add verified Intel macOS vendor binaries and native build gate, sealing unsigned vendor copies in the app without changing upstream files.
+- Check native base MCP schemas, security annotations and permission profiles against a shared contract; generate and validate the inventory and bilingual desktop navigation docs.
+- Align Windows OAuth discovery metadata and desktop navigation order with macOS; synchronize current architecture, security, migration, installation and update documentation.
+- Serialize stable publication and reject stale versions; verify npm and GitHub release read-back.
+- Add a native Windows ARM64 base-runtime, packaged-app and npm source installer CI job; physical-device/provider acceptance remains separate.
+
 ## [0.6.1] — 2026-11-24
 
 - Fix Windows CUA private-file creation when Windows PowerShell cannot load its Security module. Production CLI and real gateway tests now use the same direct .NET ACL implementation with owner/ACL read-back, before writing private contents. Driver ZIP extraction also avoids PowerShell module autoload.

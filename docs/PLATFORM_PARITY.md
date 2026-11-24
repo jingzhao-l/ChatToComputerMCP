@@ -27,7 +27,7 @@ Native test results and unverified external steps are kept distinct.
 | Per-ChatGPT-conversation cryptographic identity in shared OpenAI Tunnel | NOT available | NOT available | Shared tunnel credential is not a per-conversation principal |
 | Bounded HTTP connections and absolute read/write deadlines | 32 / 15s / 15s | 32 / 15s / 15s | Windows C# real loopback regression on Mac; native CI gate |
 | CPU-specific base tool packaging | Apple Silicon / Intel | x64 / ARM64 | Official pinned vendor binaries; Intel Rosetta version checks and native CI gate; native architecture acceptance separate |
-| Windows ARM64 native execution | N/A | NOT tested | ARM64 package cross-compile alone cannot verify runtime |
+| Windows ARM64 native execution | N/A | Native hosted CI added; result pending | Native base runtime, app and installer checks; physical-device and CUA acceptance remain separate |
 | Signed/native notarized public installers | NOT completed | NOT completed | Source-only npm distribution is not signed native distribution |
 
 ## Windows parity implementation — 2026-11-24
