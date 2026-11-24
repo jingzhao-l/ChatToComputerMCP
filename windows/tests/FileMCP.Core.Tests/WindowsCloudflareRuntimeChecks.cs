@@ -9,6 +9,16 @@ internal static partial class Program
     private static async Task<int> RunFakeCloudflaredAsync(string[] args)
     {
         // Cloudflare runner tests NEVER contact the Cloudflare API.
+        if (args is ["tunnel", "login"])
+        {
+            var certificate = Environment.GetEnvironmentVariable("TUNNEL_ORIGIN_CERT");
+            if (string.IsNullOrEmpty(certificate)) return 31;
+            var mode = Environment.GetEnvironmentVariable("MCP_TEST_CF_LOGIN_MODE");
+            if (mode == "fail") return 32;
+            if (mode == "cancel") { await Task.Delay(Timeout.InfiniteTimeSpan); return 33; }
+            await File.WriteAllTextAsync(certificate, "new-test-certificate");
+            return 0;
+        }
         var capture=Environment.GetEnvironmentVariable("MCP_TEST_CF_CAPTURE");
         if (string.IsNullOrWhiteSpace(capture)) return 12;
         if (args is ["tunnel","list","-o","json"])

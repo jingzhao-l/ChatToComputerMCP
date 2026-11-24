@@ -103,7 +103,8 @@ public static class ProcessRunner
         int outputLimitBytes = DefaultOutputLimitBytes,
         CancellationToken cancellationToken = default,
         bool utf8Output = false,
-        Action<string, bool>? onOutput = null)
+        Action<string, bool>? onOutput = null,
+        int maxTimeoutSeconds = MaxCommandTimeoutSeconds)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateProcessStrings(executable, arguments, cwd, environment);
@@ -114,7 +115,7 @@ public static class ProcessRunner
         var stdoutTask = DrainAsync(process.StandardOutput, stdout, text => onOutput?.Invoke(text, false));
         var stderrTask = DrainAsync(process.StandardError, stderr, text => onOutput?.Invoke(text, true));
 
-        var timeout = Math.Max(1, Math.Min(timeoutSeconds, MaxCommandTimeoutSeconds));
+        var timeout = Math.Max(1, Math.Min(timeoutSeconds, Math.Clamp(maxTimeoutSeconds, 1, 600)));
         var timedOut = false;
         try
         {

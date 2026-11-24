@@ -268,7 +268,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="Shared directory"/>
                             <TextBox x:Name="DirectoryBox" Grid.Column="1" Margin="0,0,8,0"/>
-                            <Button Grid.Column="2" Content="Browse…" Click="BrowseDirectory_Click"/>
+                            <Button Grid.Column="2" x:Name="BrowseDirectoryButton" Content="Browse…" Click="BrowseDirectory_Click"/>
                         </Grid>
 
                         <TextBlock Text="Additional approved workspaces"

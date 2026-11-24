@@ -568,6 +568,10 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     public static bool IsValidCloudflareHostname(string value) =>
         WindowsCloudflareRunner.ValidHostname(value);
 
+    public static bool IsCloudflareLoggedIn() => WindowsCloudflareRunner.OriginCertificatePath() is not null;
+    public static Task<string?> LoginCloudflareAsync(bool replacingExisting, CancellationToken cancellation) =>
+        WindowsCloudflareRunner.LoginAsync(replacingExisting, cancellation);
+
     public static string CloudflareExecutable() =>
         WindowsCloudflareRunner.Locate();
 

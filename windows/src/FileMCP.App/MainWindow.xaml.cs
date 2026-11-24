@@ -31,7 +31,7 @@ public partial class MainWindow : Window
     private FileMcpSettings _settings;
     private readonly List<ApprovedWorkspace> _workspaces = [];
     private bool _workspaceUpdateBusy;
-    private bool CanEditAdditionalWorkspaces => !_workspaceUpdateBusy &&
+    private bool CanEditAdditionalWorkspaces => !_workspaceUpdateBusy && !_cloudflareBusy &&
         _runtime.State.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed or LocalMcpRuntimeStatus.Running;
 
     private void UpdateWorkspaceActionStates()
@@ -103,6 +103,10 @@ public partial class MainWindow : Window
     private DesktopUiPreferences _uiPreferences = new();
     private bool _uiReady;
     private bool _automaticConnection;
+    private bool _cloudflareBusy;
+    private CancellationTokenSource? _cloudflareLoginCancellation;
+    private bool RuntimeIdle => _runtime.State.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed;
+    private bool ConfigurationEditable => RuntimeIdle && !_cloudflareBusy;
     private int _reconnectDelay = 3;
     private readonly DispatcherTimer _reconnectTimer = new();
 
@@ -341,8 +345,8 @@ public partial class MainWindow : Window
             var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspace.Path));
             if (roots.Any(root =>
                 string.Equals(root, folder, StringComparison.OrdinalIgnoreCase) ||
-                folder.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-                root.StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
+                folder.StartsWith(Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                root.StartsWith(Path.EndsInDirectorySeparator(folder) ? folder : folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
             {
                 ShowError("Approved workspace roots must not overlap.");
                 return false;
@@ -355,7 +359,7 @@ public partial class MainWindow : Window
 
     private async void ActivateUpdate_Click(object sender, RoutedEventArgs e)
     {
-        if (_updateBusy || _availableUpdateVersion is not string version ||
+        if (_cloudflareBusy || _updateBusy || _availableUpdateVersion is not string version ||
             !DesktopUpdates.IsNewer(version, DesktopUpdates.CurrentVersion) || !DesktopUpdates.Installed(version)) return;
         if (System.Windows.MessageBox.Show(this,
             "The app will restart only when all commands and accepted requests have finished. No active work will be cancelled. Reconnect the tunnel from the new app if needed.",
@@ -786,30 +790,56 @@ public partial class MainWindow : Window
     private string SelectedCloudflareTunnelName() =>
         CloudflareTunnelNameBox.Text.Trim();
 
-    private void CloudflareLogin_Click(object sender, RoutedEventArgs e)
+    private bool BeginCloudflareOperation()
     {
-        try
-        {
-            var executable = LocalMcpRuntime.CloudflareExecutable();
-            _ = Process.Start(new ProcessStartInfo {
-                FileName = executable,
-                Arguments = "tunnel login",
-                UseShellExecute = true,
-                WorkingDirectory = Environment.GetFolderPath(
-                    Environment.SpecialFolder.UserProfile)
-            }) ?? throw new IOException("cloudflared tunnel login could not be started");
-            CloudflareManagementStatus.Text =
-                "cloudflared login opened. Complete the browser authorization, then refresh the named tunnel list.";
-        }
-        catch (Exception ex) { CloudflareManagementStatus.Text = ex.Message; }
+        if (!ConfigurationEditable) return false;
+        _cloudflareBusy = true; _reconnectTimer.Stop();
+        UpdateConfigurationControls(_runtime.State);
+        return true;
     }
 
-    private async void CloudflareRefresh_Click(object sender, RoutedEventArgs e) =>
-        await RefreshNamedTunnelsAsync();
+    private void EndCloudflareOperation()
+    {
+        _cloudflareBusy = false; UpdateConfigurationControls(_runtime.State);
+        if (_automaticConnection && RuntimeIdle && !_quitting) {
+            _reconnectTimer.Interval = TimeSpan.FromSeconds(_reconnectDelay);
+            _reconnectTimer.Start();
+        }
+    }
+
+    private async void CloudflareLogin_Click(object sender, RoutedEventArgs e)
+    {
+        if (_cloudflareLoginCancellation is { } active) { active.Cancel(); return; }
+        if (!ConfigurationEditable) return;
+        var switching = LocalMcpRuntime.IsCloudflareLoggedIn();
+        if (switching && System.Windows.MessageBox.Show(this,
+            "Log in to another Cloudflare account? The previous certificate is backed up and restored if login fails without a replacement.",
+            "Switch Cloudflare account", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        if (!BeginCloudflareOperation()) return;
+        using var cancellation = new CancellationTokenSource();
+        _cloudflareLoginCancellation = cancellation;
+        UpdateConfigurationControls(_runtime.State);
+        CloudflareManagementStatus.Text = "Waiting for browser authorization…";
+        try
+        {
+            var backup = await LocalMcpRuntime.LoginCloudflareAsync(switching, cancellation.Token);
+            if (backup is not null) AppendLog("Previous Cloudflare certificate retained as a local backup.\n");
+            await RefreshNamedTunnelsAsync();
+        }
+        catch (OperationCanceledException) { CloudflareManagementStatus.Text = "Cloudflare login cancelled."; }
+        catch (Exception ex) { CloudflareManagementStatus.Text = ex.Message; }
+        finally { _cloudflareLoginCancellation = null; EndCloudflareOperation(); }
+    }
+
+    private async void CloudflareRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        if (!BeginCloudflareOperation()) return;
+        try { await RefreshNamedTunnelsAsync(); }
+        finally { EndCloudflareOperation(); }
+    }
 
     private async Task RefreshNamedTunnelsAsync(string? select = null)
     {
-        CloudflareRefreshButton.IsEnabled = false;
         CloudflareManagementStatus.Text = "Reading named tunnels from your Cloudflare account…";
         try
         {
@@ -827,11 +857,11 @@ public partial class MainWindow : Window
             CloudflareManagementStatus.Text = "Could not list Cloudflare tunnels: " +
                 ex.Message;
         }
-        finally { CloudflareRefreshButton.IsEnabled = true; }
     }
 
     private async void CloudflareCreate_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         var name = SelectedCloudflareTunnelName();
         if (!LocalMcpRuntime.IsValidCloudflareTunnelName(name))
         {
@@ -844,7 +874,7 @@ public partial class MainWindow : Window
             ShowError("Disconnect before creating a new tunnel.");
             return;
         }
-        CloudflareCreateButton.IsEnabled = false;
+        if (!BeginCloudflareOperation()) return;
         CloudflareManagementStatus.Text = "Creating named tunnel " + name + "…";
         try
         {
@@ -856,11 +886,12 @@ public partial class MainWindow : Window
         {
             CloudflareManagementStatus.Text = "Creation failed: " + ex.Message;
         }
-        finally { CloudflareCreateButton.IsEnabled = true; }
+        finally { EndCloudflareOperation(); }
     }
 
     private async void CloudflareRouteDns_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         var name = SelectedCloudflareTunnelName();
         var host = CloudflareHostnameBox.Text.Trim().ToLowerInvariant();
         if (!LocalMcpRuntime.IsValidCloudflareTunnelName(name) ||
@@ -874,7 +905,7 @@ public partial class MainWindow : Window
             " to the selected named tunnel " + name + "? Existing DNS records are not overwritten.",
             "Configure Cloudflare DNS", MessageBoxButton.YesNo,
             MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        CloudflareRouteDnsButton.IsEnabled = false;
+        if (!BeginCloudflareOperation()) return;
         try
         {
             await Task.Run(() => LocalMcpRuntime.RouteCloudflareHostname(name,host));
@@ -885,11 +916,12 @@ public partial class MainWindow : Window
         {
             CloudflareManagementStatus.Text = "DNS routing failed: " + ex.Message;
         }
-        finally { CloudflareRouteDnsButton.IsEnabled = true; }
+        finally { EndCloudflareOperation(); }
     }
 
     private async void CloudflareDelete_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         var name = SelectedCloudflareTunnelName();
         if (!LocalMcpRuntime.IsValidCloudflareTunnelName(name))
         {
@@ -907,7 +939,7 @@ public partial class MainWindow : Window
             " from your Cloudflare account? This may disconnect other clients using it.",
             "Delete Cloudflare tunnel", MessageBoxButton.YesNo,
             MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        CloudflareDeleteButton.IsEnabled = false;
+        if (!BeginCloudflareOperation()) return;
         try
         {
             await Task.Run(() => LocalMcpRuntime.DeleteCloudflareNamedTunnel(name));
@@ -918,7 +950,7 @@ public partial class MainWindow : Window
         {
             CloudflareManagementStatus.Text = "Deletion failed: " + ex.Message;
         }
-        finally { CloudflareDeleteButton.IsEnabled = true; }
+        finally { EndCloudflareOperation(); }
     }
 
     private void UpdateCloudflareCredentialStatus()
@@ -949,6 +981,7 @@ public partial class MainWindow : Window
 
     private void DeleteCloudflareToken_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         if (_runtime.State.Status is LocalMcpRuntimeStatus.Running
             or LocalMcpRuntimeStatus.Starting)
         {
@@ -977,6 +1010,7 @@ public partial class MainWindow : Window
 
     private void ResetCloudflarePairing_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         if (_runtime.State.Status is LocalMcpRuntimeStatus.Running
             or LocalMcpRuntimeStatus.Starting)
         {
@@ -1062,7 +1096,7 @@ public partial class MainWindow : Window
             await _runtime.StopAsync();
             return;
         }
-        if (status == LocalMcpRuntimeStatus.Stopping) return;
+        if (status == LocalMcpRuntimeStatus.Stopping || !ConfigurationEditable) return;
         if (!ValidateConnection(requireApiKey: true) || !ValidateSettings()) return;
 
         try
@@ -1097,6 +1131,7 @@ public partial class MainWindow : Window
     {
         // Headless login startup must never display a blocking approval or
         // Keychain dialog; user has already explicitly opted into it.
+        if (!ConfigurationEditable || _quitting) return;
         try
         {
             var cloudflare = _settings.Provider == "cloudflare";
@@ -1124,6 +1159,7 @@ public partial class MainWindow : Window
 
     private void SaveConnection_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         if (!ValidateConnection(requireApiKey: true)) return;
         try
         {
@@ -1153,6 +1189,7 @@ public partial class MainWindow : Window
 
     private void SaveSettings_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         if (!ValidateSettings()) return;
         try
         {
@@ -1167,6 +1204,7 @@ public partial class MainWindow : Window
 
     private void DeleteApiKey_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         try
         {
             _credentialStore.DeleteApiKey();
@@ -1178,6 +1216,7 @@ public partial class MainWindow : Window
 
     private void BrowseDirectory_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfigurationEditable) return;
         var dialog = new OpenFolderDialog
         {
             Title = "Choose shared directory",
@@ -1328,29 +1367,7 @@ public partial class MainWindow : Window
             LocalMcpRuntimeStatus.Failed => "Connection failed",
             _ => "Disconnected"
         };
-        var editable = state.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed;
-        SaveSettingsButton.IsEnabled = SaveSecurityButton.IsEnabled = SavePreferencesButton.IsEnabled = editable;
-        EnableCommandsCheckBox.IsEnabled = editable;
-        WorkspaceListBox.IsEnabled = editable;
-        WorkspaceNameBox.IsEnabled = editable;
-        CommandCapacityBox.IsEnabled = editable;
-        ProviderBox.IsEnabled = editable;
-        CloudflareHostnameBox.IsEnabled = editable;
-        CloudflareModeBox.IsEnabled = editable;
-        CloudflareTunnelNameBox.IsEnabled = editable;
-        CloudflareTokenBox.IsEnabled = editable;
-        CloudflareCreateButton.IsEnabled = editable;
-        CloudflareDeleteButton.IsEnabled = editable;
-        CloudflareRouteDnsButton.IsEnabled = editable;
-        ResetCloudflarePairingButton.IsEnabled = editable;
-        DeleteCloudflareTokenButton.IsEnabled = editable &&
-            _cloudflareCredentialStore.HasSavedApiKey;
-        EnableGitPushBox.IsEnabled = editable;
-        EnableCodexHistoryBox.IsEnabled = editable;
-        CaptureCommandHistoryBox.IsEnabled = editable;
-        PersistLongTasksBox.IsEnabled = editable;
-        UpdateWorkspaceActionStates();
-        DefaultPermissionButton.IsEnabled = editable;
+        UpdateConfigurationControls(state);
         if (state.Status == LocalMcpRuntimeStatus.Running)
         {
             RefreshTasks();
@@ -1368,6 +1385,42 @@ public partial class MainWindow : Window
             _reconnectTimer.Start();
         }
         else if (state.Status == LocalMcpRuntimeStatus.Failed && !string.IsNullOrEmpty(state.Error)) ShowError(state.Error);
+    }
+
+    private void UpdateConfigurationControls(LocalMcpRuntimeState state)
+    {
+        var editable = ConfigurationEditable;
+        SaveSettingsButton.IsEnabled = SaveSecurityButton.IsEnabled = SavePreferencesButton.IsEnabled = editable;
+        EnableCommandsCheckBox.IsEnabled = editable;
+        WorkspaceListBox.IsEnabled = editable;
+        WorkspaceNameBox.IsEnabled = editable;
+        CommandCapacityBox.IsEnabled = editable;
+        ProviderBox.IsEnabled = editable;
+        TunnelIdBox.IsEnabled = ApiKeyBox.IsEnabled = DirectoryBox.IsEnabled = BrowseDirectoryButton.IsEnabled =
+            ProfileBox.IsEnabled = PortBox.IsEnabled = HealthAddressBox.IsEnabled = GitNameBox.IsEnabled = GitEmailBox.IsEnabled = editable;
+        SaveConnectionButton.IsEnabled = editable;
+        DeleteApiKeyButton.IsEnabled = editable && _credentialStore.HasSavedApiKey;
+        CloudflareLoginButton.Content = _cloudflareLoginCancellation is not null ? "Cancel login" :
+            LocalMcpRuntime.IsCloudflareLoggedIn() ? "Switch account" : "Log in";
+        CloudflareLoginButton.IsEnabled = editable || _cloudflareLoginCancellation is not null;
+        CloudflareRefreshButton.IsEnabled = editable;
+        if (RuntimeIdle) ConnectButton.IsEnabled = !_cloudflareBusy;
+        CloudflareHostnameBox.IsEnabled = editable;
+        CloudflareModeBox.IsEnabled = editable;
+        CloudflareTunnelNameBox.IsEnabled = editable;
+        CloudflareTokenBox.IsEnabled = editable;
+        CloudflareCreateButton.IsEnabled = editable;
+        CloudflareDeleteButton.IsEnabled = editable;
+        CloudflareRouteDnsButton.IsEnabled = editable;
+        ResetCloudflarePairingButton.IsEnabled = editable;
+        DeleteCloudflareTokenButton.IsEnabled = editable &&
+            _cloudflareCredentialStore.HasSavedApiKey;
+        EnableGitPushBox.IsEnabled = editable;
+        EnableCodexHistoryBox.IsEnabled = editable;
+        CaptureCommandHistoryBox.IsEnabled = editable;
+        PersistLongTasksBox.IsEnabled = editable;
+        UpdateWorkspaceActionStates();
+        DefaultPermissionButton.IsEnabled = editable;
     }
 
     private void AppendLog(string text)
@@ -1509,6 +1562,7 @@ public partial class MainWindow : Window
     public void ShutdownForSystemSession()
     {
         if (_quitting) return;
+        _cloudflareLoginCancellation?.Cancel();
         SavePlacement(); _placementTimer.Stop(); _reconnectTimer.Stop();
         SystemEvents.PowerModeChanged -= PowerModeChanged;
         _quitting = true;
@@ -1521,6 +1575,11 @@ public partial class MainWindow : Window
     private async Task QuitAsync()
     {
         if (_quitting) return;
+        if (_cloudflareBusy) {
+            _cloudflareLoginCancellation?.Cancel();
+            ShowError("Finish or cancel the Cloudflare account operation before quitting.");
+            return;
+        }
         SavePlacement(); _placementTimer.Stop(); _reconnectTimer.Stop();
         SystemEvents.PowerModeChanged -= PowerModeChanged;
         _quitting = true;

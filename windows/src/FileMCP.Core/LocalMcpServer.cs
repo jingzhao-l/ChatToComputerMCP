@@ -125,10 +125,11 @@ public sealed class LocalMcpServer : IAsyncDisposable
             }
     }
 
+    private static string RootPrefix(string path) => Path.EndsInDirectorySeparator(path) ? path : path + Path.DirectorySeparatorChar;
     private static bool OverlappingRoots(string one, string two) =>
         string.Equals(one, two, StringComparison.OrdinalIgnoreCase) ||
-        one.StartsWith(two + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-        two.StartsWith(one + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        one.StartsWith(RootPrefix(two), StringComparison.OrdinalIgnoreCase) ||
+        two.StartsWith(RootPrefix(one), StringComparison.OrdinalIgnoreCase);
 
     internal void ReplaceAdditionalWorkspaces(IReadOnlyList<ApprovedWorkspace> definitions,
         string? oauthPolicy = null, string? oauthDescription = null, Action? persistSettings = null)

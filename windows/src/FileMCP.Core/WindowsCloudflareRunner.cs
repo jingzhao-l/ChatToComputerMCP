@@ -45,6 +45,49 @@ internal static class WindowsCloudflareRunner
             "cloudflared.exe was not found. Install Cloudflare Tunnel for Windows and add it to PATH.");
     }
 
+    internal static string? OriginCertificatePath()
+    {
+        var custom = Environment.GetEnvironmentVariable("TUNNEL_ORIGIN_CERT");
+        if (!string.IsNullOrWhiteSpace(custom)) return File.Exists(custom) ? Path.GetFullPath(custom) : null;
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return new[] {
+            Path.Combine(home, ".cloudflared", "cert.pem"),
+            Path.Combine(home, ".cloudflare-warp", "cert.pem"),
+            Path.Combine(home, "cloudflare-warp", "cert.pem"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "cloudflared", "cert.pem")
+        }.FirstOrDefault(File.Exists);
+    }
+
+    internal static async Task<string?> LoginAsync(bool replacingExisting, CancellationToken cancellation)
+    {
+        var existing = OriginCertificatePath();
+        if (existing is not null && !replacingExisting) return null;
+        string? backup = null;
+        if (existing is not null)
+        {
+            CommandReceiptLedger.RefuseLinks(existing);
+            backup = existing + ".bak-" + Guid.NewGuid().ToString("N");
+            File.Move(existing, backup);
+        }
+        try
+        {
+            var result = await ProcessRunner.RunAsync(Locate(), ["tunnel", "login"], timeoutSeconds: 600,
+                outputLimitBytes: 40_000, cancellationToken: cancellation, maxTimeoutSeconds: 600).ConfigureAwait(false);
+            cancellation.ThrowIfCancellationRequested();
+            if (result.TimedOut || result.ExitCode != 0 || OriginCertificatePath() is null ||
+                (result.Stdout + result.Stderr).Contains("existing certificate", StringComparison.OrdinalIgnoreCase))
+                throw new FileMcpException("Cloudflare login did not produce a new certificate");
+            return backup;
+        }
+        catch
+        {
+            // Do not overwrite a new certificate created by another process.
+            if (existing is not null && backup is not null && !File.Exists(existing))
+                File.Move(backup, existing);
+            throw;
+        }
+    }
+
     public sealed record NamedTunnel(string Id, string Name);
 
     internal static bool IsNamedTunnel(string value) =>
