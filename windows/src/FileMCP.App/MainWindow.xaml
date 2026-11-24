@@ -215,9 +215,12 @@
                             <Button x:Name="AddWorkspaceButton" Content="Add folders…" Click="AddWorkspaces_Click" Margin="0,0,7,5"/>
                             <Button x:Name="RenameWorkspaceButton" Content="Rename" Click="RenameWorkspace_Click" Margin="0,0,7,5"/>
                             <Button x:Name="RemoveWorkspaceButton" Content="Remove approval" Click="RemoveWorkspace_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="WorkspacePermissionButton" Content="Permissions…" Click="WorkspacePermissions_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="DefaultPermissionButton" Content="Default permissions…" Click="DefaultPermissions_Click" Margin="0,0,7,5"/>
                             <Button x:Name="RevealWorkspaceButton" Content="Reveal" Click="RevealWorkspace_Click" Margin="0,0,0,5"/>
                         </WrapPanel>
-                        <TextBlock Text="Only folders approved here are accessible. Removing approval does not delete files. Save and reconnect to apply changes."
+                        <TextBlock x:Name="WorkspacePermissionText" Foreground="Gray" TextWrapping="Wrap"/>
+                        <TextBlock Text="Additional workspaces can be changed online while affected scopes are idle. OAuth changes require fresh authorization. Default/global changes require reconnect. Removing approval never deletes files."
                                    Foreground="Gray" TextWrapping="Wrap" Margin="0,4,0,9"/>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="Total concurrent commands" VerticalAlignment="Center" Margin="0,0,12,0"/>
@@ -231,14 +234,23 @@
                                   ToolTip="Allow ChatToComputerMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
                         <TextBlock Margin="120,5,0,0" Foreground="Gray" TextWrapping="Wrap"
                                    Text="Allows ChatGPT to run PowerShell/CLI commands with the current Windows user's permissions. Enable only for workspaces you trust."/>
+                        <CheckBox x:Name="CaptureCommandHistoryBox" Margin="120,10,0,0"
+                                  Content="Keep command text and output in local history"
+                                  ToolTip="May contain secrets. Off by default; only local metadata is recorded unless you opt in."/>
                         <CheckBox x:Name="EnableGitPushBox" Content="Allow Git push to remote servers"
                                   Margin="120,12,0,0"
                                   ToolTip="Sends repository contents to configured remote servers and may use existing credentials. Disabled by default."/>
-                        <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow writing to Codex history"
-                                  Margin="120,8,0,0"
-                                  ToolTip="Writes conversation content to the user's Codex history outside approved workspaces. Disabled by default."/>
                         <TextBlock Margin="120,4,0,0" Foreground="Gray" TextWrapping="Wrap"
-                                   Text="Git push can disclose source to remotes. Codex history writes outside the workspace. Both need separate approval."/>
+                                   Text="Git push can disclose source to remotes and requires separate approval."/>
+
+                        <Expander Header="Optional integrations" Margin="0,16,0,0">
+                            <StackPanel Margin="0,8,0,0">
+                                <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow importing conversations into Codex history"
+                                          ToolTip="Writes conversation content to the user's Codex history outside approved workspaces. Disabled by default."/>
+                                <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,5,0,0"
+                                           Text="Enable only if you use Codex. Import writes outside approved folders, and workspace-specific permission still applies."/>
+                            </StackPanel>
+                        </Expander>
 
                         <Expander x:Name="AdvancedExpander" Header="Advanced options" Margin="0,16,0,0">
                             <Grid Margin="0,12,0,0">
@@ -312,7 +324,7 @@
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Tasks">
+            <TabItem Header="Tasks" x:Name="TasksTab">
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
@@ -329,6 +341,7 @@
                     </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
                         <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
+                        <Button Content="History…" Click="OpenCommandHistory_Click" Margin="0,0,8,0"/>
                         <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"
                                 IsEnabled="False" Margin="0,0,8,0"/>
                         <Button x:Name="RevealTaskButton" Content="Open folder" Click="RevealTask_Click"
@@ -345,13 +358,18 @@
                              IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              FontFamily="Consolas" FontSize="11"
-                             ToolTip="Captured, bounded stdout/stderr of the selected command session."/>
+                             ToolTip="Captured, bounded stdout/stderr of the selected command session; refreshes automatically while visible."/>
                 </Grid>
             </TabItem>
 
             <TabItem Header="Activity">
                 <Grid Margin="10">
-                    <TextBox x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Activity audit…" Click="OpenActivityAudit_Click" Margin="0,0,8,0"/>
+                        <TextBlock Text="Diagnostic logs (not the durable audit)" VerticalAlignment="Center" Foreground="Gray"/>
+                    </StackPanel>
+                    <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              FontFamily="Consolas" FontSize="11" Background="#191919" Foreground="White"/>
                 </Grid>

@@ -288,6 +288,9 @@ func runAgentToolChecks(rootPath: String) throws {
         page = try call(full, "read_command_output", ["session_id": floodID, "cursor": page["next_cursor"]!])
     } while true
     check(total <= 262_144 && total > 0)
+    let desktop = try full.findSession(floodID).snapshot(cursor: 0, maxBytes: 262_144)
+    check(desktop["has_more"] as? Bool == false)
+    check((desktop["output"] as! String).utf8.count == total && total > 65_536)
     // Fill retention, then ensure retrying an evicted key cannot execute it again.
     for n in 0..<8 {
         let result = try call(full, "start_command", ["request_id": "retention-\(n)", "command": "true"])
@@ -363,6 +366,44 @@ func runAgentToolChecks(rootPath: String) throws {
             arguments: ["request_id": "owned-via-tool"])
     }
     print("PASS: client-owned durable receipt status after app restart and cross-owner denial")
+    let historyRoot = root.appendingPathComponent("private-history/profile")
+    let history = try CommandHistoryStore(directory: historyRoot, captureContent: true)
+    let historyTools = LocalTools(resolver: resolver, gitUserName: "Test",
+        gitUserEmail: "test@example.invalid", enableCommands: true, workspaceScopeID: "history-test",
+        workspaceName: "History test", commandHistory: history)
+    defer { historyTools.stopCommandSessions() }
+    _ = try historyTools.call(name: "run_command", arguments: ["command": "printf history-sync"],
+        verifiedOwnerID: "oauth-history")
+    _ = try historyTools.call(name: "start_command", arguments: ["request_id": "history-async",
+        "command": "printf history-async; exit 7"], verifiedOwnerID: "oauth-history")
+    let historyDeadline = Date().addingTimeInterval(5)
+    while !history.records().contains(where: { $0.requestID == "history-async" && $0.isTerminal }) &&
+        Date() < historyDeadline { Thread.sleep(forTimeInterval: 0.03) }
+    historyTools.stopCommandSessions()
+    let persistedHistory = try CommandHistoryStore.read(directory: historyRoot)
+    check(persistedHistory.count == 2)
+    check(persistedHistory.contains { $0.kind == "sync" && $0.exitCode == 0 &&
+        ($0.output ?? "").contains("history-sync") })
+    check(persistedHistory.contains { $0.requestID == "history-async" && $0.exitCode == 7 &&
+        ($0.output ?? "").contains("history-async") && $0.clientID == "oauth-history" &&
+        $0.workspaceID == "history-test" && $0.workspaceName == "History test" })
+    let metadataRoot = root.appendingPathComponent("private-history/metadata")
+    let metadata = try CommandHistoryStore(directory: metadataRoot, captureContent: false)
+    let metadataID = try metadata.begin(workspaceID: "test", workspaceName: "Test", cwd: rootPath,
+        kind: "sync", requestID: nil, clientID: nil, command: "SECRET_FIXTURE")
+    try metadata.finish(id: metadataID, state: "exited", exitCode: 0, output: "SECRET_FIXTURE")
+    let interruptedID = try metadata.begin(workspaceID: "test", workspaceName: "Test", cwd: rootPath,
+        kind: "async", requestID: "interrupted", clientID: nil, command: "SECRET_FIXTURE")
+    let reopenedHistory = try CommandHistoryStore(directory: metadataRoot, captureContent: false)
+    check(reopenedHistory.records().allSatisfy { $0.command == nil && $0.output == nil })
+    check(reopenedHistory.records().contains { $0.id == interruptedID && $0.state == "interrupted" })
+    let boundedID = try history.begin(workspaceID: "test", workspaceName: "Test", cwd: rootPath,
+        kind: "sync", requestID: nil, clientID: nil, command: "bounded")
+    try history.finish(id: boundedID, state: "exited", exitCode: 0,
+        output: String(repeating: "🙂", count: 20_000))
+    let boundedRecord = history.records().first { $0.id == boundedID }!
+    check(boundedRecord.truncated && boundedRecord.output!.utf8.count <= CommandHistoryStore.contentLimit)
+    print("PASS: real sync/async history, owner/workspace metadata, opt-in content, restart interruption and Unicode bounds")
     print("PASS: synchronous command cancellation and descendant cleanup on disconnect")
     print("PASS: command streaming/cursors/exit status/retries/bounds/cancel/timeout/descendant cleanup/shutdown")
 }

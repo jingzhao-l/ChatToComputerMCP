@@ -131,6 +131,12 @@ extension LocalMCPServer {
         try checkCall("workspace_call", scopedArgs, bob, expectedError: false,
                       "Appropriate scoped grant can read its approved workspace")
 
+        let directScope: [String: Any] = ["workspace_id": "second", "relative_path": "second.txt"]
+        try checkCall("read_file", directScope, alice, expectedError: true,
+                      "Direct scope parameter cannot bypass OAuth grant")
+        try checkCall("read_file", directScope, bob, expectedError: false,
+                      "Direct scope parameter respects OAuth grant")
+
         let started = try call("start_command", [
             "request_id": "owned-command",
             "command": "printf owner-ready; sleep 20",
@@ -229,11 +235,13 @@ extension LocalMCPServer {
         try Data("only-in-second".utf8).write(to: secondRoot.appendingPathComponent("only-second.txt"))
         let token = String(repeating: "a", count: 64)
         let scoped = WorkspaceDefinition(id: "second", name: "Second", path: secondRoot.path)
+        let auditRoot = temp.appendingPathComponent("audit/profile")
+        let audit = try ActivityAuditStore(directory: auditRoot)
 
         func setup(_ workspaces: [WorkspaceDefinition]) throws -> LocalMCPServer {
             try LocalMCPServer(port: 18962, allowedDirectory: defaultRoot.path,
                 gitUserName: "Test", gitUserEmail: "test@example.invalid",
-                enableCommands: true, additionalWorkspaces: workspaces,
+                enableCommands: true, additionalWorkspaces: workspaces, activityAudit: audit,
                 localAuthToken: token, log: { _ in })
         }
         let server = try setup([scoped])
@@ -248,6 +256,44 @@ extension LocalMCPServer {
             let json = try JSONSerialization.jsonObject(with: response.subdata(in: range.upperBound..<response.count)) as! [String: Any]
             return json["result"] as! [String: Any]
         }
+        func restrictedCall(_ instance: LocalMCPServer, _ name: String, _ arguments: [String: Any]) throws -> [String: Any] {
+            let response = instance.callTool(id: 1, params: ["name": name, "arguments": arguments], modern: false)
+            let separator = response.range(of: Data("\r\n\r\n".utf8))!
+            return (try JSONSerialization.jsonObject(with: response.subdata(in: separator.upperBound..<response.count)) as! [String: Any])["result"] as! [String: Any]
+        }
+        let restrictedServer = try LocalMCPServer(port: 18964, allowedDirectory: defaultRoot.path,
+            gitUserName: "Test", gitUserEmail: "test@example.invalid", enableCommands: true,
+            additionalWorkspaces: [WorkspaceDefinition(id: "second", name: "Second", path: secondRoot.path,
+                permissions: .readOnly)], enableGitPush: true, enableCodexHistory: true,
+            localAuthToken: String(repeating: "c", count: 64), log: { _ in })
+        defer { restrictedServer.stop() }
+        let readOnlyTools = restrictedServer.workspaceTools["second"]!
+        precondition(readOnlyTools.hasTool(named: "read_file") && readOnlyTools.hasTool(named: "workspace_context"))
+        for tool in ["write_file", "delete_file", "edit_file", "git_init", "git_push", "run_command", "start_command", "save_conversation_to_codex"] {
+            precondition(!readOnlyTools.hasTool(named: tool), "Read-only scope advertised " + tool)
+            do {
+                _ = try readOnlyTools.call(name: tool, arguments: [:])
+                fatalError("Read-only scope admitted " + tool)
+            } catch {}
+        }
+        let prohibited = try restrictedCall(restrictedServer, "write_file", ["workspace_id": "second",
+            "relative_path": "forbidden.txt", "content": "must not write"])
+        precondition(prohibited["isError"] as? Bool == true)
+        precondition(!FileManager.default.fileExists(atPath: secondRoot.appendingPathComponent("forbidden.txt").path))
+        let permitted = try restrictedCall(restrictedServer, "read_file", ["workspace_id": "second", "relative_path": "only-second.txt"])
+        precondition(permitted["isError"] as? Bool == false)
+        let defaultRestricted = try LocalMCPServer(port: 18965, allowedDirectory: defaultRoot.path,
+            gitUserName: "Test", gitUserEmail: "test@example.invalid", enableCommands: true,
+            additionalWorkspaces: [scoped], defaultWorkspacePermissions: .readOnly,
+            localAuthToken: String(repeating: "c", count: 64), log: { _ in })
+        defer { defaultRestricted.stop() }
+        precondition(!defaultRestricted.tools.hasTool(named: "start_command"))
+        precondition(defaultRestricted.publishedToolDefinitions.contains { $0["name"] as? String == "start_command" })
+        let otherWrite = try restrictedCall(defaultRestricted, "write_file", ["workspace_id": "second", "relative_path": "allowed.txt", "content": "ok"])
+        precondition(otherWrite["isError"] as? Bool == false)
+        let defaultWrite = try restrictedCall(defaultRestricted, "write_file", ["relative_path": "forbidden.txt", "content": "no"])
+        precondition(defaultWrite["isError"] as? Bool == true)
+        print("PASS: independently restricted workspaces and union tool discovery")
         let listed = try call("list_workspaces")
         let workspaces = (listed["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
         precondition(workspaces.count == 2)
@@ -256,6 +302,32 @@ extension LocalMCPServer {
 
         let direct = try call("read_file", ["relative_path": "only-default.txt"])
         precondition(direct["isError"] as? Bool == false)
+        let schema = server.publishedToolDefinitions.first { $0["name"] as? String == "read_file" }!
+        let input = schema["inputSchema"] as! [String: Any]
+        precondition((input["properties"] as! [String: Any])["workspace_id"] != nil)
+        precondition(!(input["required"] as! [String]).contains("workspace_id"))
+        let directScoped = try call("read_file", ["workspace_id": "second", "relative_path": "only-second.txt"])
+        precondition(directScoped["isError"] as? Bool == false)
+        _ = try call("read_file", ["workspace_id": "second", "relative_path": "SECRET_FIXTURE"])
+        let audited = try ActivityAuditStore.read(directory: auditRoot)
+        precondition(audited.contains { $0.tool == "read_file" && $0.workspace == "second" && $0.result == "ok" })
+        precondition(audited.contains { $0.tool == "read_file" && $0.workspace == "second" && $0.result == "error" })
+        let auditText = try String(contentsOf: auditRoot.appendingPathComponent("current.jsonl"), encoding: .utf8)
+        precondition(!auditText.contains("SECRET_FIXTURE") && !auditText.contains("only-in-second"))
+        print("PASS: durable privacy-minimized audit of real routed tool calls")
+        precondition(String(describing: directScoped["structuredContent"]).contains("only-in-second"))
+        for invalid: Any in ["unknown", "", 1, NSNull()] {
+            let denied = try call("read_file", ["workspace_id": invalid, "relative_path": "only-default.txt"])
+            precondition(denied["isError"] as? Bool == true)
+        }
+        let nestedScope = try call("workspace_call", ["workspace_id": "second", "tool_name": "read_file",
+            "arguments": ["workspace_id": "default", "relative_path": "only-default.txt"]])
+        precondition(nestedScope["isError"] as? Bool == true)
+        let defaultWrapper = try call("workspace_call", ["workspace_id": "default", "tool_name": "read_file",
+            "arguments": ["relative_path": "only-default.txt"]])
+        precondition(defaultWrapper["isError"] as? Bool == false)
+        let again = try call("read_file", ["relative_path": "only-default.txt"])
+        precondition(again["isError"] as? Bool == false, "Direct routing must not change the global default")
         let secondary = try call("workspace_call", ["workspace_id": "second",
             "tool_name": "read_file", "arguments": ["relative_path": "only-second.txt"]])
         precondition(secondary["isError"] as? Bool == false)
@@ -292,14 +364,43 @@ extension LocalMCPServer {
                 "command": "sleep 4", "timeout_seconds": 10]
             let response = index % 2 == 0
                 ? try call("start_command", args)
-                : try call("workspace_call", ["workspace_id": "second",
-                    "tool_name": "start_command", "arguments": args])
+                : try call("start_command", args.merging(["workspace_id": "second"]) { _, new in new })
             precondition(response["isError"] as? Bool == false)
             let payload = response["structuredContent"] as! [String: Any]
-            let started = (index % 2 == 0 ? payload :
-                payload["result"] as! [String: Any])
+            let started = payload
             ids.append((index % 2 == 0 ? "default" : "second",
                         started["session_id"] as! String))
+        }
+        // Add a third scope without cancelling existing jobs; a live scope
+        // with jobs cannot be removed or rebound.
+        let thirdRoot = temp.appendingPathComponent("third")
+        try FileManager.default.createDirectory(at: thirdRoot, withIntermediateDirectories: true)
+        try Data("third-data".utf8).write(to: thirdRoot.appendingPathComponent("third.txt"))
+        let third = WorkspaceDefinition(id: "third", name: "Third", path: thirdRoot.path, permissions: .readOnly)
+        var persisted = false
+        try server.replaceAdditionalWorkspaces([scoped, third], persist: { persisted = true })
+        precondition(persisted)
+        let thirdRead = try call("read_file", ["workspace_id": "third", "relative_path": "third.txt"])
+        precondition(thirdRead["isError"] as? Bool == false)
+        do {
+            try server.replaceAdditionalWorkspaces([third])
+            fatalError("Removed workspace with live jobs")
+        } catch {}
+        do {
+            try server.replaceAdditionalWorkspaces([scoped], persist: { throw MCPServerError.operationFailed("fixture persistence failure") })
+            fatalError("Failed persistence changed live catalog")
+        } catch {}
+        precondition(server.workspaceDefinitions.contains(third))
+        try server.replaceAdditionalWorkspaces([scoped])
+        let removed = try call("read_file", ["workspace_id": "third", "relative_path": "third.txt"])
+        precondition(removed["isError"] as? Bool == true)
+        precondition(FileManager.default.fileExists(atPath: thirdRoot.appendingPathComponent("third.txt").path))
+        print("PASS: live add/revoke, persistence rollback and idle-scope enforcement")
+        for scope in ["default", "second"] {
+            let status = try call("command_capacity_status", ["workspace_id": scope])
+            let values = status["structuredContent"] as! [String: Any]
+            precondition(values["active_total"] as? Int == limit)
+            precondition(values["available_slots"] as? Int == 0)
         }
         try FileManager.default.createDirectory(
             at: secondRoot.appendingPathComponent("overlimit"), withIntermediateDirectories: true)
@@ -311,8 +412,7 @@ extension LocalMCPServer {
             let arguments: [String: Any] = ["session_id": id]
             let result = scope == "default"
                 ? try call("cancel_command", arguments)
-                : try call("workspace_call", ["workspace_id": scope,
-                    "tool_name": "cancel_command", "arguments": arguments])
+                : try call("cancel_command", arguments.merging(["workspace_id": scope]) { _, new in new })
             precondition(result["isError"] as? Bool == false)
         }
         print("PASS: shared 4–16 budget across independently scoped workspaces")

@@ -69,6 +69,11 @@ internal sealed class WorkspaceCommandBudget
         lock (_gate) _sync.Remove(id);
     }
 
+    public bool HasActiveCommands()
+    {
+        lock (_gate) return ActivePaths().Count > 0;
+    }
+
     public bool HasActivityUnderRoot(string root)
     {
         lock (_gate) return ActivePaths().Any(path =>

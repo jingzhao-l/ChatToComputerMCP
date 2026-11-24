@@ -355,6 +355,7 @@ internal sealed partial class LocalTools
             if (_usedRequestIds.Count >= 4096) throw new FileMcpException("Runtime command quota reached; reconnect to start a fresh runtime");
             var receipt = _receiptLedger;
             var scopeID = _workspaceScopeID;
+            var historyID = Guid.NewGuid();
             var session = new CommandSession(key, command, cwd, timeout,
                 (state, code) =>
                 {
@@ -364,18 +365,22 @@ internal sealed partial class LocalTools
                         System.Diagnostics.Trace.WriteLine(
                             "Could not persist command receipt terminal state: " + ex.GetType().Name);
                     }
-                });
+                }, (state, code, output, truncated) => FinishHistory(historyID, state, code, output, truncated));
             _commandBudget.Admit(session, cwd);
             var reserved = false;
+            var historyReserved = false;
             try
             {
                 receipt?.Reserve(scopeID, key, verifiedOwnerID);
                 reserved = receipt is not null;
+                _commandHistory?.Begin(scopeID, _workspaceName, cwd, "async", key, verifiedOwnerID, command, historyID);
+                historyReserved = _commandHistory is not null;
                 session.Launch(PowerShellPath());
             }
             catch
             {
                 _commandBudget.Forget(session);
+                if (historyReserved) FinishHistory(historyID, "launch_failed", null);
                 if (reserved)
                 {
                     try { receipt?.Finish(scopeID, key, "launch_failed", null); }
@@ -388,9 +393,9 @@ internal sealed partial class LocalTools
                 throw;
             }
             _usedRequestIds.Add(key); _sessions.Add(session);
-            if (_sessions.Count > 8) {
-                var old = _sessions.FirstOrDefault(item => !item.Active);
-                if (old is not null) { old.Dispose(); _sessions.Remove(old); }
+            while (_sessions.Count(item => !item.Active) > 8) {
+                var old = _sessions.First(item => !item.Active);
+                old.Dispose(); _sessions.Remove(old);
             }
             return session.Snapshot(0);
         }
@@ -409,6 +414,9 @@ internal sealed partial class LocalTools
                 session.Active)).ToArray();
         }
     }
+
+    internal JsonObject DesktopCommandOutput(string sessionID) =>
+        FindSession(sessionID).Snapshot(0, 262_144);
 
     internal void CancelDesktopCommand(string sessionID)
     {
@@ -442,7 +450,8 @@ internal sealed partial class LocalTools
 }
 
 internal sealed class CommandSession(string requestId, string command, string cwd, int timeout,
-    Action<string, int>? onFinish = null) : IDisposable
+    Action<string, int>? onFinish = null,
+    Action<string, int, string, bool>? onHistoryFinish = null) : IDisposable
 {
     public string Id { get; } = Guid.NewGuid().ToString();
     public string RequestId { get; } = requestId;
@@ -486,15 +495,20 @@ internal sealed class CommandSession(string requestId, string command, string cw
     private void Finish(int code)
     {
         string terminalState;
+        string historyOutput;
+        bool historyTruncated;
         lock (_gate)
         {
             _exitCode = code; _state = _stopReason ?? "exited";
             terminalState = _state;
             _deadline?.Dispose(); _deadline = null;
+            historyOutput = onHistoryFinish is null ? "" : string.Concat(_chunks.Select(chunk => chunk.Text));
+            historyTruncated = (_chunks.TryPeek(out var first) ? first.Cursor : _sequence + 1) > 1;
         }
         // Disk writes must not occur under the session gate because output
         // readers and cancellation need independent progress.
         onFinish?.Invoke(terminalState, code);
+        onHistoryFinish?.Invoke(terminalState, code, historyOutput, historyTruncated);
     }
 
     public void Cancel(string reason = "cancelled", bool synchronously = false)
@@ -507,7 +521,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
         }
     }
 
-    public JsonObject Snapshot(int cursor)
+    public JsonObject Snapshot(int cursor, int maxBytes = 65_536)
     {
         lock (_gate)
         {
@@ -518,7 +532,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
             {
                 if (chunk.Cursor <= next) continue;
                 var size = Encoding.UTF8.GetByteCount(chunk.Text);
-                if (bytes + size > 65_536) break;
+                if (bytes + size > maxBytes) break;
                 output.Append(chunk.Text); bytes += size; next = chunk.Cursor;
             }
             return new JsonObject { ["session_id"] = Id, ["request_id"] = RequestId, ["state"] = _state,

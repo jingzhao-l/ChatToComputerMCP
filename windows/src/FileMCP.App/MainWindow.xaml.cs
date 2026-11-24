@@ -30,6 +30,63 @@ public partial class MainWindow : Window
     private readonly Forms.NotifyIcon _trayIcon;
     private FileMcpSettings _settings;
     private readonly List<ApprovedWorkspace> _workspaces = [];
+    private bool _workspaceUpdateBusy;
+    private bool CanEditAdditionalWorkspaces => !_workspaceUpdateBusy &&
+        _runtime.State.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed or LocalMcpRuntimeStatus.Running;
+
+    private void UpdateWorkspaceActionStates()
+    {
+        if (RevealWorkspaceButton is null || WorkspacePermissionButton is null) return;
+        var editable = CanEditAdditionalWorkspaces;
+        WorkspaceListBox.IsEnabled = editable;
+        WorkspaceNameBox.IsEnabled = editable;
+        AddWorkspaceButton.IsEnabled = editable;
+        RenameWorkspaceButton.IsEnabled = editable && WorkspaceListBox.SelectedItem is ApprovedWorkspace;
+        RemoveWorkspaceButton.IsEnabled = editable && WorkspaceListBox.SelectedItem is ApprovedWorkspace;
+        WorkspacePermissionButton.IsEnabled = editable && WorkspaceListBox.SelectedItem is ApprovedWorkspace;
+        RevealWorkspaceButton.IsEnabled = WorkspaceListBox.SelectedItem is ApprovedWorkspace;
+    }
+
+    private async Task ApplyAdditionalWorkspaceChangeAsync(IReadOnlyList<ApprovedWorkspace> previous)
+    {
+        if (_runtime.State.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed)
+        {
+            RefreshWorkspaceList(); UpdateOverview(); AppendLog("Save settings to apply workspace changes.\n"); return;
+        }
+        if (_runtime.State.Status != LocalMcpRuntimeStatus.Running || _workspaceUpdateBusy)
+        {
+            _workspaces.Clear(); _workspaces.AddRange(previous); RefreshWorkspaceList(); return;
+        }
+        if (UsesCloudflare && System.Windows.MessageBox.Show(this,
+            "Cloudflare OAuth clients must authorize again. Finish all active operations first. The tunnel remains running.",
+            "Apply live workspace authorization changes", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+        {
+            _workspaces.Clear(); _workspaces.AddRange(previous); RefreshWorkspaceList(); return;
+        }
+        var next = _workspaces.ToList();
+        var priorSaved = _settings.AdditionalWorkspaces;
+        _workspaceUpdateBusy = true; UpdateWorkspaceActionStates();
+        try
+        {
+            await _runtime.ReplaceDesktopWorkspacesAsync(next, () =>
+            {
+                _settings.AdditionalWorkspaces = next;
+                try { _settingsStore.Save(_settings); } catch { _settings.AdditionalWorkspaces = priorSaved; throw; }
+            });
+            AppendLog("Workspace approvals applied online.\n");
+            if (UsesCloudflare) RefreshOAuthClients();
+        }
+        catch (Exception ex)
+        {
+            _workspaces.Clear(); _workspaces.AddRange(previous);
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            _workspaceUpdateBusy = false;
+            RefreshWorkspaceList(); UpdateWorkspaceActionStates(); UpdateOverview();
+        }
+    }
     private sealed record TaskRow(DesktopCommandInfo Task)
     {
         public string Display => Task.WorkspaceName + " · " + Task.RequestId + " · " + Task.State;
@@ -37,6 +94,7 @@ public partial class MainWindow : Window
     private bool _quitting;
     private string _logBuffer = "";
     private readonly DispatcherTimer _updateTimer = new();
+    private readonly DispatcherTimer _taskRefreshTimer = new();
     private bool _updateBusy;
     private string? _availableUpdateVersion;
     private const int MaxLogCharacters = 500_000;
@@ -50,6 +108,15 @@ public partial class MainWindow : Window
         UpdateApiKeyStatus();
         UpdateCloudflareCredentialStatus();
         LoadUpdateSettings();
+        _taskRefreshTimer.Interval = TimeSpan.FromSeconds(2);
+        _taskRefreshTimer.Tick += (_, _) => {
+            if (IsVisible && WindowState != WindowState.Minimized && MainTabs.SelectedItem == TasksTab)
+                RefreshTasks();
+        };
+        MainTabs.SelectionChanged += (_, e) => {
+            if (e.Source == MainTabs && MainTabs.SelectedItem == TasksTab) RefreshTasks();
+        };
+        _taskRefreshTimer.Start();
         _updateTimer.Interval = TimeSpan.FromHours(12);
         _updateTimer.Tick += (_, _) => _ = CheckUpdatesAsync(automatic: true);
         Loaded += (_, _) =>
@@ -105,6 +172,7 @@ public partial class MainWindow : Window
         GitNameBox.Text = settings.GitUserName;
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
+        CaptureCommandHistoryBox.IsChecked = settings.CaptureCommandHistoryContent;
         EnableGitPushBox.IsChecked = settings.EnableGitPush;
         EnableCodexHistoryBox.IsChecked = settings.EnableCodexHistory;
         ApplyProviderSelection();
@@ -131,11 +199,18 @@ public partial class MainWindow : Window
 
     private void WorkspaceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        WorkspaceNameBox.Text = (WorkspaceListBox.SelectedItem as ApprovedWorkspace)?.Name ?? "";
+        var selected = WorkspaceListBox.SelectedItem as ApprovedWorkspace;
+        WorkspaceNameBox.Text = selected?.Name ?? "";
+        if (WorkspacePermissionText is not null)
+            WorkspacePermissionText.Text = selected is null
+                ? "Default: " + (_settings?.DefaultWorkspacePermissions?.Summary ?? "Inherit global permissions")
+                : selected.Name + ": " + (selected.Permissions?.Summary ?? "Inherit global permissions");
+        if (WorkspacePermissionButton is not null) UpdateWorkspaceActionStates();
     }
 
-    private void AddWorkspaces_Click(object sender, RoutedEventArgs e)
+    private async void AddWorkspaces_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEditAdditionalWorkspaces) return;
         var picker = new OpenFolderDialog {
             Title = "Choose additional approved workspaces",
             Multiselect = true,
@@ -147,7 +222,7 @@ public partial class MainWindow : Window
         foreach (var folder in picker.FolderNames)
         {
             _workspaces.Add(new ApprovedWorkspace(Guid.NewGuid().ToString("N"),
-                Path.GetFileName(Path.TrimEndingDirectorySeparator(folder)), folder));
+                Path.GetFileName(Path.TrimEndingDirectorySeparator(folder)), folder, WorkspacePermissions.ReadOnly));
         }
         if (!ValidateApprovedFolders())
         {
@@ -155,31 +230,53 @@ public partial class MainWindow : Window
             _workspaces.AddRange(before);
             return;
         }
-        RefreshWorkspaceList();
-        UpdateOverview();
-        AppendLog("Additional workspace approval added. Save and reconnect to apply.\n");
+        await ApplyAdditionalWorkspaceChangeAsync(before);
     }
 
-    private void RemoveWorkspace_Click(object sender, RoutedEventArgs e)
+    private async void RemoveWorkspace_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEditAdditionalWorkspaces) return;
         if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
         if (System.Windows.MessageBox.Show(this,
             "Remove approval of " + workspace.Name + "? This never deletes files.",
             "Revoke workspace access", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
+        var before = _workspaces.ToList();
         _workspaces.Remove(workspace);
-        RefreshWorkspaceList();
-        AppendLog("Workspace approval removed. Save and reconnect to apply.\n");
+        await ApplyAdditionalWorkspaceChangeAsync(before);
     }
 
-    private void RenameWorkspace_Click(object sender, RoutedEventArgs e)
+    private async void RenameWorkspace_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEditAdditionalWorkspaces) return;
         if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
         var name = WorkspaceNameBox.Text.Trim();
         if (name.Length is < 1 or > 64) { ShowError("Workspace name must be 1–64 characters."); return; }
         var index = _workspaces.IndexOf(workspace);
+        var before = _workspaces.ToList();
         _workspaces[index] = workspace with { Name = name };
-        RefreshWorkspaceList();
+        await ApplyAdditionalWorkspaceChangeAsync(before);
+    }
+
+    private async void WorkspacePermissions_Click(object sender, RoutedEventArgs e)
+    {
+        if (!CanEditAdditionalWorkspaces) return;
+        if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
+        var dialog = new WorkspacePermissionWindow(workspace.Name, workspace.Permissions) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        var index = _workspaces.IndexOf(workspace);
+        var before = _workspaces.ToList();
+        _workspaces[index] = workspace with { Permissions = dialog.Permissions };
+        await ApplyAdditionalWorkspaceChangeAsync(before);
+        WorkspaceListBox.SelectedIndex = index;
+    }
+
+    private void DefaultPermissions_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new WorkspacePermissionWindow("Default workspace", _settings.DefaultWorkspacePermissions) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        _settings.DefaultWorkspacePermissions = dialog.Permissions;
+        WorkspacePermissionText.Text = "Default: " + (dialog.Permissions?.Summary ?? "Inherit global permissions");
     }
 
     private void RevealWorkspace_Click(object sender, RoutedEventArgs e)
@@ -224,6 +321,17 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private void OpenActivityAudit_Click(object sender, RoutedEventArgs e)
+    {
+        new ActivityAuditWindow(ProfileBox.Text.Trim()) { Owner = this }.ShowDialog();
+    }
+
+    private void OpenCommandHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var history = new CommandHistoryWindow(ProfileBox.Text.Trim()) { Owner = this };
+        history.ShowDialog();
+    }
+
     private void RefreshTasks_Click(object sender, RoutedEventArgs e) => RefreshTasks();
 
     private void RefreshTasks()
@@ -233,9 +341,13 @@ public partial class MainWindow : Window
             var tasks = _runtime.DesktopCommandSnapshots();
             var selectedID = (TaskListBox.SelectedItem as TaskRow)?.Task.SessionId;
             var entries = tasks.Select(task => new TaskRow(task)).ToArray();
-            TaskListBox.ItemsSource = entries;
-            TaskListBox.SelectedItem = entries.FirstOrDefault(entry =>
-                entry.Task.SessionId == selectedID);
+            if (TaskListBox.ItemsSource is not TaskRow[] current || !current.SequenceEqual(entries))
+            {
+                TaskListBox.ItemsSource = entries;
+                TaskListBox.SelectedItem = entries.FirstOrDefault(entry =>
+                    entry.Task.SessionId == selectedID) ?? entries.FirstOrDefault();
+            }
+            else _ = RefreshSelectedTaskAsync();
             TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
                 "Synchronous commands count toward total capacity but are not individually cancellable here.";
             var receipts = _runtime.DesktopReceiptSummary();
@@ -243,14 +355,16 @@ public partial class MainWindow : Window
             ReceiptStatusText.Text = interrupted > 0
                 ? interrupted + " prior command(s) interrupted or unconfirmed. Inspect actual effects before intentionally retrying; nothing was restarted automatically."
                 : "No unconfirmed prior command receipts. Completed IDs remain protected from accidental replay.";
-            TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
-            CancelTaskButton.IsEnabled = false;
-            RevealTaskButton.IsEnabled = TaskListBox.SelectedItem is TaskRow;
+            if (TaskListBox.SelectedItem is not TaskRow)
+                TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
         }
         catch (Exception ex) { TasksSummaryText.Text = ex.Message; }
     }
 
-    private async void TaskSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void TaskSelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        await RefreshSelectedTaskAsync();
+
+    private async Task RefreshSelectedTaskAsync()
     {
         if (TaskListBox.SelectedItem is not TaskRow row) {
             CancelTaskButton.IsEnabled = false;
@@ -264,7 +378,7 @@ public partial class MainWindow : Window
             _runtime.State.Status == LocalMcpRuntimeStatus.Running;
         RevealTaskButton.IsEnabled = Directory.Exists(row.Task.Cwd);
         CopyTaskOutputButton.IsEnabled = false;
-        TaskOutputBox.Text = "Loading bounded command output…";
+        if (TaskOutputBox.Text.Length == 0) TaskOutputBox.Text = "Loading bounded command output…";
         try
         {
             var result = await _runtime.DesktopCommandOutputAsync(
@@ -279,8 +393,9 @@ public partial class MainWindow : Window
             TaskDetailText.Text = row.Task.WorkspaceName + " · " + row.Task.Cwd +
                 " · " + (result["state"]?.GetValue<string>() ?? row.Task.State) +
                 " · exit " + code;
-            TaskOutputBox.Text = (truncated ? "[Earlier output truncated]\n" : "") +
+            var display = (truncated ? "[Earlier output truncated]\n" : "") +
                 (text.Length == 0 ? "(No captured output)" : text);
+            if (TaskOutputBox.Text != display) TaskOutputBox.Text = display;
             CopyTaskOutputButton.IsEnabled = text.Length > 0;
         }
         catch (Exception ex)
@@ -1088,7 +1203,9 @@ public partial class MainWindow : Window
             saved.CloudflareMode,
             saved.CloudflareTunnelName,
             saved.EnableGitPush,
-            saved.EnableCodexHistory);
+            saved.EnableCodexHistory,
+            saved.CaptureCommandHistoryContent,
+            saved.DefaultWorkspacePermissions);
     }
 
     private void SaveAllSettings()
@@ -1111,6 +1228,7 @@ public partial class MainWindow : Window
         _settings.GitUserName = GitNameBox.Text.Trim();
         _settings.GitUserEmail = GitEmailBox.Text.Trim();
         _settings.EnableCommands = EnableCommandsCheckBox.IsChecked == true;
+        _settings.CaptureCommandHistoryContent = CaptureCommandHistoryBox.IsChecked == true;
         _settings.EnableGitPush = EnableGitPushBox.IsChecked == true;
         _settings.EnableCodexHistory = EnableCodexHistoryBox.IsChecked == true;
         _settings.AdditionalWorkspaces = _workspaces.ToList();
@@ -1148,10 +1266,9 @@ public partial class MainWindow : Window
             _cloudflareCredentialStore.HasSavedApiKey;
         EnableGitPushBox.IsEnabled = editable;
         EnableCodexHistoryBox.IsEnabled = editable;
-        AddWorkspaceButton.IsEnabled = editable;
-        RenameWorkspaceButton.IsEnabled = editable;
-        RemoveWorkspaceButton.IsEnabled = editable;
-        RevealWorkspaceButton.IsEnabled = editable;
+        CaptureCommandHistoryBox.IsEnabled = editable;
+        UpdateWorkspaceActionStates();
+        DefaultPermissionButton.IsEnabled = editable;
         if (state.Status == LocalMcpRuntimeStatus.Running)
         {
             RefreshTasks();
@@ -1207,6 +1324,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _quitting = true;
+        _taskRefreshTimer.Stop();
         try { _runtime.ShutdownAsync().GetAwaiter().GetResult(); } catch { }
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
@@ -1216,6 +1334,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _quitting = true;
+        _taskRefreshTimer.Stop();
         try { await _runtime.ShutdownAsync(); }
         finally
         {

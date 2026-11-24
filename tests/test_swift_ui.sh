@@ -12,8 +12,8 @@ runLogRegressionChecks()
 SWIFT
 swiftc -module-cache-path "${SWIFT_MODULECACHE_PATH:-$TEST_DIR/cache}" \
     -framework AppKit -framework Network -framework Security -framework SystemConfiguration \
-    -o "$TEST_DIR/check" macos/ProcessRunner.swift macos/Ripgrep.swift macos/CUA.swift macos/LocalMCPServer.swift \
-    macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/LocalMCPRuntime.swift \
+    -o "$TEST_DIR/check" macos/ProcessRunner.swift macos/Ripgrep.swift macos/LocalMCPServer.swift \
+    macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/CUA.swift macos/CommandHistoryStore.swift macos/ActivityAuditStore.swift macos/ActivityAuditView.swift macos/CommandHistoryView.swift macos/LocalMCPRuntime.swift \
     macos/LaunchAgentService.swift \
     macos/AppUpdates.swift \
     "$TEST_DIR/ChatToComputerMCPApp.swift" "$TEST_DIR/main.swift"

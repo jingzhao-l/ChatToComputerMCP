@@ -85,6 +85,10 @@ jobs:
             macos/LocalMCPServer.swift \
             macos/CodexHistory.swift \
             macos/CommandReceiptLedger.swift \
+            macos/CommandHistoryStore.swift \
+            macos/ActivityAuditStore.swift \
+            macos/CommandHistoryView.swift \
+            macos/ActivityAuditView.swift \
             macos/LocalMCPRuntime.swift \
             macos/LaunchAgentService.swift \
             macos/AppUpdates.swift \

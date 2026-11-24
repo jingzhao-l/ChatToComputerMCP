@@ -32,4 +32,11 @@ assert tools["save_conversation_to_codex"]["annotations"]["openWorldHint"] is Fa
 assert tools["batch_read"]["annotations"]["readOnlyHint"] is True
 assert tools["file_info"]["annotations"]["readOnlyHint"] is True
 assert tools["command_capacity_status"]["annotations"]["readOnlyHint"] is True
+assert "list_workspaces" in tools and "workspace_call" in tools
+for name, definition in tools.items():
+    if name in ("list_workspaces", "workspace_call"):
+        continue
+    schema = definition["inputSchema"]
+    assert schema["properties"]["workspace_id"]["type"] == "string", name
+    assert "workspace_id" not in schema.get("required", []), name
 print("MCP modern tool definitions validated by stable name:", len(tools), "tools")

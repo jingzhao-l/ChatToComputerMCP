@@ -67,7 +67,7 @@ npm 包在你的电脑上编译应用。需要 Node.js 24+；Mac 需安装 Swift
 
 如果已经批准了多个工作区：
 
-> 先调用 `list_workspaces`，再通过 `workspace_call` 读取我指定的第二个工作区中的 `README.md`。
+> 先调用 `list_workspaces`，再调用 `read_file`，传入指定的 `workspace_id`，读取该工作区的 `README.md`。如果客户端仍显示旧版工具参数，请刷新其导入的工具清单。
 
 必须确认**ChatGPT 确实调用了 MCP 工具**并拿到了返回值，同时本机 **Activity** 能看到对应调用。仅看到应用 **Connected**，不能算整个 ChatGPT 连接链路已验收成功。
 

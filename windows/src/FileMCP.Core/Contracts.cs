@@ -43,7 +43,14 @@ public static class FileMcpConstants
     public const int MaxHttpRequestBodyBytes = 8_000_000;
 }
 
-public sealed record ApprovedWorkspace(string Id, string Name, string Path);
+public sealed record WorkspacePermissions(bool AllowWrite, bool AllowShell, bool AllowGitPush, bool AllowCodexHistory)
+{
+    public static WorkspacePermissions ReadOnly { get; } = new(false, false, false, false);
+    public string Fingerprint => string.Concat(new[] { AllowWrite, AllowShell, AllowGitPush, AllowCodexHistory }.Select(value => value ? "1" : "0"));
+    public string Summary => !AllowWrite ? "Read only" : "Files read/write" +
+        (AllowShell ? " · Shell" : "") + (AllowGitPush ? " · Git push" : "") + (AllowCodexHistory ? " · Codex import" : "");
+}
+public sealed record ApprovedWorkspace(string Id, string Name, string Path, WorkspacePermissions? Permissions = null);
 public sealed record CloudflareNamedTunnel(string Id, string Name);
 public sealed record DesktopCommandInfo(string WorkspaceId, string WorkspaceName,
     string SessionId, string RequestId, string Cwd, string State, bool Active);
@@ -67,7 +74,9 @@ public sealed record LocalMcpConfiguration(
     string CloudflareMode = "token",
     string CloudflareTunnelName = "",
     bool EnableGitPush = false,
-    bool EnableCodexHistory = false);
+    bool EnableCodexHistory = false,
+    bool CaptureCommandHistoryContent = false,
+    WorkspacePermissions? DefaultWorkspacePermissions = null);
 
 public enum LocalMcpRuntimeStatus
 {
@@ -104,6 +113,8 @@ public sealed class FileMcpSettings
     public bool EnableCommands { get; set; }
     public bool EnableGitPush { get; set; }
     public bool EnableCodexHistory { get; set; }
+    public bool CaptureCommandHistoryContent { get; set; }
+    public WorkspacePermissions? DefaultWorkspacePermissions { get; set; }
     public int MaxConcurrentCommands { get; set; } = 8;
     public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];
     public string Provider { get; set; } = "openai";

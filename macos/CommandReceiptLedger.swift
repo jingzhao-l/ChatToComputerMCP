@@ -180,7 +180,7 @@ final class CommandReceiptLedger {
             [.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: url.path)
     }
 
-    private static func ensurePrivateDirectory(_ directory: URL) throws {
+    static func ensurePrivateDirectory(_ directory: URL) throws {
         let fm = FileManager.default
         try rejectSymbolicLink(at: directory)
         if !fm.fileExists(atPath: directory.path) {
@@ -193,7 +193,7 @@ final class CommandReceiptLedger {
         try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: directory.path)
     }
 
-    private static func rejectSymbolicLink(at url: URL) throws {
+    static func rejectSymbolicLink(at url: URL) throws {
         var statInfo = stat()
         if lstat(url.path, &statInfo) == 0 && (statInfo.st_mode & S_IFMT) == S_IFLNK {
             throw LedgerError.unsafePath

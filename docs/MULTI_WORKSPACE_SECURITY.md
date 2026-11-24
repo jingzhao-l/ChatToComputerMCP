@@ -1,18 +1,14 @@
 # Multi-workspace permissions and MCP routing
 
-ChatToComputerMCP retains one **default** workspace for direct MCP tool calls,
-and lets the local user approve up to 12 additional folders in the macOS GUI.
+ChatToComputerMCP retains one **default** workspace for backward-compatible MCP tool calls,
+and lets the local user approve up to 12 additional folders in the Mac or Windows GUI.
 
 ## GUI workflow
 
 In Workspaces, set the default folder, then choose Add folders.
 Each added folder receives a durable opaque ID and editable friendly name.
 Use Rename, Remove, Reveal, or Copy AI scope to manage it.
-Click Save workspace and reconnect to apply changed permissions.
-Removing a workspace never deletes files on disk.
-
-Changes to the workspace list while connected are disabled intentionally:
-the running server must not silently gain new filesystem privileges.
+While disconnected, save workspace settings before connecting. While connected, the local GUI can add, rename, revoke, or change permissions for additional workspaces without restarting the tunnel. A changed scope must be idle, and the catalog is published only after settings persistence succeeds. New scopes default to read-only. The default root and global permission switches still require reconnection. OAuth catalog changes require all active operations to finish and explicitly invalidate the old access and refresh tokens; clients must authorize again. Removing a workspace never deletes files on disk.
 
 The GUI also provides Command capacity, which applies to all approved
 workspaces (4–16, default 8), and a Tasks page showing running sessions
@@ -20,18 +16,25 @@ and explicit targeted cancellation.
 
 ## MCP API
 
-Existing direct tool calls continue to operate only in the default workspace.
-When additional workspaces exist, two tools are offered:
+Discovery is always published, even with only the default workspace.
+All scoped MCP tools accept an optional top-level workspace_id. Omitting it
+selects the default workspace. Different calls can independently select
+different approved workspaces without changing another client's context.
 
-- list_workspaces: approved id, name, path entries.
-- workspace_call: supply workspace_id, tool_name and arguments.
-  Example JSON: {"workspace_id":"second","tool_name":"read_file",
-  "arguments":{"relative_path":"README.md"}}.
+- list_workspaces: approved ID, name, canonical path and allowed_tools entries.
+- read_file, grep, git_status, start_command and other scoped tools:
+  supply workspace_id alongside the ordinary arguments.
+  Example read_file arguments: {"workspace_id":"second","relative_path":"README.md"}.
+- workspace_call remains available for clients using the earlier wrapper.
+
+After upgrading the app, refresh the MCP client's imported tool schema
+if it still presents an older catalog. Server-side availability alone
+does not prove that a particular cloud client has imported the schema.
 
 Clients cannot create a workspace or choose arbitrary absolute roots via MCP.
 Every inner tool name uses the same enabled-tool checks as direct calls.
 Recursive routing is disallowed. A scoped session ID must be read/cancelled
-through the matching workspace_call context.
+with the same workspace_id (or matching legacy wrapper context).
 
 ## Security boundaries
 

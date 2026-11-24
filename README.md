@@ -78,7 +78,7 @@ ChatGPT / Claude / another compatible MCP client
 |---|---|
 | **Paid-plugin alternative** | Use ChatGPT or another compatible cloud AI chat with your own open-source local tools for common file, Git and shell workflows—without a separate paid computer-access plugin. |
 | **Multiple workspaces** | One default workspace plus up to 12 user-approved, named, non-overlapping roots. |
-| **Scoped MCP operations** | `list_workspaces` discovers approved scopes; `workspace_call` selects one explicitly. |
+| **Scoped MCP operations** | `list_workspaces` discovers approved scopes; each scoped tool accepts `workspace_id` directly. |
 | **Concurrent commands** | One shared configurable 4–16 command budget (default 8); overlapping cwd trees are rejected. |
 | **Task controls** | Command IDs, bounded output, status and targeted cancellation. |
 | **Safe everyday file tools** | Metadata lookup, folder creation, file copy and move/rename without Shell access; refuse destination overwrite. |
@@ -247,16 +247,15 @@ Operate in a separately approved workspace:
 
 ```json
 {
-  "name":"workspace_call",
+  "name":"read_file",
   "arguments":{
     "workspace_id":"approved-workspace-id",
-    "tool_name":"read_file",
-    "arguments":{"relative_path":"README.md"}
+    "relative_path":"README.md"
   }
 }
 ```
 
-Ordinary `read_file`, `grep`, `git_status` and other direct calls continue to operate in the default workspace. Clients cannot create a new scope through MCP.
+Omitting `workspace_id` selects the default workspace. The legacy `workspace_call` wrapper remains supported. Clients cannot create new scopes through MCP.
 
 ## 🔒 Permissions and security
 
@@ -349,3 +348,7 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), keep changes
 ChatToComputerMCP is derived from [anhnv02/file-mcp](https://github.com/anhnv02/file-mcp) and retains applicable copyright, source notices and the [Apache License 2.0](LICENSE).
 
 **Independent community project.** Not affiliated with or endorsed by OpenAI, Anthropic or the original FileMCP maintainers.
+
+### Local command history
+
+The desktop Tasks tab opens a searchable, exportable history of short and long shell commands, including workspace, directory, status, exit code and timing. Records survive gateway restarts; unfinished records are marked interrupted when that profile restarts, not automatically replayed. Command text and output are omitted by default; enable content capture only for trusted local use. Captured command text and output are each limited to 64 KiB. The history prunes completed records to 200 or 30 days on runtime startup and completion. This local history is separate from the durable retry-prevention ledger and is not an MCP tool. Shared tunnel clients are not individually identified unless verified OAuth identity is available.
