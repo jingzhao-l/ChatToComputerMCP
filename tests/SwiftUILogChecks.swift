@@ -146,7 +146,7 @@ extension MainViewController {
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.contentViewController = controller
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: Layout.windowWidth, height: controller.preferredContentHeight))
+        window.setContentSize(NSSize(width: Layout.compactWindowWidth, height: controller.preferredContentHeight))
         controller.view.layoutSubtreeIfNeeded()
         controller.updateWindowHeight()
         controller.view.layoutSubtreeIfNeeded()
@@ -175,7 +175,7 @@ extension MainViewController {
         precondition(!controller.saveSettingsButton.isEnabled && !controller.cloudflareLoginButton.isEnabled)
         precondition(!controller.resetButton.isEnabled && controller.startButton.isEnabled)
         precondition(!controller.enableGitPushCheckbox.isEnabled && !controller.enableCodexHistoryCheckbox.isEnabled)
-        for tab in ["overview", "settings", "config", "tasks", "log"] {
+        for tab in ["overview", "settings", "config", "tasks", "log", "security", "preferences"] {
             controller.tabs.selectTabViewItem(withIdentifier: tab)
             precondition(controller.navigation.selectedSegment == controller.tabs.indexOfTabViewItem(controller.tabs.selectedTabViewItem!), "Navigation follows programmatic tab selection")
             precondition(!controller.overviewChangeButton.isEnabled && controller.themeButton.isEnabled)
@@ -263,7 +263,7 @@ extension MainViewController {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Layout.windowWidth, height: controller.preferredContentHeight),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.contentViewController = controller
-        window.setContentSize(NSSize(width: Layout.windowWidth, height: controller.preferredContentHeight))
+        window.setContentSize(NSSize(width: Layout.compactWindowWidth, height: controller.preferredContentHeight))
         window.title = "FileMCP · UI Preview"
         window.isReleasedWhenClosed = false
         window.center()
@@ -287,9 +287,9 @@ extension MainViewController {
                 controller.applyProviderSelection()
                 for state in states {
                     controller.updateRunButton(state: state)
-                    for tab in ["overview", "settings", "config", "tasks", "log"] {
+                    for tab in ["overview", "settings", "config", "tasks", "log", "security", "preferences"] {
                         controller.tabs.selectTabViewItem(withIdentifier: tab)
-                        window.setContentSize(NSSize(width: Layout.windowWidth, height: controller.preferredContentHeight))
+                        window.setContentSize(NSSize(width: Layout.compactWindowWidth, height: controller.preferredContentHeight))
                         controller.view.layoutSubtreeIfNeeded()
                         let bounds = controller.view.bounds.insetBy(dx: -1, dy: -1)
                         for control in [controller.startButton, controller.themeButton, controller.navigation] {
@@ -320,6 +320,18 @@ extension MainViewController {
                 }
             }
         }
+        window.setContentSize(NSSize(width: Layout.windowWidth, height: 680))
+        controller.view.layoutSubtreeIfNeeded()
+        precondition(controller.wideNavigation && !controller.sidebar.isHidden)
+        for (index, button) in controller.sidebarButtons.enumerated() {
+            controller.selectSidebarSection(button)
+            controller.view.layoutSubtreeIfNeeded()
+            precondition(controller.tabs.indexOfTabViewItem(controller.tabs.selectedTabViewItem!) == index)
+            precondition(button.state == .on)
+        }
+        window.setContentSize(NSSize(width: Layout.compactWindowWidth, height: 570))
+        controller.view.layoutSubtreeIfNeeded()
+        precondition(!controller.wideNavigation && !controller.navigation.isHidden)
         controller.directoryField.stringValue = ""
         controller.updateWorkspaceSummary()
         precondition(controller.workspaceSummaryLabel.stringValue == "Choose a workspace")
@@ -327,7 +339,7 @@ extension MainViewController {
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: controller.portField))
         precondition(controller.overviewLocalLabel.stringValue.contains("9009"))
         window.orderOut(nil)
-        print("PASS: \(cases) layout cases (2 appearances × 3 providers × 5 states × 5 tabs), long/empty paths, port summary and white action titles")
+        print("PASS: \(cases) layout cases (2 appearances × 3 providers × 5 states × 7 tabs), wide sidebar and compact navigation, long/empty paths, port summary and white action titles")
     }
 }
 

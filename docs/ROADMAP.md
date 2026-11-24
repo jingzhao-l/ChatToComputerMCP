@@ -19,17 +19,17 @@
 - [x] Read-only live capacity/active-job diagnostics (no cross-client paths or commands)
 - [x] macOS Cloudflare OAuth: verified token-bound client scopes, task ownership, request-ID collision protection and GUI revocation
 - [ ] Authenticated per-conversation identity in the shared OpenAI Secure MCP Tunnel (no verified chat principal supplied)
-- [x] Persist salted OAuth-client ownership of command receipts and support owner-verified status after full app restart (no process reattachment)\n- [ ] Persistent control and cancellation of genuinely live client-owned tasks after restart (requires independent supervisor)
-- [ ] Fair scheduling, durable task recovery and cancellation receipts
+- [x] Persist salted OAuth-client ownership of command receipts and support owner-verified status after full app restart\n- [x] Opt-in independent worker recovery and cancellation after gateway restart; Mac crash test passed, Windows native test added
+- [x] FIFO scheduling, durable receipt reconciliation, opt-in live worker recovery and cancellation
 - [x] Mac command receipt journal: durable ID tombstones, interrupted state and protected 0600/0700 audit metadata
 - [x] Windows command receipt journal: durable hashed request IDs, private per-user ACL, interrupted-state and replay protection; x64 execution verification pending CI
 - [x] Windows default settings, runtime credential target and tunnel-profile storage isolated from the historical FileMCP directories
-- [ ] Dedicated supervisor reattachment to genuinely live tasks after crash/reboot (receipt journaling is NOT reattachment)
+- [x] Independent worker reattachment after gateway crash (not OS reboot or worker death)
 
 ## R2: Cross-platform and release readiness
 - [x] Windows 4–16 shared command admission implementation; x64 GitHub Windows integration tests passed
 - [ ] ChatGPT, Claude and other MCP client interoperability matrix
-- [ ] Hardened process-level isolation for untrusted workspaces
+- [x] Optional restricted Linux container execution; actual Docker engine validation remains an acceptance gate
 - [ ] Mac Developer ID/notarized release and Windows signed installer
 - [x] Native task-output and exit-code viewers with folder reveal on macOS and Windows
 - [x] macOS Cloudflare OAuth client inspection, explicit scope approval and revocation UI
@@ -49,7 +49,7 @@
 - [ ] npm Registry public publication (npm account authentication required)
 - [ ] Cryptographically signed/notarized public macOS distribution
 - [ ] Authenticated per-client scopes beyond shared tunnel credentials
-- [ ] Independent durable task supervisor and real cross-restart process reattachment (receipts are not reattachment)
+- [x] Independent worker and cross-gateway-restart reattachment (explicit opt-in)
 
 
 ## Native update channel (0.3.0)
@@ -60,7 +60,7 @@
 - [x] macOS and Windows GUI update buttons, optional automatic checks/installation while open
 - [x] No forced app, tunnel or AI task restart during update
 - [ ] Independent always-on updater daemon (intentionally not installed)
-- [ ] Signed public installer and independent cross-restart task supervisor
+- [ ] Signed public installer (independent from the implemented worker recovery)
 
 
 ## Cross-platform parity evidence

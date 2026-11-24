@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 extension LocalMCPServer {
     static func verifyOAuthRevocationCancelsOwnedJobs() throws {
@@ -118,6 +119,12 @@ extension LocalMCPServer {
             precondition(response["isError"] as? Bool == expectedError, explanation)
         }
 
+        let aliceIdentity = try call("connection_identity", [:], alice)["structuredContent"] as! [String: Any]
+        precondition(aliceIdentity["verified_client_id"] as? String == alice.id)
+        precondition(aliceIdentity["conversation_authenticated"] as? Bool == false)
+        precondition(aliceIdentity["allowed_workspace_ids"] as? [String] == ["default"])
+        try checkCall("connection_identity", ["client_id": bob.id], alice, expectedError: true,
+            "Client cannot assert identity through arguments")
         let aliceList = try call("list_workspaces", [:], alice)
         let aliceScopes = (aliceList["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
         precondition(aliceScopes.count == 1 && aliceScopes[0]["id"] as? String == "default")
@@ -144,6 +151,10 @@ extension LocalMCPServer {
         ], alice)
         precondition(started["isError"] as? Bool == false)
         let sessionID = (started["structuredContent"] as! [String: Any])["session_id"] as! String
+        let own = try call("list_my_commands", [:], alice)["structuredContent"] as! [String: Any]
+        let foreign = try call("list_my_commands", [:], bob)["structuredContent"] as! [String: Any]
+        precondition((own["commands"] as! [[String: Any]]).first?["session_id"] as? String == sessionID)
+        precondition((foreign["commands"] as! [[String: Any]]).isEmpty)
         try checkCall("read_command_output", ["session_id": sessionID],
                       bob, expectedError: true,
                       "One OAuth client cannot read another client's output")
@@ -160,6 +171,83 @@ extension LocalMCPServer {
         try checkCall("cancel_command", ["session_id": sessionID],
                       alice, expectedError: false, "Owner may cancel task")
         print("PASS: per-OAuth-client authorized scopes, session ownership, cancellation and request-ID collision isolation")
+    }
+
+    static func supervisorFixture(_ root: URL) throws {
+        let workspace = root.appendingPathComponent("workspace")
+        let server = try LocalMCPServer(port: 18969, allowedDirectory: workspace.path,
+            gitUserName: "", gitUserEmail: "", enableCommands: true,
+            receiptLedger: CommandReceiptLedger(fileURL: root.appendingPathComponent("receipts/ledger.json")),
+            commandHistory: CommandHistoryStore(directory: root.appendingPathComponent("history/profile"), captureContent: false),
+            commandSupervisor: CommandSupervisor(directory: root.appendingPathComponent("workers/profile")),
+            localAuthToken: String(repeating: "a", count: 64), log: { _ in })
+        let result = try server.tools.startCommand(["request_id": "crash-recovery",
+            "command": "printf started; while [ ! -f release ]; do sleep 0.1; done; printf finished",
+            "timeout_seconds": 60], ownerID: "__local_admin__")
+        try (result["session_id"] as! String).write(to: root.appendingPathComponent("session-id"), atomically: true, encoding: .utf8)
+        // Deliberately no graceful cleanup. The test kills only this fixture PID.
+        while true { Thread.sleep(forTimeInterval: 1) }
+    }
+
+    static func verifySupervisedRecovery() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ctcmcp-supervisor-" + UUID().uuidString)
+        let workspace = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        let fixture = Process()
+        fixture.executableURL = executable
+        fixture.arguments = ["--supervisor-fixture", root.path]
+        fixture.standardOutput = FileHandle.nullDevice; fixture.standardError = FileHandle.nullDevice
+        try fixture.run()
+        defer { if fixture.isRunning { kill(fixture.processIdentifier, SIGKILL); fixture.waitUntilExit() } }
+        let idURL = root.appendingPathComponent("session-id")
+        let launchDeadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: idURL.path), fixture.isRunning, Date() < launchDeadline { Thread.sleep(forTimeInterval: 0.05) }
+        precondition(FileManager.default.fileExists(atPath: idURL.path), "Worker fixture failed to launch")
+        let id = try String(contentsOf: idURL, encoding: .utf8)
+        kill(fixture.processIdentifier, SIGKILL); fixture.waitUntilExit()
+        let supervisor = try CommandSupervisor(directory: root.appendingPathComponent("workers/profile"))
+        let jobs = try supervisor.jobs()
+        precondition(jobs.count == 1 && jobs[0].record.sessionID == id)
+        defer { try? jobs[0].requestCancel() }
+        let alive = try jobs[0].workerAlive()
+        precondition(alive, "Worker must survive actual gateway death")
+        let ledger = try CommandReceiptLedger(fileURL: root.appendingPathComponent("receipts/ledger.json"))
+        let history = try CommandHistoryStore(directory: root.appendingPathComponent("history/profile"), captureContent: false)
+        let server = try LocalMCPServer(port: 18969, allowedDirectory: workspace.path,
+            gitUserName: "", gitUserEmail: "", enableCommands: true, receiptLedger: ledger,
+            commandHistory: history, commandSupervisor: supervisor,
+            localAuthToken: String(repeating: "a", count: 64), log: { _ in })
+        defer { server.stop() }
+        let original = try server.tools.findSession(id)
+        precondition(original.active)
+        let retry = try server.tools.startCommand(["request_id": "crash-recovery",
+            "command": "printf started; while [ ! -f release ]; do sleep 0.1; done; printf finished",
+            "timeout_seconds": 60], ownerID: "__local_admin__")
+        precondition(retry["session_id"] as? String == id)
+        do {
+            _ = try server.tools.startCommand(["request_id": "crash-recovery", "command": "printf changed", "timeout_seconds": 60], ownerID: "__local_admin__")
+            preconditionFailure("Changed command must not reuse a restored receipt")
+        } catch {}
+        try Data().write(to: workspace.appendingPathComponent("release"))
+        let finishDeadline = Date().addingTimeInterval(10)
+        while original.active, Date() < finishDeadline { Thread.sleep(forTimeInterval: 0.05) }
+        let snapshot = try original.snapshot(cursor: 0)
+        precondition(snapshot["state"] as? String == "exited")
+        precondition(snapshot["output"] as? String == "startedfinished")
+        let receiptDeadline = Date().addingTimeInterval(3)
+        while Date() < receiptDeadline {
+            if (try ledger.ownReceipt(scopeID: "default", requestID: "crash-recovery", ownerID: "__local_admin__"))["state"] as? String == "exited" { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let receipt = try ledger.ownReceipt(scopeID: "default", requestID: "crash-recovery", ownerID: "__local_admin__")
+        precondition(receipt["state"] as? String == "exited")
+        let cancelled = try server.tools.startCommand(["request_id": "cancel-recovered", "command": "sleep 30", "timeout_seconds": 45], ownerID: "__local_admin__")
+        let session = try server.tools.findSession(cancelled["session_id"] as! String)
+        session.cancel(synchronously: true)
+        precondition((try! session.snapshot(cursor: 0))["state"] as? String == "cancelled")
+        print("PASS: actual gateway SIGKILL survival, original task reattachment, no replay, durable terminal receipt and worker cancellation")
     }
 
     static func verifyDurableCommandReceipts() throws {
@@ -294,6 +382,9 @@ extension LocalMCPServer {
         let defaultWrite = try restrictedCall(defaultRestricted, "write_file", ["relative_path": "forbidden.txt", "content": "no"])
         precondition(defaultWrite["isError"] as? Bool == true)
         print("PASS: independently restricted workspaces and union tool discovery")
+        let shared = try call("connection_identity")["structuredContent"] as! [String: Any]
+        precondition(shared["authentication_mode"] as? String == "shared_connection")
+        precondition(shared["verified_client_id"] is NSNull && shared["conversation_authenticated"] as? Bool == false)
         let listed = try call("list_workspaces")
         let workspaces = (listed["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
         precondition(workspaces.count == 2)
@@ -416,6 +507,72 @@ extension LocalMCPServer {
             precondition(result["isError"] as? Bool == false)
         }
         print("PASS: shared 4–16 budget across independently scoped workspaces")
+        // A separate gate makes FIFO and cancellation deterministic without timing
+        // assumptions about the earlier parallel-build fixture.
+        let queueRoot = temp.appendingPathComponent("queue")
+        try FileManager.default.createDirectory(at: queueRoot, withIntermediateDirectories: true)
+        let queueScope = WorkspaceDefinition(id: "queue", name: "Queue", path: queueRoot.path)
+        let queueServer = try setup([queueScope])
+        defer { queueServer.stop() }
+        func q(_ name: String, _ args: [String: Any]) throws -> [String: Any] {
+            let response = queueServer.callTool(id: 2, params: ["name": name, "arguments": args], modern: false)
+            let boundary = response.range(of: Data("\r\n\r\n".utf8))!
+            let json = try JSONSerialization.jsonObject(with: response.subdata(in: boundary.upperBound..<response.count)) as! [String: Any]
+            return json["result"] as! [String: Any]
+        }
+        let blocker = try q("start_command", ["workspace_id": "queue", "request_id": "blocker",
+            "command": "while [ ! -f release ]; do sleep 0.1; done", "timeout_seconds": 25])
+        precondition(blocker["isError"] as? Bool == false)
+        let firstArgs: [String: Any] = ["workspace_id": "queue", "request_id": "fifo-first",
+            "command": "printf first > order", "queue_if_busy": true]
+        let firstQueued = try q("start_command", firstArgs)["structuredContent"] as! [String: Any]
+        precondition(firstQueued["state"] as? String == "queued")
+        let retry = try q("start_command", firstArgs)["structuredContent"] as! [String: Any]
+        precondition(retry["session_id"] as? String == firstQueued["session_id"] as? String)
+        let cancelQueued = try q("start_command", ["workspace_id": "queue", "request_id": "fifo-cancel",
+            "command": "touch should-not-exist", "queue_if_busy": true])["structuredContent"] as! [String: Any]
+        let secondQueued = try q("start_command", ["workspace_id": "queue", "request_id": "fifo-second",
+            "command": "test \"$(cat order)\" = first && printf second >> order", "queue_if_busy": true])["structuredContent"] as! [String: Any]
+        let status = try q("command_capacity_status", [:])["structuredContent"] as! [String: Any]
+        precondition(status["queued_total"] as? Int == 3 && status["active_total"] as? Int == 1)
+        var scheduled = false
+        do {
+            try queueServer.freezeForIdleActivation { scheduled = true }
+            fatalError("Busy activation admitted")
+        } catch {}
+        precondition(!scheduled)
+        let cancelled = try q("cancel_command", ["workspace_id": "queue", "session_id": cancelQueued["session_id"]!])["structuredContent"] as! [String: Any]
+        precondition(cancelled["state"] as? String == "cancelled")
+        let bypass = try q("start_command", ["request_id": "no-jump", "command": "true"])
+        precondition(bypass["isError"] as? Bool == true)
+        try Data().write(to: queueRoot.appendingPathComponent("release"))
+        let until = Date().addingTimeInterval(15)
+        var terminal = false
+        while Date() < until {
+            let result = try q("read_command_output", ["workspace_id": "queue", "session_id": secondQueued["session_id"]!])["structuredContent"] as! [String: Any]
+            if result["state"] as? String == "exited" {
+                precondition(result["exit_code"] as? Int == 0)
+                terminal = true; break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        precondition(terminal)
+        let order = try String(contentsOf: queueRoot.appendingPathComponent("order"), encoding: .utf8)
+        precondition(order == "firstsecond")
+        precondition(!FileManager.default.fileExists(atPath: queueRoot.appendingPathComponent("should-not-exist").path))
+        print("PASS: global FIFO queue, queued retry identity, cancellation and no bypass")
+        do {
+            try queueServer.freezeForIdleActivation { throw MCPServerError.operationFailed("fixture") }
+            fatalError("Failed scheduling ignored")
+        } catch {}
+        let stillOpen = try q("read_file", ["workspace_id": "queue", "relative_path": "order"])
+        precondition(stillOpen["isError"] as? Bool == false)
+        try queueServer.freezeForIdleActivation { scheduled = true }
+        precondition(scheduled)
+        let refusedAfterFreeze = try q("read_file", ["workspace_id": "queue", "relative_path": "order"])
+        precondition(refusedAfterFreeze["isError"] as? Bool == true)
+        print("PASS: activation gate refuses busy work, rolls back failed scheduling, closes admission atomically")
+
 
         // An explicitly approved root must never overlap the default even
         // through symlinks. A malformed root does not get created implicitly.

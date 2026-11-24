@@ -220,6 +220,53 @@ try{
   console.log('PASS process-exclusive receipt authority and fail-closed verified-client policy');
   console.log('PASS real headless browser through native MCP: screenshot, action, verification, stale refs, receipt replay, redirect denial');
   console.log('PASS native guest-only endpoint and authenticated relay: no shell/files, no foreign session, exclusive guest lease');
+  // Two independent relay endpoints, two guest credentials, two private policy
+  // roots. Native HTTP dispatch is exercised, not just a schema mock.
+  const relayPorts=[await availablePort(),await availablePort()];
+  const relayAuths=[token(),token()];
+  const relayPolicies=[];
+  const guestPortB=await availablePort(),guestAuthB=token();
+  const guestDirB=path.join(tmp,'guest-b');fs.mkdirSync(guestDirB);
+  const guestPolicyB=path.join(guestDirB,'policy.json'),guestCredentialB=path.join(guestDirB,'fixture-token');
+  privateFile(guestCredentialB,guestAuthB+'\n');
+  privateFile(guestPolicyB,JSON.stringify({...base,grants:[{application:process.platform==='darwin'?'com.example.CuaFixture':path.join(guestDirB,'fixture.exe'),clients:['shared-connection']}]}));
+  await spawnServer(guestPortB,guestPolicyB,guestAuthB,'guest');
+  for(let i=0;i<2;i++){
+    const dir=path.join(tmp,'relay-'+i);fs.mkdirSync(dir);
+    const policy=path.join(dir,'policy.json');relayPolicies.push(policy);
+    privateFile(policy,JSON.stringify({...base,extensionRuntime:{node,nodeSHA256:hash(node),worker,workerSHA256:hash(worker)},profiles:[
+      {id:'domain-'+i,kind:'guest',clients:['shared-connection'],port:i===0?guestPort:guestPortB,tokenFile:fs.realpathSync(i===0?guestCredential:guestCredentialB)}
+    ]}));
+    await spawnServer(relayPorts[i],policy,relayAuths[i],'relay');
+  }
+  const relay=(i,name,args={},refusal=false)=>tool(relayPorts[i],relayAuths[i],name,args,refusal);
+  const listed=(await rpc(relayPorts[0],relayAuths[0],'tools/list',{})).result.tools.map(t=>t.name).sort();
+  assert.deepEqual(listed,['cua_capabilities','cua_extension_call','cua_extension_close','cua_extension_list','cua_extension_open','cua_receipt_status'].sort());
+  assert.equal((await relay(0,'cua_capabilities')).structuredContent.identity,'dedicated_relay_credential');
+  assert.equal((await relay(0,'cua_capabilities')).structuredContent.conversation_identity_verified,false);
+  assert.equal((await relay(0,'cua_capabilities')).structuredContent.host_tools_allowed,false);
+  await tool(relayPorts[1],relayAuths[0],'cua_extension_list',{},true);
+  for(const name of ['read_file','run_command','start_command','list_workspaces','workspace_call','git_status','connection_identity','cua_list_apps','cua_launch_app','cua_act'])
+    await relay(0,name,{},true);
+  await relay(0,'workspace_call',{workspace_id:'default',tool_name:'read_file',arguments:{relative_path:'policy.json'}},true);
+  await relay(0,'cua_extension_open',{profile_id:'domain-1',request_id:requestID()},true);
+  const leaseA=(await relay(0,'cua_extension_open',{profile_id:'domain-0',request_id:requestID()})).structuredContent.session_id;
+  const leaseB=(await relay(1,'cua_extension_open',{profile_id:'domain-1',request_id:requestID()})).structuredContent.session_id;
+  await relay(1,'cua_extension_call',{session_id:leaseA,operation:'cua_list_apps',parameters:{},request_id:requestID()},true);
+  await relay(1,'cua_extension_close',{session_id:leaseA},true);
+  await relay(0,'cua_extension_call',{session_id:leaseA,operation:'cua_list_apps',parameters:{},request_id:requestID()});
+  await relay(1,'cua_extension_call',{session_id:leaseB,operation:'cua_list_apps',parameters:{},request_id:requestID()});
+  await relay(0,'cua_extension_call',{session_id:leaseA,operation:'run_command',parameters:{command:'echo forbidden'},request_id:requestID()},true);
+  await relay(0,'cua_extension_close',{session_id:leaseA});
+  await relay(1,'cua_extension_close',{session_id:leaseB});
+  const tampered=JSON.parse(fs.readFileSync(relayPolicies[0],'utf8'));
+  tampered.profiles.push({id:'extra',kind:'browser',origins:[origin],clients:['shared-connection']});
+  fs.writeFileSync(relayPolicies[0],JSON.stringify(tampered));
+  await relay(0,'cua_extension_list',{},true);
+  await relay(0,'cua_extension_open',{profile_id:'extra',request_id:requestID()},true);
+  await relay(0,'run_command',{command:'echo denied'},true);
+  console.log('PASS two dedicated relay credentials, cross-domain lease rejection, host-tool denial and fail-closed policy widening');
+
   }else console.log('PASS direct real Chromium worker regression (native HTTP and receipt tests excluded in worker-only mode)');
 }finally{
   for(const p of hosts){p.stdin.end('\n');if(p.exitCode===null){await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);if(p.exitCode===null)p.kill()}}

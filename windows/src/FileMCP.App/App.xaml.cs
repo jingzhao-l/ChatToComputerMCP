@@ -24,7 +24,13 @@ public partial class App : System.Windows.Application
             Shutdown(1);
             return;
         }
-        if (e.Args.SequenceEqual(new[] {"--cua-guest-server"},StringComparer.Ordinal))
+        if (e.Args.Length == 2 && e.Args[0] == "--command-worker")
+        {
+            try { FileMCP.Core.CommandSupervisor.RunWorker(e.Args[1]); Shutdown(0); }
+            catch { Shutdown(1); }
+            return;
+        }
+        if (e.Args.SequenceEqual(new[] {"--cua-guest-server"},StringComparer.Ordinal) || (e.Args.Length==2&&e.Args[0]=="--cua-relay-server"))
         {
             ShutdownMode=ShutdownMode.OnExplicitShutdown;
             var guestCancellation=new CancellationTokenSource();
@@ -32,7 +38,7 @@ public partial class App : System.Windows.Application
             SessionEnding+=(_,_)=>guestCancellation.Cancel();
             _=Task.Run(async()=>{
                 int code=0;
-                try{await FileMCP.Core.CuaGuestHost.RunAsync(guestCancellation.Token);}
+                try{await FileMCP.Core.CuaGuestHost.RunAsync(guestCancellation.Token,e.Args.Length==2?e.Args[1]:null);}
                 catch(OperationCanceledException)when(guestCancellation.IsCancellationRequested){}
                 catch{code=1;}
                 try{await Dispatcher.InvokeAsync(()=>Shutdown(code));}catch{}

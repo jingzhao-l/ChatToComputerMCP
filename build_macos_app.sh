@@ -77,6 +77,7 @@ chmod 755 "$APP/Contents/MacOS/rg"
     "$ROOT/macos/CodexHistory.swift" \
     "$ROOT/macos/CommandReceiptLedger.swift" \
     "$ROOT/macos/CommandHistoryStore.swift" \
+    "$ROOT/macos/CommandSupervisor.swift" \
     "$ROOT/macos/ActivityAuditStore.swift" \
     "$ROOT/macos/ActivityAuditView.swift" \
     "$ROOT/macos/CommandHistoryView.swift" \

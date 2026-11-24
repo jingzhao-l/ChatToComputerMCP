@@ -24,7 +24,7 @@ internal sealed partial class LocalTools
         }
 
         var arguments = new List<string> { "init", "-b", "main" };
-        if (!_enableCommands) arguments.Add("--template=");
+        if (!TrustedHostShell) arguments.Add("--template=");
         _ = await RunGitAsync(repo, arguments, cancellationToken: cancellationToken).ConfigureAwait(false);
         _ = await GitRepoAsync(repoPath, cancellationToken).ConfigureAwait(false);
         return $"Initialized Git repository: {(string.IsNullOrEmpty(repoPath) ? "." : repoPath)}";
@@ -106,7 +106,7 @@ internal sealed partial class LocalTools
 
     private async Task EnsureNoRepositoryConfigIncludesAsync(string repo, CancellationToken cancellationToken)
     {
-        if (_enableCommands) return;
+        if (TrustedHostShell) return;
         var localConfig = await RunGitAsync(repo, ["config", "--local", "--no-includes", "--list"], FileMcpConstants.MaxGitSafetyOutputBytes, cancellationToken: cancellationToken).ConfigureAwait(false);
         EnsureCompleteGitSafetyOutput(localConfig, "Git config include scan");
         foreach (var line in SplitLines(localConfig))
@@ -137,7 +137,7 @@ internal sealed partial class LocalTools
     private async Task<string> GitStatusAsync(string repoPath, CancellationToken cancellationToken)
     {
         var repo = await GitRepoAsync(repoPath, cancellationToken).ConfigureAwait(false);
-        var args = new List<string> { "status", "--short" }; if (!_enableCommands) args.Add("--ignore-submodules=all");
+        var args = new List<string> { "status", "--short" }; if (!TrustedHostShell) args.Add("--ignore-submodules=all");
         var output = await RunGitAsync(repo, args, cancellationToken: cancellationToken).ConfigureAwait(false);
         return output.Length == 0 ? "(working tree clean)" : output;
     }
@@ -148,7 +148,7 @@ internal sealed partial class LocalTools
     private async Task<string> GitDiffAsync(string repoPath, string paths, CancellationToken cancellationToken)
     {
         var repo = await GitRepoAsync(repoPath, cancellationToken).ConfigureAwait(false); var args = new List<string> { "diff" };
-        if (!_enableCommands) args.AddRange(["--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]);
+        if (!TrustedHostShell) args.AddRange(["--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]);
         if (paths.Length > 0) { args.Add("--"); args.AddRange(GitPathspecs(paths, repo)); }
         return await RunGitAsync(repo, args, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -164,14 +164,14 @@ internal sealed partial class LocalTools
     private async Task<string> GitCommitAsync(string repoPath, string message, CancellationToken cancellationToken)
     {
         var args = new List<string>(); if (_gitUserName.Length > 0) args.AddRange(["-c", "user.name=" + _gitUserName]); if (_gitUserEmail.Length > 0) args.AddRange(["-c", "user.email=" + _gitUserEmail]);
-        args.Add("commit"); if (!_enableCommands) args.Add("--no-gpg-sign"); args.AddRange(["-m", message]);
+        args.Add("commit"); if (!TrustedHostShell) args.Add("--no-gpg-sign"); args.AddRange(["-m", message]);
         return await RunGitAsync(await GitRepoAsync(repoPath, cancellationToken).ConfigureAwait(false), args, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string> GitPushAsync(string repoPath, CancellationToken cancellationToken)
     {
         var repo = await GitRepoAsync(repoPath, cancellationToken).ConfigureAwait(false); await EnsureSafeGitPushConfigurationAsync(repo, cancellationToken).ConfigureAwait(false);
-        var args = new List<string> { "push" }; if (!_enableCommands) args.AddRange(["--no-verify", "--no-signed", "--no-recurse-submodules", "--receive-pack=git-receive-pack"]);
+        var args = new List<string> { "push" }; if (!TrustedHostShell) args.AddRange(["--no-verify", "--no-signed", "--no-recurse-submodules", "--receive-pack=git-receive-pack"]);
         return await RunGitAsync(repo, args, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -181,7 +181,7 @@ internal sealed partial class LocalTools
         try
         {
             var environment = SanitizedGitEnvironment(); environment["GIT_TERMINAL_PROMPT"] = "0";
-            if (!_enableCommands) { environment["GIT_ASKPASS"] = ""; environment["SSH_ASKPASS"] = ""; environment["GIT_SSH_COMMAND"] = "ssh.exe -F none -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none"; environment["GIT_PAGER"] = "cat"; }
+            if (!TrustedHostShell) { environment["GIT_ASKPASS"] = ""; environment["SSH_ASKPASS"] = ""; environment["GIT_SSH_COMMAND"] = "ssh.exe -F none -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none"; environment["GIT_PAGER"] = "cat"; }
             var allArgs = new List<string> { "-C", repo, "--no-pager" }; allArgs.AddRange(SafeGitConfigurationArguments()); allArgs.AddRange(arguments);
             var result = await ProcessRunner.RunAsync("git.exe", allArgs, environment: environment, timeoutSeconds: 120, outputLimitBytes: outputLimitBytes, cancellationToken: cancellationToken).ConfigureAwait(false);
             if (result.TimedOut) throw new FileMcpException("git command timed out after 120 seconds");
@@ -202,7 +202,7 @@ internal sealed partial class LocalTools
 
     private IReadOnlyList<string> SafeGitConfigurationArguments()
     {
-        if (_enableCommands) return [];
+        if (TrustedHostShell) return [];
         if (_safeGitEmptyFile is null || _safeGitHooksDirectory is null)
             throw new FileMcpException("Could not initialize Git safe-mode resources.");
         return
@@ -260,7 +260,7 @@ internal sealed partial class LocalTools
 
     private async Task EnsureGitAddDoesNotRunFiltersAsync(string repo, IReadOnlyList<string> pathspecs, CancellationToken cancellationToken)
     {
-        if (_enableCommands) return;
+        if (TrustedHostShell) return;
         var listed = await RunGitAsync(repo, ["ls-files","--cached","--others","--exclude-standard","-z","--", .. pathspecs], FileMcpConstants.MaxGitSafetyOutputBytes, false, cancellationToken).ConfigureAwait(false);
         EnsureCompleteGitSafetyOutput(listed, "git_add path scan"); var paths = listed.Split('\0', StringSplitOptions.RemoveEmptyEntries);
         await ValidateEmbeddedGitRepositoriesAsync(paths, repo, cancellationToken).ConfigureAwait(false);
@@ -287,7 +287,7 @@ internal sealed partial class LocalTools
 
     private async Task EnsureSafeGitPushConfigurationAsync(string repo, CancellationToken cancellationToken)
     {
-        if (_enableCommands) return;
+        if (TrustedHostShell) return;
         var config = await RunGitAsync(repo, ["config","--local","--includes","--list"], FileMcpConstants.MaxGitSafetyOutputBytes, cancellationToken: cancellationToken).ConfigureAwait(false);
         EnsureCompleteGitSafetyOutput(config, "git_push config scan");
         string[] unsafeSuffixes = ["cookiefile","sslcert","sslkey","sslcainfo","sslcapath","pinnedpubkey","proxysslcert","proxysslkey","proxysslcainfo"];

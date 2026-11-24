@@ -75,15 +75,18 @@ struct WorkspacePermissions: Codable, Equatable {
     var allowShell: Bool
     var allowGitPush: Bool
     var allowCodexHistory: Bool
+    // A locally selected immutable Linux image ID. Nil preserves trusted host shell.
+    var isolatedShellImage: String? = nil
 
     static let readOnly = WorkspacePermissions(allowWrite: false, allowShell: false,
         allowGitPush: false, allowCodexHistory: false)
     var fingerprint: String {
         [allowWrite, allowShell, allowGitPush, allowCodexHistory].map { $0 ? "1" : "0" }.joined()
+            + (isolatedShellImage.map { ":" + $0 } ?? "")
     }
     var summary: String {
         guard allowWrite else { return "Read only" }
-        return (["Files read/write"] + (allowShell ? ["Shell"] : []) +
+        return (["Files read/write"] + (allowShell ? [isolatedShellImage == nil ? "Host shell" : "Isolated Linux shell"] : []) +
                 (allowGitPush ? ["Git push"] : []) + (allowCodexHistory ? ["Codex import"] : [])).joined(separator: " · ")
     }
 }
@@ -218,6 +221,8 @@ private final class WorkspaceCommandBudget {
     private let capacity: Int
     private var longJobs: [ObjectIdentifier: (CommandSession, String)] = [:]
     private var synchronous: [UUID: String] = [:]
+    private var pending: [(CommandSession, () -> Void)] = []
+    private var pumpScheduled = false
 
     init(capacity: Int) { self.capacity = min(16, max(4, capacity)) }
 
@@ -226,13 +231,21 @@ private final class WorkspaceCommandBudget {
         return longJobs.values.map { $0.1 } + Array(synchronous.values)
     }
 
+    private func overlaps(_ a: String, _ b: String) -> Bool {
+        let x = a.lowercased(), y = b.lowercased()
+        return x == y || x.hasPrefix(y.hasSuffix("/") ? y : y + "/") ||
+            y.hasPrefix(x.hasSuffix("/") ? x : x + "/")
+    }
+
     private func check(_ path: String, against existing: [String]) throws {
+        pending.removeAll { !$0.0.active }
+        guard pending.isEmpty else {
+            throw MCPServerError.operationFailed("Global command queue has waiting jobs; use queue_if_busy or retry after it drains")
+        }
         guard existing.count < capacity else {
             throw MCPServerError.operationFailed("Global command capacity reached (\(capacity))")
         }
-        guard !existing.contains(where: {
-            $0 == path || $0.hasPrefix(path + "/") || path.hasPrefix($0 + "/")
-        }) else {
+        guard !existing.contains(where: { overlaps($0, path) }) else {
             throw MCPServerError.operationFailed("Active command overlaps another workspace")
         }
     }
@@ -243,9 +256,54 @@ private final class WorkspaceCommandBudget {
         longJobs[ObjectIdentifier(session)] = (session, cwd)
     }
 
+    // Strict FIFO across workspaces: later submissions cannot jump an older
+    // blocked request. Queue admission is explicitly requested by the client.
+    func enqueue(_ session: CommandSession, launch: @escaping () -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        pending.removeAll { !$0.0.active }
+        guard pending.count < 64 else { throw MCPServerError.operationFailed("Global command queue is full (64)") }
+        pending.append((session, launch))
+        schedulePumpUnderLock()
+    }
+
+    private func schedulePumpUnderLock() {
+        guard !pumpScheduled, !pending.isEmpty else { return }
+        pumpScheduled = true
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+            self?.pump()
+        }
+    }
+
+    private func pump() {
+        lock.lock()
+        pumpScheduled = false
+        pending.removeAll { !$0.0.active }
+        var paths = activePaths()
+        var launches: [() -> Void] = []
+        while let next = pending.first, paths.count < capacity,
+              !paths.contains(where: { overlaps($0, next.0.cwd) }) {
+            pending.removeFirst()
+            longJobs[ObjectIdentifier(next.0)] = (next.0, next.0.cwd)
+            paths.append(next.0.cwd)
+            launches.append(next.1)
+        }
+        schedulePumpUnderLock()
+        lock.unlock()
+        for launch in launches { launch() }
+    }
+
+    func trackRecovered(_ session: CommandSession) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !activePaths().contains(where: { overlaps($0, session.cwd) }) else {
+            throw MCPServerError.operationFailed("Recovered jobs have overlapping directories")
+        }
+        longJobs[ObjectIdentifier(session)] = (session, session.cwd)
+    }
+
     func forget(_ session: CommandSession) {
         lock.lock(); defer { lock.unlock() }
         longJobs.removeValue(forKey: ObjectIdentifier(session))
+        pending.removeAll { $0.0 === session }
     }
 
     func enterSynchronous(cwd: String) throws -> UUID {
@@ -263,18 +321,128 @@ private final class WorkspaceCommandBudget {
 
     func hasActiveCommands() -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return !activePaths().isEmpty
+        pending.removeAll { !$0.0.active }
+        return !activePaths().isEmpty || !pending.isEmpty
     }
 
     func status(accepting: Bool) -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         let total = activePaths().count
+        pending.removeAll { !$0.0.active }
         return ["max_concurrent_commands": capacity,
+                "queued_total": pending.count,
                 "active_long_running": longJobs.count,
                 "active_synchronous": synchronous.count,
                 "active_total": total,
                 "available_slots": max(0, capacity - total),
                 "accepting_new_commands": accepting]
+    }
+}
+
+/// Short command remains a synchronous MCP call, but is an independently
+/// addressable local task for inspection and targeted cancellation.
+private final class SynchronousTaskControl {
+    let id = UUID()
+    let cwd: String
+    let ownerID: String?
+    private let lock = NSLock()
+    private var cancelled = false
+    private var state = "running"
+    private var stdout = Data()
+    private var stderr = Data()
+    private var truncated = false
+    private let limit = 131_072
+    init(cwd: String, ownerID: String?) { self.cwd = cwd; self.ownerID = ownerID }
+    var sessionID: String { "sync-" + id.uuidString.lowercased() }
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    var status: String { lock.lock(); defer { lock.unlock() }; return state }
+    var active: Bool { ["running", "stopping"].contains(status) }
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        if state == "running" { cancelled = true; state = "stopping" }
+    }
+    func finish(_ result: String) {
+        lock.lock(); defer { lock.unlock() }
+        state = cancelled ? "cancelled" : result
+    }
+    func append(_ data: Data, error: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard state == "running" || state == "stopping" else { return }
+        let remaining = max(0, limit - (error ? stderr.count : stdout.count))
+        if data.count > remaining { truncated = true }
+        if error { stderr.append(data.prefix(remaining)) } else { stdout.append(data.prefix(remaining)) }
+    }
+    func snapshot() -> [String: Any] {
+        lock.lock(); defer { lock.unlock() }
+        let out = String(decoding: stdout, as: UTF8.self)
+        let err = String(decoding: stderr, as: UTF8.self)
+        return ["state": state, "output": out + (err.isEmpty ? "" : "\nstderr:\n" + err), "truncated": truncated]
+    }
+}
+
+/// An opt-in VM/container execution backend. No remote caller can choose the
+/// image, daemon, mount, privileges or environment. Host shell is never a fallback.
+struct ShellExecutionPlan {
+    let executable: String
+    let arguments: [String]
+    let cwd: String
+    let environment: [String: String]
+    let cleanup: (() -> Void)?
+
+    static func build(root: String, cwd: String, command: String, shell: String,
+                      timeout: Int, image: String?) throws -> ShellExecutionPlan {
+        guard let image else {
+            return ShellExecutionPlan(executable: shell, arguments: ["-lc", command],
+                cwd: cwd, environment: ProcessInfo.processInfo.environment, cleanup: nil)
+        }
+        guard image.range(of: "^sha256:[a-f0-9]{64}$", options: .regularExpression) != nil,
+              !root.contains(","), !root.contains("\n"), !root.contains("\r"), !root.contains("\""), root != "/" else {
+            throw MCPServerError.invalidArguments("Isolated shell requires a pinned local image ID and a non-root workspace without comma/newline")
+        }
+        let canonical = URL(fileURLWithPath: cwd).resolvingSymlinksInPath().standardizedFileURL.path
+        guard canonical == root || canonical.hasPrefix(root + "/") else {
+            throw MCPServerError.invalidPath("Isolated shell working directory is outside the workspace")
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+                          "/Applications/Docker.app/Contents/Resources/bin/docker"]
+        guard let docker = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw MCPServerError.operationFailed("Isolated shell requires local Docker Desktop; host execution is not permitted")
+        }
+        let sockets = [home + "/.docker/run/docker.sock", "/var/run/docker.sock"]
+        guard let socket = sockets.first(where: { path in
+            var info = stat()
+            return stat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFSOCK
+        }) else { throw MCPServerError.operationFailed("Local Docker socket unavailable; isolated shell refused") }
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("ctcmcp-docker-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: config, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let environment = ["PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                           "HOME": home, "DOCKER_CONFIG": config.path]
+        let prefix = ["--config", config.path, "--host", "unix://" + socket]
+        let name = "ctcmcp-" + UUID().uuidString.lowercased()
+        let relative = canonical == root ? "" : String(canonical.dropFirst(root.count + 1))
+        let args = prefix + ["run", "--rm", "--pull=never", "--name", name,
+            "--network", "none", "--read-only", "--cap-drop", "ALL", "--no-healthcheck", "--log-driver", "none", "--restart", "no",
+            "--security-opt", "no-new-privileges", "--user", "65532:65532",
+            "--pids-limit", "256", "--memory", "2g", "--cpus", "2",
+            "--mount", "type=bind,source=" + root + ",target=/workspace,bind-recursive=disabled",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
+            "--env", "HOME=/tmp", "--env", "HTTP_PROXY=", "--env", "HTTPS_PROXY=",
+            "--env", "ALL_PROXY=", "--env", "http_proxy=", "--env", "https_proxy=", "--env", "all_proxy=",
+            "--workdir", relative.isEmpty ? "/workspace" : "/workspace/" + relative,
+            "--entrypoint", "/usr/bin/timeout", image,
+            "--signal=TERM", "--kill-after=2s", String(max(1, timeout)) + "s", "/bin/sh", "-c", command]
+        let cleanup = {
+            // Killing the CLI is not equivalent to stopping the container.
+            // Use its unguessable name and the same local daemon; in-container
+            // timeout additionally bounds orphaned execution after a GUI crash.
+            _ = try? ProcessRunner.run(executable: docker, arguments: prefix + ["rm", "-f", name],
+                cwd: root, environment: environment, timeoutSeconds: 10)
+            try? FileManager.default.removeItem(at: config)
+        }
+        return ShellExecutionPlan(executable: docker, arguments: args, cwd: root,
+                                  environment: environment, cleanup: cleanup)
     }
 }
 
@@ -286,6 +454,7 @@ private final class LocalTools {
     private let workspaceScopeID: String
     private let workspaceName: String
     private let commandHistory: CommandHistoryStore?
+    private let commandSupervisor: CommandSupervisor?
     private var globalSynchronousLeases: [UUID: UUID] = [:]
     // Bounded concurrency across independent working directories. These are
     // cooperative collision checks, not a shell sandbox (commands can use
@@ -297,12 +466,16 @@ private final class LocalTools {
     private var sessions: [CommandSession] = []
     // Synchronous run_command calls hold scoped command leases too.
     private var synchronousCommandPaths: [UUID: String] = [:]
+    private var synchronousTasks: [SynchronousTaskControl] = []
+    private var revokedSynchronousOwners = Set<String>()
     private var usedRequestIDs: Set<String> = []
     private var sessionsStopped = false
     private let gitUserName: String
     private let gitUserEmail: String
     private let allowWrite: Bool
     private let enableCommands: Bool
+    private let isolatedShellImage: String?
+    private var trustedHostShell: Bool { enableCommands && isolatedShellImage == nil }
     private let enableGitPush: Bool
     private let enableCodexHistory: Bool
     private let toolSlots = DispatchSemaphore(value: 16)
@@ -360,10 +533,13 @@ private final class LocalTools {
         workspaceScopeID: String = "default",
         workspaceName: String = "Default workspace",
         commandHistory: CommandHistoryStore? = nil,
-        allowWrite: Bool = true
+        allowWrite: Bool = true,
+        isolatedShellImage: String? = nil,
+        commandSupervisor: CommandSupervisor? = nil
     ) {
         self.workspaceName = workspaceName
         self.commandHistory = commandHistory
+        self.commandSupervisor = commandSupervisor?.allowsNew == true ? commandSupervisor : nil
         self.globalBudget = globalBudget
         self.receiptLedger = receiptLedger
         self.workspaceScopeID = workspaceScopeID
@@ -375,17 +551,24 @@ private final class LocalTools {
         self.gitUserName = gitUserName
         self.gitUserEmail = gitUserEmail
         self.allowWrite = allowWrite
+        self.isolatedShellImage = isolatedShellImage
         self.enableCommands = allowWrite && enableCommands
-        self.enableGitPush = allowWrite && enableGitPush
-        self.enableCodexHistory = allowWrite && enableCodexHistory
+        self.enableGitPush = allowWrite && enableGitPush && isolatedShellImage == nil
+        self.enableCodexHistory = allowWrite && enableCodexHistory && isolatedShellImage == nil
     }
 
     var workspaceRootPath: String { resolver.root.path }
+    var shellExecution: String { !enableCommands ? "disabled" : isolatedShellImage == nil ? "host" : "isolated_linux" }
 
     func desktopCommandSnapshots(workspaceID: String, name: String) -> [DesktopCommandSnapshot] {
         sessionLock.lock()
         defer { sessionLock.unlock() }
-        return sessions.compactMap { session in
+        let shortTasks = synchronousTasks.map { task in
+            DesktopCommandSnapshot(workspaceID: workspaceID, workspaceName: name,
+                sessionID: task.sessionID, requestID: task.sessionID, cwd: task.cwd,
+                state: task.status, active: task.active)
+        }
+        return shortTasks + sessions.compactMap { session in
             guard let status = try? session.snapshot(cursor: 0),
                   let state = status["state"] as? String else { return nil }
             return DesktopCommandSnapshot(
@@ -658,7 +841,7 @@ private final class LocalTools {
             tools.append(
                 tool(
                     name: "run_command",
-                    description: "Run a shell command on the local machine. The command inherits the current user's environment and is not OS-sandboxed. cwd must stay inside the shared directory.",
+                    description: "Run a command in the configured workspace shell. Inspect shell_execution: host inherits user privileges; isolated_linux uses a restricted Linux container. No automatic fallback.",
                     properties: [
                         "command": stringProperty("Shell command to execute."),
                         "cwd": stringProperty("Working directory relative to the shared root."),
@@ -740,9 +923,15 @@ private final class LocalTools {
         case "start_command": return objectOutput(try startCommand(arguments, ownerID: verifiedOwnerID ?? "__local_admin__"))
         case "command_receipt_status":
             guard let receiptLedger else { throw MCPServerError.operationFailed("Durable command receipts are unavailable") }
-            return objectOutput(try receiptLedger.ownReceipt(scopeID: workspaceScopeID,
-                requestID: requiredString(arguments, "request_id"), ownerID: verifiedOwnerID ?? "__local_admin__"))
+            let request = try requiredString(arguments, "request_id")
+            let owner = verifiedOwnerID ?? "__local_admin__"
+            var receipt = try receiptLedger.ownReceipt(scopeID: workspaceScopeID, requestID: request, ownerID: owner)
+            sessionLock.lock()
+            receipt["reattachable"] = sessions.contains { $0.requestID == request && $0.ownerID == owner && $0.supervised && $0.active && $0.workerAlive }
+            sessionLock.unlock()
+            return objectOutput(receipt)
         case "command_capacity_status": return objectOutput(commandCapacityStatus())
+        case "list_my_commands": return objectOutput(ownCommandSessions(verifiedOwnerID ?? "__local_admin__"))
         case "read_command_output":
             return objectOutput(try findSession(requiredString(arguments, "session_id")).snapshot(cursor: int(arguments, "cursor", default: 0)))
         case "cancel_command":
@@ -2265,33 +2454,45 @@ private final class LocalTools {
 
         commandSlots.wait()
         defer { commandSlots.signal() }
-        let lease = try acquireSynchronousCommandLease(workdir.path)
-        defer { releaseSynchronousCommandLease(lease) }
+        let control = try acquireSynchronousCommandLease(workdir.path, ownerID: ownerID)
+        var finalState = "launch_failed"
+        defer {
+            control.finish(finalState)
+            releaseSynchronousCommandLease(control.id)
+        }
 
         let historyID = try commandHistory?.begin(workspaceID: workspaceScopeID, workspaceName: workspaceName,
             cwd: workdir.path, kind: "sync", requestID: nil, clientID: ownerID, command: command)
         var historyFinished = false
         defer {
             if let historyID, !historyFinished {
-                finishHistory(historyID, state: "launch_failed", code: nil)
+                finishHistory(historyID, state: control.isCancelled ? "cancelled" : "launch_failed", code: nil)
             }
         }
-        let shell = preferredShell()
+        guard !control.isCancelled, !runtimeHasStopped else {
+            throw MCPServerError.operationFailed("Command cancelled before launch")
+        }
+        let plan = try ShellExecutionPlan.build(root: resolver.root.path, cwd: workdir.path,
+            command: command, shell: preferredShell(), timeout: min(timeoutSeconds, ProcessRunner.maxCommandTimeoutSeconds),
+            image: isolatedShellImage)
+        defer { plan.cleanup?() }
         let result = try ProcessRunner.run(
-            executable: shell,
-            arguments: ["-lc", command],
-            cwd: workdir.path,
+            executable: plan.executable,
+            arguments: plan.arguments,
+            cwd: plan.cwd, environment: plan.environment,
             timeoutSeconds: timeoutSeconds,
             outputLimitBytes: maxToolProcessOutputBytes,
-            shouldCancel: { [weak self] in self?.runtimeHasStopped ?? true }
+            shouldCancel: { [weak self] in control.isCancelled || (self?.runtimeHasStopped ?? true) },
+            onOutput: { control.append($0, error: $1) }
         )
+        finalState = control.isCancelled || runtimeHasStopped ? "cancelled" : result.timedOut ? "timed_out" : "exited"
         if let historyID {
-            finishHistory(historyID, state: runtimeHasStopped ? "cancelled" : result.timedOut ? "timed_out" : "exited",
+            finishHistory(historyID, state: finalState,
                 code: result.exitCode, output: formatProcessResult(result),
                 truncated: result.stdoutTruncated || result.stderrTruncated)
             historyFinished = true
         }
-        guard !runtimeHasStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
+        guard !control.isCancelled, !runtimeHasStopped else { throw MCPServerError.operationFailed("Command cancelled") }
         if result.timedOut {
             var partial = "Command timed out after \(max(1, min(timeoutSeconds, ProcessRunner.maxCommandTimeoutSeconds))) seconds."
             if !result.stdout.isEmpty { partial += "\nstdout:\n\(result.stdout)" }
@@ -2321,7 +2522,7 @@ private final class LocalTools {
             try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
         }
         var arguments = ["init", "-b", "main"]
-        if !enableCommands { arguments.append("--template=") }
+        if !trustedHostShell { arguments.append("--template=") }
         _ = try runGit(repo: repo, arguments: arguments)
         _ = try gitRepo(repoPath)
         return "Initialized Git repository: \(repoPath.isEmpty ? "." : repoPath)"
@@ -2454,7 +2655,7 @@ private final class LocalTools {
     }
 
     private func ensureNoRepositoryConfigIncludes(repo: URL) throws {
-        guard !enableCommands else { return }
+        guard !trustedHostShell else { return }
         let localConfig = try runGit(
             repo: repo,
             arguments: ["config", "--local", "--no-includes", "--list"],
@@ -2501,7 +2702,7 @@ private final class LocalTools {
     private func gitStatus(repoPath: String) throws -> String {
         let repo = try gitRepo(repoPath)
         var arguments = ["status", "--short"]
-        if !enableCommands { arguments.append("--ignore-submodules=all") }
+        if !trustedHostShell { arguments.append("--ignore-submodules=all") }
         let out = try runGit(repo: repo, arguments: arguments)
         return out.isEmpty ? "(working tree clean)" : out
     }
@@ -2513,7 +2714,7 @@ private final class LocalTools {
     private func gitDiff(repoPath: String, paths: String) throws -> String {
         let repo = try gitRepo(repoPath)
         var args = ["diff"]
-        if !enableCommands {
+        if !trustedHostShell {
             args += ["--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]
         }
         if !paths.isEmpty {
@@ -2539,7 +2740,7 @@ private final class LocalTools {
         if !gitUserName.isEmpty { args += ["-c", "user.name=\(gitUserName)"] }
         if !gitUserEmail.isEmpty { args += ["-c", "user.email=\(gitUserEmail)"] }
         args.append("commit")
-        if !enableCommands { args.append("--no-gpg-sign") }
+        if !trustedHostShell { args.append("--no-gpg-sign") }
         args += ["-m", message]
         return try runGit(repo: gitRepo(repoPath), arguments: args)
     }
@@ -2548,7 +2749,7 @@ private final class LocalTools {
         let repo = try gitRepo(repoPath)
         try ensureSafeGitPushConfiguration(repo: repo)
         var args = ["push"]
-        if !enableCommands {
+        if !trustedHostShell {
             args += ["--no-verify", "--no-signed", "--no-recurse-submodules", "--receive-pack=git-receive-pack"]
         }
         return try runGit(repo: repo, arguments: args)
@@ -2565,7 +2766,7 @@ private final class LocalTools {
 
         var environment = sanitizedGitEnvironment()
         environment["GIT_TERMINAL_PROMPT"] = "0"
-        if !enableCommands {
+        if !trustedHostShell {
             environment["GIT_ASKPASS"] = "/usr/bin/false"
             environment["SSH_ASKPASS"] = "/usr/bin/false"
             environment["GIT_SSH_COMMAND"] = "/usr/bin/ssh -F /dev/null -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none"
@@ -2613,7 +2814,7 @@ private final class LocalTools {
     }
 
     private func safeGitConfigurationArguments() -> [String] {
-        guard !enableCommands else { return [] }
+        guard !trustedHostShell else { return [] }
         return [
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.fsmonitor=false",
@@ -2631,7 +2832,7 @@ private final class LocalTools {
     }
 
     private func ensureGitAddDoesNotRunFilters(repo: URL, pathspecs: [String]) throws {
-        guard !enableCommands else { return }
+        guard !trustedHostShell else { return }
         let listed = try runGit(
             repo: repo,
             arguments: ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"] + pathspecs,
@@ -2689,7 +2890,7 @@ private final class LocalTools {
     }
 
     private func ensureSafeGitPushConfiguration(repo: URL) throws {
-        guard !enableCommands else { return }
+        guard !trustedHostShell else { return }
         let localConfig = try runGit(
             repo: repo,
             arguments: ["config", "--local", "--includes", "--list"],
@@ -3238,6 +3439,7 @@ final class LocalMCPServer {
     private let receiptLedger: CommandReceiptLedger?
     private let cua: CUAService
     private let cuaGuest: Bool
+    private let cuaRelayOnly: Bool
     private let activityAudit: ActivityAuditStore?
     private let taskOwnershipLock = NSLock()
     private var ownerByScopedRequest: [String: String] = [:]
@@ -3281,6 +3483,7 @@ final class LocalMCPServer {
         receiptLedger: CommandReceiptLedger? = nil,
         commandHistory: CommandHistoryStore? = nil,
         activityAudit: ActivityAuditStore? = nil,
+        commandSupervisor: CommandSupervisor? = nil,
         enableGitPush: Bool = false,
         enableCodexHistory: Bool = false,
         defaultWorkspacePermissions: WorkspacePermissions? = nil,
@@ -3293,6 +3496,7 @@ final class LocalMCPServer {
         responseTimeoutSeconds: TimeInterval = 15,
         maxConnections: Int = 32,
         cuaGuest: Bool = false,
+        cuaRelayOnly: Bool = false,
         cuaPolicyURL: URL? = nil,
         log: @escaping (String) -> Void
     ) throws {
@@ -3306,11 +3510,12 @@ final class LocalMCPServer {
               responseTimeoutSeconds > 0, responseTimeoutSeconds.isFinite, maxConnections > 0 else {
             throw MCPServerError.invalidArguments("HTTP resource limits must be positive and finite")
         }
-        if cuaGuest && (enableCommands || enableGitPush || enableCodexHistory || !additionalWorkspaces.isEmpty || publicHost != nil || pathSecret != nil || bearerToken != nil || oauth != nil) {
+        if (cuaGuest || cuaRelayOnly) && (enableCommands || enableGitPush || enableCodexHistory || !additionalWorkspaces.isEmpty || publicHost != nil || pathSecret != nil || bearerToken != nil || oauth != nil || commandSupervisor != nil || (cuaGuest && cuaRelayOnly)) {
             throw MCPServerError.invalidArguments("Isolated guest gateway is CUA-only and loopback-only")
         }
         self.cuaGuest = cuaGuest
-        self.cua = CUAService(policyURL:cuaPolicyURL ?? CUAPolicy.defaultURL,guestMode:cuaGuest)
+        self.cuaRelayOnly = cuaRelayOnly
+        self.cua = CUAService(policyURL:cuaPolicyURL ?? CUAPolicy.defaultURL,guestMode:cuaGuest,relayOnly:cuaRelayOnly)
         self.requestTimeoutSeconds = requestTimeoutSeconds
         self.responseTimeoutSeconds = responseTimeoutSeconds
         self.maxConnections = maxConnections
@@ -3344,7 +3549,9 @@ final class LocalMCPServer {
             globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
             receiptLedger: receiptLedger, workspaceScopeID: "default",
             commandHistory: commandHistory,
-            allowWrite: defaultWorkspacePermissions?.allowWrite ?? true
+            allowWrite: defaultWorkspacePermissions?.allowWrite ?? true,
+            isolatedShellImage: defaultWorkspacePermissions?.isolatedShellImage,
+            commandSupervisor: commandSupervisor
         )
         // Canonical roots may not overlap, even through symlinks. This rejects
         // accidental cross-workspace access and ambiguous command isolation.
@@ -3365,7 +3572,9 @@ final class LocalMCPServer {
                 globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
                 receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
                 workspaceName: workspace.name, commandHistory: commandHistory,
-                allowWrite: workspace.permissions?.allowWrite ?? true)
+                allowWrite: workspace.permissions?.allowWrite ?? true,
+                isolatedShellImage: workspace.permissions?.isolatedShellImage,
+                commandSupervisor: commandSupervisor)
         }
         self.makeWorkspaceTools = makeTools
         var roots = [resolver.root.path]
@@ -3388,6 +3597,27 @@ final class LocalMCPServer {
         }
         self.catalogDefinitions = additionalWorkspaces
         self.catalogTools = approved
+        if let commandSupervisor {
+            for job in try commandSupervisor.jobs() {
+                let record = job.record
+                let scoped = record.scopeID == "default" ? tools : approved[record.scopeID]
+                let permitted = record.ownerID == "__local_admin__" ? oauth == nil :
+                    (oauth?.desktopApprovedClients().contains {
+                        $0.id == record.ownerID && $0.approvedWorkspaces.contains(record.scopeID)
+                    } ?? false)
+                let status = try job.readStatus()
+                if let scoped, permitted, scoped.canRestore(job) {
+                    try scoped.restore(job, status: status)
+                } else if !status.terminal {
+                    try job.requestCancel()
+                    let deadline = Date().addingTimeInterval(8)
+                    while !(try job.readStatus().terminal), Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+                    guard try job.readStatus().terminal else {
+                        throw MCPServerError.operationFailed("Unapproved supervised job did not stop")
+                    }
+                }
+            }
+        }
     }
 
     private static func overlappingRoots(_ a: String, _ b: String) -> Bool {
@@ -3462,6 +3692,19 @@ final class LocalMCPServer {
         if remaining == 0 { workspaceLeases.removeValue(forKey: id) } else { workspaceLeases[id] = remaining }
     }
 
+    /// Atomically close remote admission only when every accepted call and
+    /// every command has finished. Scheduling a relaunch may fail; in that
+    /// case restore admission without tearing down the running service.
+    func freezeForIdleActivation(schedule: () throws -> Void) throws {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        guard !catalogStopped, workspaceLeases.values.allSatisfy({ $0 == 0 }),
+              !commandBudget.hasActiveCommands() else {
+            throw MCPServerError.operationFailed("Active or queued work remains. Finish it before activating an update.")
+        }
+        catalogStopped = true
+        do { try schedule() } catch { catalogStopped = false; throw error }
+    }
+
     func desktopReceiptSummary() -> [String: Int] {
         receiptLedger?.summary() ?? [:]
     }
@@ -3499,23 +3742,10 @@ final class LocalMCPServer {
         // cannot authenticate with the now-revoked access token.
         try oauth.revokeDesktopClient(clientID)
         cua.revoke(owner: clientID)
-        taskOwnershipLock.lock()
-        let revokedSessions = ownerBySessionID.compactMap { sessionID, owner in
-            owner == clientID ? sessionID : nil
-        }
-        taskOwnershipLock.unlock()
-        // In addition to denying future reads/cancels, terminate work
-        // already launched by the revoked OAuth client. Never cancel a task
-        // owned by a different client or the local administrator.
+        // Cancellation uses the task's immutable owner even if the RPC's
+        // outer ownership index has not yet been populated.
         let available = [tools] + Array(workspaceTools.values)
-        for id in revokedSessions {
-            for scoped in available {
-                if let session = try? scoped.findSession(id) {
-                    session.cancel(synchronously: true)
-                    break
-                }
-            }
-        }
+        for scope in available { scope.cancelOwnedCommands(ownerID: clientID) }
     }
 
     func desktopCommandOutput(workspaceID: String, sessionID: String) throws -> [String: Any] {
@@ -3529,7 +3759,7 @@ final class LocalMCPServer {
         }
         // This is a local GUI read of the full retained ring, not a remote
         // cursor page. Keep the 64 KiB MCP response contract unchanged.
-        return try scoped.findSession(sessionID).snapshot(cursor: 0, maxBytes: 262_144)
+        return try scoped.desktopTaskOutput(sessionID)
     }
 
     func cancelDesktopCommand(workspaceID: String, sessionID: String) throws {
@@ -3541,7 +3771,7 @@ final class LocalMCPServer {
         } else {
             throw MCPServerError.invalidArguments("Unknown approved workspace")
         }
-        _ = try selected.call(name: "cancel_command", arguments: ["session_id": sessionID])
+        try selected.cancelDesktopTask(sessionID)
     }
 
     var isReady: Bool {
@@ -3592,7 +3822,7 @@ final class LocalMCPServer {
         log("MCP server listening on http://127.0.0.1:\(port)/mcp\n")
     }
 
-    func stop() {
+    func stop(preserveSupervised: Bool = false) {
         cua.stop()
         listener?.cancel()
         listener = nil
@@ -3609,8 +3839,8 @@ final class LocalMCPServer {
         catalogStopped = true
         let scopes = Array(catalogTools.values)
         workspaceGate.unlock()
-        tools.stopCommandSessions()
-        for scoped in scopes { scoped.stopCommandSessions() }
+        tools.stopCommandSessions(preserveSupervised: preserveSupervised)
+        for scoped in scopes { scoped.stopCommandSessions(preserveSupervised: preserveSupervised) }
     }
 
     private func closeConnection(_ connection: NWConnection) {
@@ -3864,7 +4094,7 @@ final class LocalMCPServer {
     private var publishedToolDefinitions: [[String: Any]] { toolDefinitions(for: nil) }
 
     private func toolDefinitions(for client: VerifiedOAuthClient?) -> [[String: Any]] {
-        if cuaGuest { return CUAService.definitions().filter { !(($0["name"] as? String) ?? "").hasPrefix("cua_extension_") } }
+        if cuaGuest || cuaRelayOnly { return CUAService.definitions().filter { CUAService.listenerAllows($0["name"] as? String ?? "", guest:cuaGuest, relay:cuaRelayOnly) } }
         workspaceGate.lock(); defer { workspaceGate.unlock() }
         if let client, let oauth, !oauth.isCurrent(client) { return [] }
         let granted = [tools] + workspaceDefinitions.compactMap { workspace in
@@ -3894,14 +4124,29 @@ final class LocalMCPServer {
                     "type": "object", "properties": [
                         "id": ["type": "string"], "name": ["type": "string"],
                         "path": ["type": "string"],
+                        "shell_execution": ["type": "string", "enum": ["disabled", "host", "isolated_linux"]],
                         "allowed_tools": ["type": "array", "items": ["type": "string"]]],
-                    "required": ["id", "name", "path", "allowed_tools"], "additionalProperties": false]]],
+                    "required": ["id", "name", "path", "shell_execution", "allowed_tools"], "additionalProperties": false]]],
                 "required": ["workspaces"], "additionalProperties": false]
             let callSchema: [String: Any] = [
                 "type": "object", "properties": [
                     "workspace_id": ["type": "string"],
                     "result": ["type": "object", "additionalProperties": true]],
                 "required": ["workspace_id", "result"], "additionalProperties": false]
+            let identitySchema: [String: Any] = ["type": "object", "properties": [
+                "authentication_mode": ["type": "string", "enum": ["verified_oauth_client", "shared_connection"]],
+                "verified_client_id": ["type": ["string", "null"]],
+                "conversation_authenticated": ["type": "boolean"],
+                "task_ownership": ["type": "string"],
+                "allowed_workspace_ids": ["type": "array", "items": ["type": "string"]]],
+                "required": ["authentication_mode", "verified_client_id", "conversation_authenticated", "task_ownership", "allowed_workspace_ids"],
+                "additionalProperties": false]
+            definitions.append([
+                "name": "connection_identity",
+                "description": "Report the server-verified principal and its allowed workspace IDs. OAuth verifies a client grant, not a chat conversation. Shared tunnel credentials are not individual identities.",
+                "inputSchema": ["type": "object", "properties": [:], "required": [], "additionalProperties": false],
+                "outputSchema": identitySchema,
+                "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]])
             definitions.append([
                 "name": "list_workspaces",
                 "description": "List explicitly approved local workspace IDs and names. No workspace permissions can be changed over MCP.",
@@ -4122,7 +4367,7 @@ final class LocalMCPServer {
             // client names, request IDs or tool arguments as identity.
             let sessionID = arguments["session_id"] as? String ?? ""
             taskOwnershipLock.lock()
-            let allowed = ownerBySessionID[sessionID] == client.id
+            let allowed = scoped.ownsCommandSession(sessionID, ownerID: client.id)
             taskOwnershipLock.unlock()
             guard allowed else {
                 throw MCPServerError.operationFailed(
@@ -4142,7 +4387,7 @@ final class LocalMCPServer {
                 status: modern ? 400 : 200
             )
         }
-        guard toolDefinitions(for: verifiedClient).contains(where: { $0["name"] as? String == toolName }) else {
+        guard CUAService.listenerAllows(toolName,guest:cuaGuest,relay:cuaRelayOnly), toolDefinitions(for: verifiedClient).contains(where: { $0["name"] as? String == toolName }) else {
             return jsonRPCError(id: id, code: -32602, message: "Unknown tool: \(toolName)")
         }
         let arguments: [String: Any]
@@ -4167,9 +4412,27 @@ final class LocalMCPServer {
             if toolName.hasPrefix("cua_") {
                 let (content, structured) = try cua.call(toolName, args: arguments, owner: verifiedClient?.id, requestAlive: { requestAlive() && (verifiedClient.map { self.oauth?.isCurrent($0) == true } ?? true) })
                 output = LocalToolCallOutput(content: content, structuredContent: structured)
+            } else if toolName == "connection_identity" {
+                workspaceGate.lock(); defer { workspaceGate.unlock() }
+                guard arguments.isEmpty, !catalogStopped else { throw MCPServerError.invalidArguments("Identity query takes no arguments") }
+                if let client = verifiedClient, let oauth, !oauth.isCurrent(client) {
+                    throw MCPServerError.operationFailed("OAuth authorization changed; reconnect client")
+                }
+                let ids = ["default"] + catalogDefinitions.filter {
+                    verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
+                }.map(\.id).sorted()
+                let payload: [String: Any] = [
+                    "authentication_mode": verifiedClient == nil ? "shared_connection" : "verified_oauth_client",
+                    "verified_client_id": verifiedClient.map { $0.id as Any } ?? NSNull(),
+                    "conversation_authenticated": false,
+                    "task_ownership": verifiedClient == nil ? "shared_credential" : "oauth_client_grant",
+                    "allowed_workspace_ids": ids]
+                let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+                output = LocalToolCallOutput(content: [["type": "text", "text": String(decoding: data, as: UTF8.self)]], structuredContent: payload)
             } else if toolName == "list_workspaces" {
                 workspaceGate.lock()
                 defer { workspaceGate.unlock() }
+                guard !catalogStopped else { throw MCPServerError.operationFailed("Runtime is stopping") }
                 if let client = verifiedClient, let oauth, !oauth.isCurrent(client) {
                     throw MCPServerError.operationFailed("OAuth authorization changed; reconnect client")
                 }
@@ -4177,11 +4440,11 @@ final class LocalMCPServer {
                     verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
                 }.compactMap { workspace -> [String: Any]? in
                     guard let scoped = workspaceTools[workspace.id] else { return nil }
-                    return ["id": workspace.id, "name": workspace.name, "path": scoped.workspaceRootPath,
+                    return ["id": workspace.id, "name": workspace.name, "path": scoped.workspaceRootPath, "shell_execution": scoped.shellExecution,
                             "allowed_tools": scoped.toolDefinitions.compactMap { $0["name"] as? String }.sorted()]
                 }
                 let all: [[String: Any]] = [["id": "default", "name": "Default workspace",
-                            "path": tools.workspaceRootPath,
+                            "path": tools.workspaceRootPath, "shell_execution": tools.shellExecution,
                             "allowed_tools": tools.toolDefinitions.compactMap { $0["name"] as? String }.sorted()]] + list
                 let payload: [String: Any] = ["workspaces": all]
                 let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -4551,26 +4814,38 @@ private struct PatchFileState {
 
 // A bounded, runtime-owned job. Cursors count output chunks, not characters.
 private final class CommandSession {
-    let id = UUID().uuidString.lowercased()
+    let id: String
+    let commandDigest: String
     let requestID: String
     let command: String
     let cwd: String
     let timeout: Int
+    let queueIfBusy: Bool
+    let ownerID: String?
     private let lock = NSLock()
     private var process: ManagedProcess?
+    private var worker: SupervisedCommandJob?
+    private var workerTimer: DispatchSourceTimer?
     private var deadline: DispatchWorkItem?
-    private var state = "running"
+    private var state: String
     private var stopReason: String?
     private var exitCode: Int32?
-    private let onFinish: ((String, Int32) -> Void)?
-    private let onHistoryFinish: ((String, Int32, String, Bool) -> Void)?
+    private let onFinish: ((String, Int32?) -> Void)?
+    private let onHistoryFinish: ((String, Int32?, String, Bool) -> Void)?
     private var chunks: [(Int, String)] = []
     private var bytes = 0
     private var sequence = 0
 
     init(requestID: String, command: String, cwd: String, timeout: Int,
-         onFinish: ((String, Int32) -> Void)? = nil,
-         onHistoryFinish: ((String, Int32, String, Bool) -> Void)? = nil) {
+         queueIfBusy: Bool = false, ownerID: String? = nil,
+         restoredID: String? = nil, restoredDigest: String? = nil,
+         onFinish: ((String, Int32?) -> Void)? = nil,
+         onHistoryFinish: ((String, Int32?, String, Bool) -> Void)? = nil) {
+        self.id = restoredID ?? UUID().uuidString.lowercased()
+        self.commandDigest = restoredDigest ?? SupervisedCommandRecord.digest(command)
+        self.queueIfBusy = queueIfBusy
+        self.ownerID = ownerID
+        self.state = queueIfBusy ? "queued" : "running"
         self.requestID = requestID; self.command = command; self.cwd = cwd
         self.timeout = timeout; self.onFinish = onFinish
         self.onHistoryFinish = onHistoryFinish
@@ -4578,21 +4853,85 @@ private final class CommandSession {
 
     var active: Bool {
         lock.lock(); defer { lock.unlock() }
-        return state == "running" || state == "stopping"
+        return state == "queued" || state == "running" || state == "stopping"
     }
 
-    func launch(shell: String) throws {
-        let child = try ProcessRunner.startManaged(executable: shell, arguments: ["-lc", command], cwd: cwd,
-            onOutput: { [weak self] text in self?.append(text) },
-            onExit: { [weak self] code in self?.finish(code) })
+    var supervised: Bool { lock.lock(); defer { lock.unlock() }; return worker != nil }
+    var workerAlive: Bool { lock.lock(); defer { lock.unlock() }; return (try? worker?.workerAlive()) == true }
+
+    func launchSupervised(supervisor: CommandSupervisor, record: SupervisedCommandRecord,
+                          beforeLaunch: () throws -> Void = {}) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard state == "queued" || state == "running" else { return }
+        try beforeLaunch()
+        state = "running"
+        worker = try supervisor.create(record: record, command: command)
+        startWorkerTimerUnderLock()
+    }
+
+    func launchQueuedSupervised(supervisor: CommandSupervisor, record: SupervisedCommandRecord,
+                                beforeLaunch: () throws -> Void) {
+        do { try launchSupervised(supervisor: supervisor, record: record, beforeLaunch: beforeLaunch) }
+        catch { complete(nil, fallback: "launch_failed") }
+    }
+
+    func attach(_ job: SupervisedCommandJob) {
+        lock.lock(); worker = job; state = "running"; startWorkerTimerUnderLock(); lock.unlock()
+        refreshWorker()
+    }
+
+    private func startWorkerTimerUnderLock() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + .milliseconds(150), repeating: .milliseconds(150))
+        timer.setEventHandler { [weak self] in self?.refreshWorker() }
+        workerTimer = timer; timer.resume()
+    }
+
+    func detachWorker() {
+        lock.lock(); defer { lock.unlock() }
+        workerTimer?.cancel(); workerTimer = nil
+    }
+
+    private func refreshWorker() {
         lock.lock()
-        process = child
+        guard let worker, workerTimer != nil else { lock.unlock(); return }
+        lock.unlock()
+        guard let status = try? worker.readStatus() else { return }
+        lock.lock()
+        guard workerTimer != nil, ["queued", "running", "stopping"].contains(state),
+              status.lastCursor >= sequence else { lock.unlock(); return }
+        chunks = status.chunks.map { ($0.cursor, $0.text) }
+        sequence = status.lastCursor
+        bytes = chunks.reduce(0) { $0 + $1.1.utf8.count }
+        if !status.terminal { state = status.state == "starting" ? "running" : status.state }
+        lock.unlock()
+        if status.terminal { complete(status.exitCode, fallback: status.state) }
+    }
+
+    func launch(plan: () throws -> ShellExecutionPlan, beforeLaunch: () throws -> Void = {}) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard state == "queued" || state == "running" else { return }
+        try beforeLaunch()
+        state = "running"
+        let execution = try plan()
+        do {
+            let child = try ProcessRunner.startManaged(executable: execution.executable, arguments: execution.arguments,
+                cwd: execution.cwd, environment: execution.environment,
+                onOutput: { [weak self] text in self?.append(text) },
+                onExit: { [weak self] code in execution.cleanup?(); self?.finish(code) })
+            process = child
+        } catch { execution.cleanup?(); throw error }
         if state == "running" {
             let work = DispatchWorkItem { [weak self] in self?.cancel(reason: "timed_out") }
             deadline = work
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(timeout), execute: work)
         }
-        lock.unlock()
+    }
+
+    func launchQueued(plan: () throws -> ShellExecutionPlan, beforeLaunch: () throws -> Void) {
+        do { try launch(plan: plan, beforeLaunch: beforeLaunch) }
+        catch { complete(nil, fallback: "launch_failed") }
     }
 
     private func append(_ text: String) {
@@ -4605,12 +4944,16 @@ private final class CommandSession {
         }
     }
 
-    private func finish(_ code: Int32) {
+    private func finish(_ code: Int32) { complete(code, fallback: "exited") }
+
+    private func complete(_ code: Int32?, fallback: String) {
         lock.lock()
+        guard ["queued", "running", "stopping"].contains(state) else { lock.unlock(); return }
         exitCode = code
-        state = stopReason ?? "exited"
+        state = stopReason ?? fallback
         let terminalState = state
         deadline?.cancel(); deadline = nil
+        workerTimer?.cancel(); workerTimer = nil
         let historyOutput = onHistoryFinish == nil ? "" : chunks.map { $0.1 }.joined()
         let historyTruncated = (chunks.first?.0 ?? (sequence + 1)) > 1
         lock.unlock()
@@ -4622,11 +4965,26 @@ private final class CommandSession {
 
     func cancel(reason: String = "cancelled", synchronously: Bool = false) {
         lock.lock()
-        guard state == "running" || state == "stopping" else { lock.unlock(); return }
+        guard ["queued", "running", "stopping"].contains(state) else { lock.unlock(); return }
+        if let worker {
+            lock.unlock()
+            do { try worker.requestCancel() } catch { NSLog("Supervised task cancellation could not persist") }
+            if synchronously {
+                let deadline = Date().addingTimeInterval(8)
+                while Date() < deadline {
+                    refreshWorker()
+                    if !active { break }
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            }
+            return
+        }
         if stopReason == nil { stopReason = reason }
+        let wasQueued = state == "queued"
         state = "stopping"
         let child = process
         lock.unlock()
+        if wasQueued { complete(nil, fallback: reason); return }
         if synchronously { child?.stopSynchronously() } else { child?.stop() }
     }
 
@@ -4684,12 +5042,17 @@ private extension LocalTools {
             add(["started_at_unix_ms", "updated_at_unix_ms"], "integer")
             add(["reattachable"], "boolean")
             fields["exit_code"] = ["type": ["integer", "null"]]
+        case "own_commands":
+            fields["commands"] = ["type": "array", "items": ["type": "object",
+                "properties": ["session_id": ["type": "string"], "request_id": ["type": "string"],
+                    "state": ["type": "string"], "exit_code": ["type": ["integer", "null"]]],
+                "required": ["session_id", "request_id", "state", "exit_code"], "additionalProperties": false]]
         case "capacity":
             add(["max_concurrent_commands", "active_long_running", "active_synchronous",
-                 "active_total", "available_slots"], "integer")
+                 "active_total", "available_slots", "queued_total"], "integer")
             add(["accepting_new_commands"], "boolean")
         case "context":
-            add(["workspace_root", "cwd", "scope"], "string")
+            add(["workspace_root", "cwd", "scope", "shell_execution"], "string")
             add(["shell_commands_enabled", "top_level_truncated"], "boolean")
             fields["git_status"] = ["type": ["string", "null"]]
             for name in ["errors", "top_level"] { fields[name] = ["type": "array", "items": ["type": "string"]] }
@@ -4701,7 +5064,7 @@ private extension LocalTools {
             add(["next_cursor", "last_cursor", "timeout_seconds"], "integer")
             add(["has_more", "truncated"], "boolean")
             fields["exit_code"] = ["type": ["integer", "null"]]
-            fields["state"] = ["type": "string", "enum": ["running", "stopping", "exited", "cancelled", "timed_out"]]
+            fields["state"] = ["type": "string", "enum": ["queued", "running", "stopping", "exited", "cancelled", "timed_out", "launch_failed", "interrupted"]]
         }
         return ["type": "object", "properties": fields, "required": fields.keys.sorted(), "additionalProperties": false]
     }
@@ -4736,19 +5099,22 @@ private extension LocalTools {
         ]
         if enableCommands {
             definitions += [
-                tool(name: "start_command", description: "Start a long-running non-interactive shell command (shell permission required; not OS-sandboxed). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
+                tool(name: "start_command", description: "Start a long-running non-interactive command (shell permission required; consult shell_execution in list_workspaces: host is not sandboxed, isolated_linux uses a Linux container). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Use queue_if_busy=true for FIFO waiting across workspaces. Queue waiting does not consume the execution timeout. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
                      properties: ["request_id": stringProperty("Unique retry key, 1–128 ASCII letters/digits/dot/underscore/hyphen. Reuse only for the same command."),
                                   "command": stringProperty("Shell command."), "cwd": stringProperty("Working directory inside shared root."),
-                                  "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600]],
+                                  "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600],
+                                  "queue_if_busy": ["type": "boolean", "default": false, "description": "Opt into the global FIFO queue (including when a directory is busy). Poll queued jobs until terminal."]],
                      required: ["request_id", "command"], readOnly: false, destructive: true, openWorld: true, output: .object(agentOutputSchema("command"))),
                 tool(name: "command_receipt_status", description: "Read the durable status of one of your earlier commands by request_id, including after an application restart. Only the original verified client can access the receipt. Interrupted is NOT a reattached process. No command text, output, workspace path, or other client's history is returned.",
                      properties: ["request_id": stringProperty("Original request_id from start_command.")],
                      required: ["request_id"], readOnly: true, output: .object(agentOutputSchema("receipt"))),
-                tool(name: "read_command_output", description: "Read bounded combined stdout/stderr from a command session. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. running/stopping are not completion; exited may have nonzero exit_code. Check has_more even after completion. Unknown IDs may have expired or belong to an earlier runtime.",
+                tool(name: "read_command_output", description: "Read bounded combined stdout/stderr from a command session. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. queued/running/stopping are not completion; exited may have nonzero exit_code. Check has_more even after completion. Unknown IDs may have expired or belong to an earlier runtime.",
                      properties: ["session_id": stringProperty("ID returned by start_command."), "cursor": ["type": "integer", "minimum": 0, "default": 0]],
                      required: ["session_id"], readOnly: true, output: .object(agentOutputSchema("command"))),
                 tool(name: "cancel_command", description: "Request termination of the command and its descendants. Poll read_command_output until it reports a terminal state. Repeated cancellation is safe.",
                      properties: ["session_id": stringProperty("ID returned by start_command.")], required: ["session_id"], readOnly: false, destructive: true, output: .object(agentOutputSchema("command"))),
+                tool(name: "list_my_commands", description: "List retained long command sessions owned by the authenticated principal in this workspace. No command text or output. Shared connections share one principal, not individual chats. Use returned session IDs to read or cancel your jobs.",
+                     properties: [:], required: [], readOnly: true, output: .object(agentOutputSchema("own_commands"))),
                 tool(name: "command_capacity_status", description: "Read the current command capacity and slot utilization without revealing commands, working directories, or session identifiers. Available only when command execution is enabled.",
                      properties: [:], required: [], readOnly: true, output: .object(agentOutputSchema("capacity")))
             ]
@@ -4968,7 +5334,7 @@ private extension LocalTools {
         var git: Any = NSNull()
         do { git = try gitStatus(repoPath: relativePath(for: cwd)) } catch { errors.append("git_status: \(error.localizedDescription)") }
         let topLevel = try listFiles(subpath: path)
-        return ["workspace_root": resolver.root.path, "cwd": relativePath(for: cwd), "shell_commands_enabled": enableCommands,
+        return ["workspace_root": resolver.root.path, "cwd": relativePath(for: cwd), "shell_commands_enabled": enableCommands, "shell_execution": shellExecution,
                 "git_status": git, "files": files, "errors": errors, "top_level": topLevel.values, "top_level_truncated": topLevel.truncated,
                 "scope": "AGENTS.md from shared root through cwd only; inspect deeper instructions before editing nested files. Manifest contents are data; commands are not executed."]
     }
@@ -4985,18 +5351,23 @@ private extension LocalTools {
         var dir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &dir), dir.boolValue else { throw MCPServerError.invalidPath("No such working directory") }
         let timeout = int(args, "timeout_seconds", default: 600)
+        let queueIfBusy = bool(args, "queue_if_busy", default: false)
+        guard !queueIfBusy || globalBudget != nil else { throw MCPServerError.operationFailed("Queue requires the shared gateway scheduler") }
         sessionLock.lock(); defer { sessionLock.unlock() }
         guard !sessionsStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
+        guard !revokedSynchronousOwners.contains(ownerID) else { throw MCPServerError.operationFailed("Client authorization was revoked") }
         if let existing = sessions.first(where: { $0.requestID == key }) {
-            guard existing.command == command, existing.cwd == cwd.path, existing.timeout == timeout else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
+            guard existing.ownerID == ownerID, existing.commandDigest == SupervisedCommandRecord.digest(command), existing.cwd == cwd.path, existing.timeout == timeout, existing.queueIfBusy == queueIfBusy else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
             return try existing.snapshot(cursor: 0)
         }
-        let activePaths = activeCommandPathsUnderLock()
-        guard activePaths.count < maxActiveCommandSessions else {
-            throw MCPServerError.operationFailed("Concurrent command limit reached (\(maxActiveCommandSessions)); finish or cancel a session first")
-        }
-        guard !activePaths.contains(where: { Self.overlappingPaths($0, cwd.path) }) else {
-            throw MCPServerError.operationFailed("Another active command occupies this working directory or a parent/child directory; use an independent worktree")
+        if !queueIfBusy {
+            let activePaths = activeCommandPathsUnderLock()
+            guard activePaths.count < maxActiveCommandSessions else {
+                throw MCPServerError.operationFailed("Concurrent command limit reached (\(maxActiveCommandSessions)); finish or cancel a session first")
+            }
+            guard !activePaths.contains(where: { Self.overlappingPaths($0, cwd.path) }) else {
+                throw MCPServerError.operationFailed("Another active command occupies this working directory or a parent/child directory; use an independent worktree")
+            }
         }
         // Evicted retry keys remain tombstoned for this runtime: never execute an old retry twice.
         guard !usedRequestIDs.contains(key) else { throw MCPServerError.operationFailed("request_id expired; use a new ID only for an intentional new execution") }
@@ -5005,7 +5376,7 @@ private extension LocalTools {
         let scopeID = workspaceScopeID
         let historyID = UUID()
         let session = CommandSession(
-            requestID: key, command: command, cwd: cwd.path, timeout: timeout,
+            requestID: key, command: command, cwd: cwd.path, timeout: timeout, queueIfBusy: queueIfBusy, ownerID: ownerID,
             onFinish: { [weak ledger] state, code in
                 do { try ledger?.finish(scopeID: scopeID, requestID: key,
                                         state: state, exitCode: code) }
@@ -5017,16 +5388,47 @@ private extension LocalTools {
                 do { try commandHistory?.finish(id: historyID, state: state, exitCode: code, output: output, truncated: truncated) }
                 catch { NSLog("ChatToComputerMCP local history completion could not persist: %@", error.localizedDescription) }
             })
-        try globalBudget?.admit(session, cwd: cwd.path)
+        if !queueIfBusy { try globalBudget?.admit(session, cwd: cwd.path) }
         var reserved = false
         var historyReserved = false
         do {
             try ledger?.reserve(scopeID: scopeID, requestID: key, ownerID: ownerID)
             reserved = ledger != nil
             try commandHistory?.begin(id: historyID, workspaceID: scopeID, workspaceName: workspaceName,
-                cwd: cwd.path, kind: "async", requestID: key, clientID: ownerID, command: command)
+                cwd: cwd.path, kind: "async", requestID: key, clientID: ownerID, command: command,
+                queued: queueIfBusy)
             historyReserved = commandHistory != nil
-            try session.launch(shell: preferredShell())
+            let shell = preferredShell()
+            let image = isolatedShellImage
+            let supervisedRecord = SupervisedCommandRecord(sessionID: session.id, requestID: key,
+                scopeID: scopeID, ownerID: ownerID, root: resolver.root.path, cwd: cwd.path,
+                shell: shell, image: image, timeout: timeout, queueIfBusy: queueIfBusy,
+                commandDigest: session.commandDigest, historyID: historyID, createdAt: Date())
+            let supervisor = commandSupervisor
+            let makePlan = { [resolver] in
+                try ShellExecutionPlan.build(root: resolver.root.path, cwd: cwd.path, command: command,
+                    shell: shell, timeout: timeout, image: image)
+            }
+            if queueIfBusy {
+                let relativeCwd = relativePath(for: cwd)
+                let history = commandHistory
+                try globalBudget?.enqueue(session) { [resolver, session] in
+                    let validate = {
+                        let resolved = try resolver.resolve(relativeCwd)
+                        var isDirectory: ObjCBool = false
+                        guard resolved.path == cwd.path,
+                              FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                            throw MCPServerError.invalidPath("Queued working directory changed")
+                        }
+                        try history?.markRunning(id: historyID)
+                    }
+                    if let supervisor {
+                        session.launchQueuedSupervised(supervisor: supervisor, record: supervisedRecord, beforeLaunch: validate)
+                    } else { session.launchQueued(plan: makePlan, beforeLaunch: validate) }
+                }
+            } else if let supervisor {
+                try session.launchSupervised(supervisor: supervisor, record: supervisedRecord)
+            } else { try session.launch(plan: makePlan) }
         } catch {
             globalBudget?.forget(session)
             if historyReserved { finishHistory(historyID, state: "launch_failed", code: nil) }
@@ -5052,6 +5454,51 @@ private extension LocalTools {
         return try session.snapshot(cursor: 0)
     }
 
+    func ownsCommandSession(_ id: String, ownerID: String) -> Bool {
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        return sessions.contains { $0.id == id && $0.ownerID == ownerID }
+    }
+
+    func canRestore(_ job: SupervisedCommandJob) -> Bool {
+        let record = job.record
+        return enableCommands && commandSupervisor != nil && record.root == resolver.root.path &&
+            record.image == isolatedShellImage && (record.cwd == record.root || record.cwd.hasPrefix(record.root + "/"))
+    }
+
+    func restore(_ job: SupervisedCommandJob, status: SupervisedCommandStatus) throws {
+        let record = job.record
+        guard let ledger = receiptLedger else { throw CommandReceiptLedger.LedgerError.invalidStore }
+        try ledger.reconcileSupervised(scopeID: record.scopeID, requestID: record.requestID,
+            ownerID: record.ownerID, state: status.state, exitCode: status.exitCode, active: !status.terminal)
+        try commandHistory?.reconcileSupervised(job, status: status)
+        let history = commandHistory
+        let restored = CommandSession(requestID: record.requestID, command: "", cwd: record.cwd,
+            timeout: record.timeout, queueIfBusy: record.queueIfBusy, ownerID: record.ownerID,
+            restoredID: record.sessionID, restoredDigest: record.commandDigest,
+            onFinish: { _, _ in
+                guard let final = try? job.readStatus() else { return }
+                try? ledger.reconcileSupervised(scopeID: record.scopeID, requestID: record.requestID,
+                    ownerID: record.ownerID, state: final.state, exitCode: final.exitCode, active: !final.terminal)
+                try? history?.reconcileSupervised(job, status: final)
+            })
+        restored.attach(job)
+        if restored.active { try globalBudget?.trackRecovered(restored) }
+        usedRequestIDs.insert(record.requestID)
+        sessions.append(restored)
+        while sessions.filter({ !$0.active }).count > 8,
+              let oldest = sessions.firstIndex(where: { !$0.active }) { sessions.remove(at: oldest) }
+    }
+
+    func ownCommandSessions(_ ownerID: String) -> [String: Any] {
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        let rows = sessions.filter { $0.ownerID == ownerID }.compactMap { session -> [String: Any]? in
+            guard let value = try? session.snapshot(cursor: 0) else { return nil }
+            return ["session_id": session.id, "request_id": session.requestID,
+                    "state": value["state"] ?? "unknown", "exit_code": value["exit_code"] ?? NSNull()]
+        }
+        return ["commands": rows]
+    }
+
     func findSession(_ id: String) throws -> CommandSession {
         guard enableCommands else { throw MCPServerError.operationFailed("Command execution is disabled") }
         sessionLock.lock(); defer { sessionLock.unlock() }
@@ -5075,6 +5522,7 @@ private extension LocalTools {
             "active_long_running": longRunning,
             "active_synchronous": synchronous,
             "active_total": total,
+            "queued_total": 0,
             "available_slots": max(0, maxActiveCommandSessions - total),
             "accepting_new_commands": !sessionsStopped,
         ]
@@ -5084,7 +5532,7 @@ private extension LocalTools {
         sessions.filter { $0.active }.map(\.cwd) + Array(synchronousCommandPaths.values)
     }
 
-    private func acquireSynchronousCommandLease(_ workdir: String) throws -> UUID {
+    private func acquireSynchronousCommandLease(_ workdir: String, ownerID: String?) throws -> SynchronousTaskControl {
         // Mutations also acquire mutationSlot. Release it immediately after
         // admission so independent tool calls can continue while we run.
         mutationSlot.wait()
@@ -5101,16 +5549,24 @@ private extension LocalTools {
         guard !activePaths.contains(where: { Self.overlappingPaths($0, workdir) }) else {
             throw MCPServerError.operationFailed("Another active command occupies this working directory or a parent/child directory; use an independent worktree")
         }
-        let id = UUID()
+        if let ownerID, revokedSynchronousOwners.contains(ownerID) {
+            throw MCPServerError.operationFailed("Client authorization was revoked")
+        }
+        let control = SynchronousTaskControl(cwd: workdir, ownerID: ownerID)
         let sharedID = try globalBudget?.enterSynchronous(cwd: workdir)
-        synchronousCommandPaths[id] = workdir
-        if let sharedID { globalSynchronousLeases[id] = sharedID }
-        return id
+        synchronousCommandPaths[control.id] = workdir
+        synchronousTasks.append(control)
+        if let sharedID { globalSynchronousLeases[control.id] = sharedID }
+        return control
     }
 
     private func releaseSynchronousCommandLease(_ lease: UUID) {
         sessionLock.lock()
         synchronousCommandPaths.removeValue(forKey: lease)
+        while synchronousTasks.filter({ !$0.active }).count > 8,
+              let oldest = synchronousTasks.firstIndex(where: { !$0.active }) {
+            synchronousTasks.remove(at: oldest)
+        }
         let sharedID = globalSynchronousLeases.removeValue(forKey: lease)
         sessionLock.unlock()
         if let sharedID { globalBudget?.leaveSynchronous(sharedID) }
@@ -5169,12 +5625,43 @@ private extension LocalTools {
         return !activeCommandPathsUnderLock().isEmpty
     }
 
-    func stopCommandSessions() {
+    func desktopTaskOutput(_ id: String) throws -> [String: Any] {
+        sessionLock.lock()
+        let sync = synchronousTasks.first { $0.sessionID == id }
+        sessionLock.unlock()
+        if let sync { return sync.snapshot() }
+        return try findSession(id).snapshot(cursor: 0, maxBytes: 262_144)
+    }
+
+    func cancelDesktopTask(_ id: String) throws {
+        sessionLock.lock()
+        let sync = synchronousTasks.first { $0.sessionID == id }
+        sessionLock.unlock()
+        if let sync { sync.cancel(); return }
+        try findSession(id).cancel()
+    }
+
+    func cancelOwnedCommands(ownerID: String) {
+        sessionLock.lock()
+        revokedSynchronousOwners.insert(ownerID)
+        let tasks = synchronousTasks.filter { $0.ownerID == ownerID }
+        let jobs = sessions.filter { $0.ownerID == ownerID }
+        sessionLock.unlock()
+        tasks.forEach { $0.cancel() }
+        jobs.forEach { $0.cancel(synchronously: true) }
+    }
+
+    func stopCommandSessions(preserveSupervised: Bool = false) {
         sessionLock.lock()
         sessionsStopped = true
         let active = sessions
+        let shortTasks = synchronousTasks
         sessionLock.unlock()
-        for session in active { session.cancel(synchronously: true) }
+        shortTasks.forEach { $0.cancel() }
+        for session in active {
+            if preserveSupervised && session.supervised { session.detachWorker() }
+            else { session.cancel(synchronously: true) }
+        }
     }
 }
 

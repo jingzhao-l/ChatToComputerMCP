@@ -104,3 +104,52 @@ Mac and Windows have matching tool definitions and native policy, snapshot and s
 Run `bash tests/test_swift_cua.sh`, `python3 tests/check_platform_tool_contracts.py`, `npm test` and the Windows native test suite. To run the real browser regression, install the locked dependencies with npm ci --prefix cua-runtime --ignore-scripts, install Chromium using PLAYWRIGHT_BROWSERS_PATH set to cua-runtime/browsers, then run tests/test_swift_cua_p4.sh on Mac or tests/test_cua_p4.mjs with CTCMCP_CUA_TEST_SERVER set to the Windows test apphost. Both platform CI jobs include this regression.
 
 Formal acceptance remains: real granted app actions/launch/window geometry on macOS and Windows, actual independent guest/VM transport and lifecycle, foreground non-interference across apps, and ordinary cloud Chat image/action round trips. Cross-target builds and two-process guest tests do not establish those results.
+
+## Dedicated relay execution domains (no host tool fallback)
+
+For high-isolation CUA, allocate a dedicated guest VM per trust domain. Do not
+share guest disks, credentials, desktop, host folders, clipboard or device
+passthrough between mutually untrusted domains. Put the entire development
+gateway inside its own VM if it needs unrestricted native build tools. The
+relay below deliberately exposes only guest CUA, not general guest shell.
+
+After guest-init, guest-serve and authenticated SSH forwarding as above, reserve
+a different local listener port and a unique guest credential for each domain:
+
+    chat-to-computer-mcp cua relay-init --domain project-a --port 18801 --guest-port 18766 --token-file /absolute/private/guest-a-token --confirm-dedicated-guest
+    chat-to-computer-mcp cua relay-serve --domain project-a
+    chat-to-computer-mcp cua relay-status --domain project-a
+
+Repeat with a different domain, listener port, forwarded port and guest
+credential for another independent VM. Do not register the same guest with a
+general-purpose host gateway. The local registry rejects duplicate relay ports
+and guest credential digests. Each relay owns a private configuration,
+independent random listener credential, receipt store, session authority and
+exactly one approved Guest profile. Relay policy is validated again on each
+operation. Adding host grants or additional profiles fails closed.
+
+Connect each relay listener to its **own** trusted MCP transport/connector.
+For Secure MCP Tunnel, create a distinct tunnel and local tunnel-client profile
+targeting that relay's loopback port; configure its local authentication header
+from the relay's private token file through the transport's environment secret
+configuration. Do not paste the token into Chat, expose the listener publicly,
+or reuse the ordinary gateway's credentials. The CLI provisions the local relay;
+it does not create Platform tunnels or assign connector access automatically.
+
+The relay permits only cua_capabilities, cua_extension_list/open/call/close and
+cua_receipt_status. Tool discovery and direct dispatch enforce the same
+immutable allowlist. No host shell, workspace/file/Git calls, wrapper routes,
+host CUA or headless-browser fallback. Use cua_capabilities to check
+relay_only=true, host_tools_allowed=false and identity=dedicated_relay_credential.
+The conversation_identity_verified field remains false.
+
+This is independently authenticated **execution-domain** access, not native
+Chat conversation attestation. Anyone authorized to use a relay credential
+shares that domain. Do not expose a privileged general-purpose host connector
+to an untrusted caller at the same time. A trusted local operator must verify
+that the guests and network forwarding targets really are distinct and
+isolated; the relay cannot remotely attest a VM's hypervisor. Existing
+same-OS-user processes with unrestricted host privileges are outside this
+boundary. The dual-relay HTTP regression verifies cross-credential denial,
+foreign lease rejection, host-tool/wrapper refusal and policy-widening denial
+using two independent guest listeners, not two physical VMs.

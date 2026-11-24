@@ -293,6 +293,7 @@ final class CUAService {
     private var runtimeLockFD: Int32 = -1
     private var extensions: [String:ExtensionSession] = [:]
     private let guestMode: Bool
+    private let relayOnly: Bool
     private var sessions: [String: Session] = [:]
     private var revoked = Set<String>()
     private var stopped = false
@@ -311,9 +312,10 @@ final class CUAService {
         "invoke_menu":["path"],
         "set_window_frame":["x","y","width","height"]
     ]
-    init(policyURL: URL = CUAPolicy.defaultURL, guestMode: Bool = false) {
+    init(policyURL: URL = CUAPolicy.defaultURL, guestMode: Bool = false, relayOnly: Bool = false) {
         self.policyURL = policyURL
         self.guestMode = guestMode
+        self.relayOnly = relayOnly
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos:.utility))
         timer.schedule(deadline:.now() + 1, repeating:1)
         timer.setEventHandler { [weak self] in self?.sweep() }
@@ -322,6 +324,11 @@ final class CUAService {
     }
     deinit { timer?.cancel(); stop() }
 
+    static func listenerAllows(_ name: String, guest: Bool, relay: Bool) -> Bool {
+        if guest { return name.hasPrefix("cua_") && !name.hasPrefix("cua_extension_") }
+        if relay { return ["cua_capabilities","cua_extension_list","cua_extension_open","cua_extension_call","cua_extension_close","cua_receipt_status"].contains(name) }
+        return true
+    }
     static func definitions() -> [[String: Any]] {
         let string: [String:Any] = ["type":"string"]
         let integer: [String:Any] = ["type":"integer","minimum":1]
@@ -364,6 +371,13 @@ final class CUAService {
               Set((policy.profiles ?? []).map(\.id)).count == (policy.profiles ?? []).count,
               policy.driverSHA256.range(of:"^[0-9a-fA-F]{64}$",options:.regularExpression) != nil else {
             throw CUAFailure("cua_disabled: invalid or disabled local policy")
+        }
+        if relayOnly {
+            guard policy.grants.isEmpty, policy.requireVerifiedClient != true,
+                  let profiles = policy.profiles, profiles.count == 1, profiles[0].kind == "guest",
+                  profiles[0].clients == [CUAPolicy.sharedOwner] else {
+                throw CUAFailure("cua_relay_requires_one_dedicated_guest_no_host_grants")
+            }
         }
         return (policy,data)
     }
@@ -674,6 +688,7 @@ final class CUAService {
         }catch{if !recoverable {retireExtension(id)};throw error}
     }
     func call(_ name: String, args: [String:Any], owner: String?, requestAlive: () -> Bool = { true }) throws -> ([[String:Any]],[String:Any]) {
+        guard Self.listenerAllows(name,guest:guestMode,relay:relayOnly) else {throw CUAFailure("cua_listener_scope_denied")}
         let owner = owner ?? CUAPolicy.sharedOwner
         gate.lock(); let allowedOwner = !stopped && !revoked.contains(owner); gate.unlock()
         guard allowedOwner, requestAlive() else { throw CUAFailure("cua_service_stopped_or_revoked") }
@@ -685,7 +700,7 @@ final class CUAService {
             let policy = try? loadPolicy().0
             let requiresVerified = !guestMode && policy?.requireVerifiedClient == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || (!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true))
-            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"requires_verified_client":requiresVerified,
+            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
                 "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"extension_profiles_enabled":enabled && !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true])
         }
         if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {

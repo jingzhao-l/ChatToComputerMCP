@@ -43,12 +43,12 @@ public static class FileMcpConstants
     public const int MaxHttpRequestBodyBytes = 8_000_000;
 }
 
-public sealed record WorkspacePermissions(bool AllowWrite, bool AllowShell, bool AllowGitPush, bool AllowCodexHistory)
+public sealed record WorkspacePermissions(bool AllowWrite, bool AllowShell, bool AllowGitPush, bool AllowCodexHistory, string? IsolatedShellImage = null)
 {
     public static WorkspacePermissions ReadOnly { get; } = new(false, false, false, false);
-    public string Fingerprint => string.Concat(new[] { AllowWrite, AllowShell, AllowGitPush, AllowCodexHistory }.Select(value => value ? "1" : "0"));
+    public string Fingerprint => string.Concat(new[] { AllowWrite, AllowShell, AllowGitPush, AllowCodexHistory }.Select(value => value ? "1" : "0")) + (IsolatedShellImage is null ? "" : ":" + IsolatedShellImage);
     public string Summary => !AllowWrite ? "Read only" : "Files read/write" +
-        (AllowShell ? " · Shell" : "") + (AllowGitPush ? " · Git push" : "") + (AllowCodexHistory ? " · Codex import" : "");
+        (AllowShell ? (IsolatedShellImage is null ? " · Host shell" : " · Isolated Linux shell") : "") + (AllowGitPush ? " · Git push" : "") + (AllowCodexHistory ? " · Codex import" : "");
 }
 public sealed record ApprovedWorkspace(string Id, string Name, string Path, WorkspacePermissions? Permissions = null);
 public sealed record CloudflareNamedTunnel(string Id, string Name);
@@ -76,7 +76,8 @@ public sealed record LocalMcpConfiguration(
     bool EnableGitPush = false,
     bool EnableCodexHistory = false,
     bool CaptureCommandHistoryContent = false,
-    WorkspacePermissions? DefaultWorkspacePermissions = null);
+    WorkspacePermissions? DefaultWorkspacePermissions = null,
+    bool PersistLongTasks = false);
 
 public enum LocalMcpRuntimeStatus
 {
@@ -114,6 +115,7 @@ public sealed class FileMcpSettings
     public bool EnableGitPush { get; set; }
     public bool EnableCodexHistory { get; set; }
     public bool CaptureCommandHistoryContent { get; set; }
+    public bool PersistLongTasks { get; set; }
     public WorkspacePermissions? DefaultWorkspacePermissions { get; set; }
     public int MaxConcurrentCommands { get; set; } = 8;
     public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];

@@ -35,9 +35,9 @@ The tunnel health/admin listener also binds to loopback, not a public interface.
 - Root validation rejects invalid, overlapping or symlink-aliased folders.
 - `list_workspaces` exposes the approved catalog to authenticated MCP callers.
 - `workspace_call` routes an existing enabled tool to an approved non-default scope.
-- Workspace additions/revocations are configured locally and take effect when the runtime reconnects.
+- Additional workspace changes may take effect live while the affected scope is idle; the default root and global permissions require reconnection.
 
-The catalog is not per-AI-client authorization. The current shared connection identity may expose the same approved scopes to different remote conversations.
+The shared connection identity may expose the same approved scopes to different remote conversations. Verified OAuth grants restrict catalog access per approved client.
 
 ## Commands and task lifecycle
 
@@ -48,8 +48,8 @@ Long-running sessions carry IDs, output cursors, completion states, bounded outp
 **Important limitations**
 
 1. A cwd guard is cooperative. A user-privileged shell may still open absolute paths or spawn unrestricted child processes.
-2. The active session list is still in-process, not an authenticated cross-restart supervisor. macOS now persists private command receipts BEFORE launching; incomplete ones are marked interrupted on restart, and their IDs cannot be silently replayed. The journal intentionally contains no command text, output or full workspace path. This is safe idempotency metadata, not actual process reattachment.
-3. Mac Cloudflare OAuth now derives client identity exclusively from server-issued, validated bearer tokens, with locally approved workspace scopes and command ownership. Client-supplied MCP clientInfo remains untrusted. OpenAI Secure MCP Tunnel currently forwards a shared local authentication header, so it cannot identify individual conversations without an additional authenticated protocol.
+2. Default sessions remain in-process. Explicitly enabled independent workers store bounded output and metadata in a private profile directory. Recovery verifies the original receipt, owner, current root and execution mode; active workers continue without replay. Queued, worker-lost and rebooted jobs are not silently restarted. The separate receipt journal remains privacy-minimized.
+3. Cloudflare OAuth now derives client identity exclusively from server-issued, validated bearer tokens, with locally approved workspace scopes and command ownership. Client-supplied MCP clientInfo remains untrusted. OpenAI Secure MCP Tunnel currently forwards a shared local authentication header, so it cannot identify individual conversations without an additional authenticated protocol.
 
 ## Native applications
 
@@ -70,7 +70,7 @@ For credentials and safe migration, see [RELEASE_MIGRATION.md](RELEASE_MIGRATION
 
 ## Verification evidence and pending work
 
-The 0.1.0 release has been verified with local Mac Swift/UI tests, npm tarball content checks and an isolated npm-source build/install. Windows cross-target compilation passed, **not** Windows real-device acceptance. Two separate security/reliability milestones remain:
+The 0.1.0 release has been verified with local Mac Swift/UI tests, npm tarball content checks and an isolated npm-source build/install. Windows cross-target compilation passed, **not** Windows real-device acceptance. Historical issue references; implementation and current acceptance are distinguished in PLATFORM_PARITY.md:
 
 - [Verified client identities and per-client grants](https://github.com/jingzhao-l/ChatToComputerMCP/issues/1)
 - [Durable supervisor and recovery after restart](https://github.com/jingzhao-l/ChatToComputerMCP/issues/2)

@@ -37,6 +37,8 @@ internal sealed partial class LocalTools
     private readonly string _gitUserEmail;
     private readonly bool _allowWrite;
     private readonly bool _enableCommands;
+    private readonly string? _isolatedShellImage;
+    private bool TrustedHostShell => _enableCommands && _isolatedShellImage is null;
     private readonly bool _enableGitPush;
     private readonly bool _enableCodexHistory;
     private readonly string? _safeGitEmptyFile;
@@ -46,6 +48,7 @@ internal sealed partial class LocalTools
     private readonly string _workspaceScopeID;
     private readonly string _workspaceName;
     private readonly CommandHistoryStore? _commandHistory;
+    private readonly CommandSupervisor? _commandSupervisor;
     private readonly SemaphoreSlim _toolSlots = new(16, 16);
     private readonly SemaphoreSlim _serializedSlot = new(1, 1);
     private readonly SemaphoreSlim _commandSlots = new(16, 16);
@@ -93,10 +96,11 @@ internal sealed partial class LocalTools
         CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default",
         bool enableGitPush = false, bool enableCodexHistory = false,
         string workspaceName = "Default workspace", CommandHistoryStore? commandHistory = null,
-        bool allowWrite = true)
+        bool allowWrite = true, string? isolatedShellImage = null, CommandSupervisor? commandSupervisor = null)
     {
         _workspaceName = workspaceName;
         _commandHistory = commandHistory;
+        _commandSupervisor = commandSupervisor?.AllowsNew == true ? commandSupervisor : null;
         _resolver = new SafePathResolver(allowedDirectory);
         _receiptLedger = receiptLedger;
         _workspaceScopeID = workspaceScopeID;
@@ -106,16 +110,18 @@ internal sealed partial class LocalTools
         _gitUserName = gitUserName;
         _gitUserEmail = gitUserEmail;
         _allowWrite = allowWrite;
+        _isolatedShellImage = isolatedShellImage;
         _enableCommands = allowWrite && enableCommands;
-        _enableGitPush = allowWrite && enableGitPush;
-        _enableCodexHistory = allowWrite && enableCodexHistory;
-        if (!_enableCommands)
+        _enableGitPush = allowWrite && enableGitPush && isolatedShellImage is null;
+        _enableCodexHistory = allowWrite && enableCodexHistory && isolatedShellImage is null;
+        if (!TrustedHostShell)
         {
             (_safeGitEmptyFile, _safeGitHooksDirectory) = PrepareSafeGitResources();
         }
     }
 
     internal string WorkspaceRoot => _resolver.Root;
+    internal string ShellExecution => !_enableCommands ? "disabled" : _isolatedShellImage is null ? "host" : "isolated_linux";
     internal System.Text.Json.Nodes.JsonObject CommandCapacityStatus() => _commandBudget.Status();
 
     public JsonArray ToolDefinitions
@@ -251,7 +257,7 @@ internal sealed partial class LocalTools
             };
             if (_enableCommands)
             {
-                tools.Add(Tool("run_command", "Run a PowerShell command on the local machine. The command inherits the current user's environment and is not OS-sandboxed. cwd must stay inside the shared directory.",
+                tools.Add(Tool("run_command", "Run a command in the configured workspace shell. Inspect shell_execution: host PowerShell inherits user privileges; isolated_linux uses a restricted Linux container. No automatic fallback.",
                     Props(
                         ("command", StringProperty("PowerShell command to execute.")),
                         ("cwd", StringProperty("Working directory relative to the shared root.")),
@@ -283,6 +289,7 @@ internal sealed partial class LocalTools
                     ("active_long_running", "integer"),
                     ("active_synchronous", "integer"),
                     ("active_total", "integer"),
+                    ("queued_total", "integer"),
                     ("available_slots", "integer"),
                     ("accepting_new_commands", "boolean") })));
             if (!_allowWrite)
@@ -304,12 +311,14 @@ internal sealed partial class LocalTools
         await _toolSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
         var serialize = SerializedToolNames.Contains(name) ||
             (name == "batch_read" && BatchReadNeedsSerialization(arguments));
-        if (serialize)
-        {
-            await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var acquiredSerialization = false;
         try
         {
+            if (serialize)
+            {
+                await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
+                acquiredSerialization = true;
+            }
             ValidateArguments(name, arguments);
             if (serialize && name != "start_command") EnsureNoActiveCommand();
             return name switch
@@ -323,12 +332,11 @@ internal sealed partial class LocalTools
                 "apply_patch" => ObjectOutput(ApplyPatch(arguments)),
                 "workspace_context" => ObjectOutput(await WorkspaceContextAsync(GetString(arguments, "path", ""), cancellationToken).ConfigureAwait(false)),
                 "start_command" => ObjectOutput(StartCommand(arguments, verifiedOwnerID ?? "__local_admin__")),
-                "command_receipt_status" => ObjectOutput(_receiptLedger?.OwnReceipt(_workspaceScopeID,
-                    GetRequiredString(arguments, "request_id"), verifiedOwnerID ?? "__local_admin__")
-                    ?? throw new FileMcpException("Durable command receipts are unavailable")),
+                 "command_receipt_status" => ObjectOutput(OwnCommandReceipt(GetRequiredString(arguments, "request_id"), verifiedOwnerID ?? "__local_admin__")),
                 "read_command_output" => ObjectOutput(FindSession(GetRequiredString(arguments, "session_id")).Snapshot(GetInt(arguments, "cursor", 0))),
                 "cancel_command" => ObjectOutput(CancelCommand(GetRequiredString(arguments, "session_id"))),
                 "command_capacity_status" => ObjectOutput(_commandBudget.Status()),
+                "list_my_commands" => ObjectOutput(OwnCommandSessions(verifiedOwnerID ?? "__local_admin__")),
                 "write_file" => StringOutput(WriteFile(
                     GetRequiredString(arguments, "relative_path"),
                     GetRequiredString(arguments, "content"),
@@ -355,7 +363,7 @@ internal sealed partial class LocalTools
         }
         finally
         {
-            if (serialize) _serializedSlot.Release();
+            if (acquiredSerialization) _serializedSlot.Release();
             _toolSlots.Release();
         }
     }
@@ -1706,24 +1714,42 @@ internal sealed partial class LocalTools
         await _commandSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
         Guid? sharedLease = null;
         Guid? historyID = null;
+        SynchronousTaskControl? control = null;
+        string finalState = "launch_failed";
         bool historyFinished = false;
         try
         {
             // Coordinate command admission with scoped mutations; independent
             // cwd commands do not hold this slot while their processes run.
             await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try { sharedLease = _commandBudget.AcquireSynchronous(workdir); }
+            try {
+                lock (_sessionGate)
+                {
+                    if (_sessionsStopped || (ownerID is not null && _revokedOwners.Contains(ownerID)))
+                        throw new FileMcpException("Runtime stopped or client authorization revoked");
+                    sharedLease = _commandBudget.AcquireSynchronous(workdir);
+                    control = new SynchronousTaskControl(workdir, ownerID, cancellationToken);
+                    _synchronousTasks.Add(control);
+                }
+            }
             finally { _serializedSlot.Release(); }
             historyID = _commandHistory?.Begin(_workspaceScopeID, _workspaceName, workdir, "sync", null, ownerID, command);
-            var result = await ProcessRunner.RunAsync(PowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], workdir,
-                Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>().ToDictionary(e => (string)e.Key, e => (string?)e.Value ?? "", StringComparer.OrdinalIgnoreCase),
-                timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, cancellationToken).ConfigureAwait(false);
+            var plan = ShellExecutionPlan.Build(_resolver.Root, workdir, command, PowerShellPath(),
+                Math.Min(timeoutSeconds, ProcessRunner.MaxCommandTimeoutSeconds), _isolatedShellImage);
+            ProcessResult result;
+            try {
+                result = await ProcessRunner.RunAsync(plan.Executable, plan.Arguments, plan.Cwd, plan.Environment,
+                    timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, control.Token,
+                    onOutput: control.Append).ConfigureAwait(false);
+            } finally { plan.Cleanup?.Invoke(); }
+            finalState = control.Token.IsCancellationRequested ? "cancelled" : result.TimedOut ? "timed_out" : "exited";
             if (historyID is Guid recorded)
             {
-                FinishHistory(recorded, result.TimedOut ? "timed_out" : "exited", result.ExitCode,
+                FinishHistory(recorded, finalState, result.ExitCode,
                     FormatProcessResult(result), result.StdoutTruncated || result.StderrTruncated);
                 historyFinished = true;
             }
+            control.Token.ThrowIfCancellationRequested();
             if (result.TimedOut)
             {
                 var partial = $"Command timed out after {Math.Clamp(timeoutSeconds, 1, ProcessRunner.MaxCommandTimeoutSeconds)} seconds.";
@@ -1735,6 +1761,7 @@ internal sealed partial class LocalTools
         }
         catch (OperationCanceledException)
         {
+            finalState = "cancelled";
             if (historyID is Guid cancelled && !historyFinished)
             {
                 FinishHistory(cancelled, "cancelled", null);
@@ -1743,7 +1770,14 @@ internal sealed partial class LocalTools
             throw;
         }
         finally {
-            if (historyID is Guid failed && !historyFinished) FinishHistory(failed, "launch_failed", null);
+            if (historyID is Guid failed && !historyFinished) FinishHistory(failed, finalState, null);
+            if (control is not null)
+            {
+                control.Finish(finalState);
+                lock (_sessionGate)
+                    while (_synchronousTasks.Count(task => !task.Active) > 8)
+                        _synchronousTasks.Remove(_synchronousTasks.First(task => !task.Active));
+            }
             if (sharedLease is Guid id) _commandBudget.Release(id);
             _commandSlots.Release();
         }

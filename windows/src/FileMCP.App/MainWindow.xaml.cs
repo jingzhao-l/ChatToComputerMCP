@@ -173,6 +173,7 @@ public partial class MainWindow : Window
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
         CaptureCommandHistoryBox.IsChecked = settings.CaptureCommandHistoryContent;
+        PersistLongTasksBox.IsChecked = settings.PersistLongTasks;
         EnableGitPushBox.IsChecked = settings.EnableGitPush;
         EnableCodexHistoryBox.IsChecked = settings.EnableCodexHistory;
         ApplyProviderSelection();
@@ -321,6 +322,30 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private async void ActivateUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updateBusy || _availableUpdateVersion is not string version ||
+            !DesktopUpdates.IsNewer(version, DesktopUpdates.CurrentVersion) || !DesktopUpdates.Installed(version)) return;
+        if (System.Windows.MessageBox.Show(this,
+            "The app will restart only when all commands and accepted requests have finished. No active work will be cancelled. Reconnect the tunnel from the new app if needed.",
+            "Activate v" + version, MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        _updateBusy = true;
+        ActivateUpdateButton.IsEnabled = false;
+        CheckUpdatesButton.IsEnabled = false;
+        try
+        {
+            await _runtime.ActivateUpdateWhenIdleAsync(() => DesktopUpdates.ScheduleActivation(version));
+            await QuitAsync();
+        }
+        catch (Exception error)
+        {
+            _updateBusy = false;
+            ActivateUpdateButton.IsEnabled = true;
+            CheckUpdatesButton.IsEnabled = true;
+            ShowError(error.Message);
+        }
+    }
+
     private void OpenActivityAudit_Click(object sender, RoutedEventArgs e)
     {
         new ActivityAuditWindow(ProfileBox.Text.Trim()) { Owner = this }.ShowDialog();
@@ -348,8 +373,9 @@ public partial class MainWindow : Window
                     entry.Task.SessionId == selectedID) ?? entries.FirstOrDefault();
             }
             else _ = RefreshSelectedTaskAsync();
-            TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
-                "Synchronous commands count toward total capacity but are not individually cancellable here.";
+            TasksSummaryText.Text = tasks.Count(task => task.Active && task.State != "queued") +
+                " running or stopping (" + tasks.Count(task => task.Active && task.SessionId.StartsWith("sync-", StringComparison.Ordinal)) +
+                " short) · " + tasks.Count(task => task.State == "queued") + " queued.";
             var receipts = _runtime.DesktopReceiptSummary();
             var interrupted = receipts.GetValueOrDefault("interrupted");
             ReceiptStatusText.Text = interrupted > 0
@@ -538,13 +564,13 @@ public partial class MainWindow : Window
 
     private void OverviewTasks_Click(object sender, RoutedEventArgs e)
     {
-        MainTabs.SelectedIndex = 3;
+        MainTabs.SelectedItem = TasksTab;
         RefreshTasks();
     }
 
     private async void OverviewUpdates_Click(object sender, RoutedEventArgs e)
     {
-        MainTabs.SelectedItem = SettingsTab;
+        MainTabs.SelectedItem = PreferencesTab;
         await CheckUpdatesAsync(automatic: false);
     }
 
@@ -609,6 +635,7 @@ public partial class MainWindow : Window
         if (_updateBusy) return;
         _updateBusy = true;
         _availableUpdateVersion = null;
+        ActivateUpdateButton.IsEnabled = false;
         CheckUpdatesButton.IsEnabled = false;
         InstallUpdateButton.IsEnabled = false;
         UpdateStatusText.Text = "Checking official npm Registry…";
@@ -624,8 +651,9 @@ public partial class MainWindow : Window
             }
             if (DesktopUpdates.Installed(latest))
             {
+                ActivateUpdateButton.IsEnabled = true;
                 UpdateStatusText.Text = "v" + latest +
-                    " is already installed. Quit and reopen ChatToComputerMCP to use it.";
+                    " is already installed. Choose Activate update when idle.";
                 return;
             }
             UpdateStatusText.Text = "Update available: v" + DesktopUpdates.CurrentVersion +
@@ -656,13 +684,15 @@ public partial class MainWindow : Window
         _updateBusy = true;
         CheckUpdatesButton.IsEnabled = false;
         InstallUpdateButton.IsEnabled = false;
+        ActivateUpdateButton.IsEnabled = false;
         UpdateStatusText.Text = "Compiling v" + target +
             " into a separate version directory. Existing AI tasks remain running…";
         try
         {
             await DesktopUpdates.InstallAsync(target);
+            ActivateUpdateButton.IsEnabled = true;
             UpdateStatusText.Text = "v" + target +
-                " installed. Quit and reopen the app to use it; active tasks and tunnel were not restarted.";
+                " installed. Choose Activate update when idle; active tasks and tunnel were not restarted.";
         }
         catch (Exception ex)
         {
@@ -1172,9 +1202,9 @@ public partial class MainWindow : Window
     {
         if (DirectoryBox.Text.Trim().Length == 0) { MainTabs.SelectedItem = SettingsTab; ShowError("Choose a shared directory."); return false; }
         if (!ValidateApprovedFolders()) { MainTabs.SelectedItem = SettingsTab; return false; }
-        if (!LocalMcpRuntime.IsValidProfileName(ProfileBox.Text.Trim())) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters)."); return false; }
-        if (!int.TryParse(PortBox.Text.Trim(), out var port) || port is < 1 or > 65535) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("MCP port must be between 1 and 65535."); return false; }
-        if (LocalMcpRuntime.NormalizeHealthAddress(HealthAddressBox.Text.Trim()) is null) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535."); return false; }
+        if (!LocalMcpRuntime.IsValidProfileName(ProfileBox.Text.Trim())) { MainTabs.SelectedItem = PreferencesTab; AdvancedExpander.IsExpanded = true; ShowError("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters)."); return false; }
+        if (!int.TryParse(PortBox.Text.Trim(), out var port) || port is < 1 or > 65535) { MainTabs.SelectedItem = PreferencesTab; AdvancedExpander.IsExpanded = true; ShowError("MCP port must be between 1 and 65535."); return false; }
+        if (LocalMcpRuntime.NormalizeHealthAddress(HealthAddressBox.Text.Trim()) is null) { MainTabs.SelectedItem = PreferencesTab; AdvancedExpander.IsExpanded = true; ShowError("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535."); return false; }
         return true;
     }
 
@@ -1205,7 +1235,7 @@ public partial class MainWindow : Window
             saved.EnableGitPush,
             saved.EnableCodexHistory,
             saved.CaptureCommandHistoryContent,
-            saved.DefaultWorkspacePermissions);
+            saved.DefaultWorkspacePermissions, saved.PersistLongTasks);
     }
 
     private void SaveAllSettings()
@@ -1229,6 +1259,7 @@ public partial class MainWindow : Window
         _settings.GitUserEmail = GitEmailBox.Text.Trim();
         _settings.EnableCommands = EnableCommandsCheckBox.IsChecked == true;
         _settings.CaptureCommandHistoryContent = CaptureCommandHistoryBox.IsChecked == true;
+        _settings.PersistLongTasks = PersistLongTasksBox.IsChecked == true;
         _settings.EnableGitPush = EnableGitPushBox.IsChecked == true;
         _settings.EnableCodexHistory = EnableCodexHistoryBox.IsChecked == true;
         _settings.AdditionalWorkspaces = _workspaces.ToList();
@@ -1249,7 +1280,16 @@ public partial class MainWindow : Window
             case LocalMcpRuntimeStatus.Stopping:
                 ConnectButton.Content = "Disconnecting…"; ConnectButton.IsEnabled = false; break;
         }
+        FooterStatus.Text = state.Status switch {
+            LocalMcpRuntimeStatus.Running => "Gateway running",
+            LocalMcpRuntimeStatus.Starting => "Connecting / recovering",
+            LocalMcpRuntimeStatus.Stopping => "Disconnecting",
+            LocalMcpRuntimeStatus.Failed => "Connection failed",
+            _ => "Disconnected"
+        };
         var editable = state.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed;
+        SaveSettingsButton.IsEnabled = SaveSecurityButton.IsEnabled = SavePreferencesButton.IsEnabled = editable;
+        EnableCommandsCheckBox.IsEnabled = editable;
         WorkspaceListBox.IsEnabled = editable;
         WorkspaceNameBox.IsEnabled = editable;
         CommandCapacityBox.IsEnabled = editable;
@@ -1267,6 +1307,7 @@ public partial class MainWindow : Window
         EnableGitPushBox.IsEnabled = editable;
         EnableCodexHistoryBox.IsEnabled = editable;
         CaptureCommandHistoryBox.IsEnabled = editable;
+        PersistLongTasksBox.IsEnabled = editable;
         UpdateWorkspaceActionStates();
         DefaultPermissionButton.IsEnabled = editable;
         if (state.Status == LocalMcpRuntimeStatus.Running)
@@ -1349,7 +1390,7 @@ public partial class MainWindow : Window
     {
         if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
         if (e.Key == Key.W) { Hide(); e.Handled = true; }
-        else if (e.Key == Key.OemComma) { MainTabs.SelectedItem = SettingsTab; ShowFromTray(); e.Handled = true; }
+        else if (e.Key == Key.OemComma) { MainTabs.SelectedItem = PreferencesTab; ShowFromTray(); e.Handled = true; }
         else if (e.Key == Key.Q) { _ = QuitAsync(); e.Handled = true; }
     }
 

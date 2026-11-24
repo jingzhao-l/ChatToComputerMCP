@@ -27,7 +27,7 @@ internal static partial class Program
             while (watch.Elapsed < TimeSpan.FromSeconds(12))
             {
                 var value = await Call(full, "read_command_output", Obj(("session_id", id), ("cursor", cursor)));
-                if (value["state"]!.GetValue<string>() is not ("running" or "stopping")) return value;
+                if (value["state"]!.GetValue<string>() is not ("queued" or "running" or "stopping")) return value;
                 await Task.Delay(30);
             }
             throw new Exception("Command did not finish");
@@ -166,6 +166,25 @@ internal static partial class Program
             Assert((await Poll(replacement["session_id"]!.GetValue<string>()))["state"]!.GetValue<string>() == "cancelled", "replacement cancelled");
             utilization = await Call(full, "command_capacity_status");
             Assert(utilization["active_total"]!.GetValue<int>() == 0, "all independent sessions released");
+            var shortTask = full.CallAsync("run_command", Obj(("command", "[Console]::Write('desktop-sync-live'); Start-Sleep -Seconds 20"),
+                ("timeout_seconds", 25)), verifiedOwnerID: "desktop-sync-client");
+            watch.Restart();
+            DesktopCommandInfo? shortRow = null;
+            while (watch.Elapsed < TimeSpan.FromSeconds(8))
+            {
+                var row = full.DesktopCommandSnapshots("default", "Default").FirstOrDefault(item => item.Active && item.SessionId.StartsWith("sync-"));
+                if (row is not null && full.DesktopCommandOutput(row.SessionId)["output"]!.GetValue<string>().Contains("desktop-sync-live"))
+                { shortRow = row; break; }
+                await Task.Delay(50);
+            }
+            Assert(shortRow is not null, "short command exposes output before completion");
+            var shortID = shortRow!.SessionId;
+            await AssertThrowsAsync(() => Call(full, "read_command_output", Obj(("session_id", shortID))),
+                "session", "remote long-command API cannot read local short task ID");
+            full.CancelDesktopCommand(shortID);
+            try { await shortTask; throw new Exception("Cancelled short command reported success"); }
+            catch (OperationCanceledException) {}
+            Assert(full.DesktopCommandOutput(shortID)["state"]!.GetValue<string>() == "cancelled", "short command targeted cancellation");
             var cancel = await Call(full, "start_command", Obj(("request_id", "cancel"), ("command", "$child = Start-Process ping.exe -ArgumentList '-t 127.0.0.1' -PassThru -WindowStyle Hidden; $child.Id | Set-Content child.pid; Start-Sleep -Seconds 30")));
             var cancelId = cancel["session_id"]!.GetValue<string>();
             watch.Restart();
@@ -241,6 +260,23 @@ internal static partial class Program
         var bounded = history.Records().Single(r => r.Id == boundedId);
         Assert(bounded.Truncated && Encoding.UTF8.GetByteCount(bounded.Output!) <= CommandHistoryStore.ContentLimit,
             "bounded Unicode history");
+        var isolation = new LocalTools(root, "", "", true, enableGitPush: true,
+            enableCodexHistory: true, isolatedShellImage: "invalid-fixture-image");
+        Assert(isolation.ShellExecution == "isolated_linux", "isolated mode reported");
+        Assert(!isolation.HasTool("git_push") && !isolation.HasTool("save_conversation_to_codex"), "isolated mode blocks host privilege tools");
+        await AssertThrowsAsync(() => isolation.CallAsync("run_command", Obj(("command", "Set-Content isolation-escape bad"))),
+            "image", "invalid image does not fall back");
+        await AssertThrowsAsync(() => isolation.CallAsync("start_command", Obj(("request_id", "isolated-failure"),
+            ("command", "Set-Content isolation-escape bad"))), "image", "invalid long command does not fall back");
+        Assert(!File.Exists(Path.Combine(root, "isolation-escape")), "no host command executed");
+        if (Environment.GetEnvironmentVariable("MCP_TEST_ISOLATED_IMAGE") is string image)
+        {
+            var sandbox = new LocalTools(root, "", "", true, isolatedShellImage: image);
+            var result = await sandbox.CallAsync("run_command", Obj(("command",
+                "test ! -w /etc && printf isolated-ok && touch /workspace/isolation-write")));
+            Assert(result.StructuredContent.ToJsonString().Contains("isolated-ok") &&
+                File.Exists(Path.Combine(root, "isolation-write")), "actual isolated Linux execution");
+        }
         Console.WriteLine("local command history: ok");
         Console.WriteLine("agent tools: ok");
     }

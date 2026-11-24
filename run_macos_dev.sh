@@ -56,6 +56,7 @@ echo "Compiling full Swift macOS app ..."
     "$ROOT/macos/CommandReceiptLedger.swift" \
     "$ROOT/macos/CommandHistoryStore.swift" \
     "$ROOT/macos/ActivityAuditStore.swift" \
+    "$ROOT/macos/CommandSupervisor.swift" \
     "$ROOT/macos/CommandHistoryView.swift" \
     "$ROOT/macos/ActivityAuditView.swift" \
     "$ROOT/macos/LocalMCPRuntime.swift" \

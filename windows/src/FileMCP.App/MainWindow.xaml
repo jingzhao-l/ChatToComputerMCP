@@ -1,7 +1,7 @@
 <Window x:Class="FileMCP.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ChatToComputerMCP" Width="720" Height="650" MinWidth="640" MinHeight="520"
+        Title="ChatToComputerMCP" Width="1000" Height="720" MinWidth="820" MinHeight="560"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResize"
         Icon="Assets/chat-to-computer-mcp.ico">
     <Window.Resources>
@@ -24,7 +24,41 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TabControl x:Name="MainTabs" Grid.Row="0" Margin="0,0,0,12">
+        <TabControl x:Name="MainTabs" Grid.Row="0" Margin="0,0,0,12" TabStripPlacement="Left"
+                    BorderThickness="0" Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+            <TabControl.ItemContainerStyle>
+                <Style TargetType="TabItem">
+                    <Setter Property="Width" Value="155"/>
+                    <Setter Property="MinHeight" Value="40"/>
+                    <Setter Property="Margin" Value="0,1,10,1"/>
+                    <Setter Property="Padding" Value="12,8"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                    <Setter Property="FontSize" Value="13"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="TabItem">
+                                <Border x:Name="NavBackground" Background="Transparent" CornerRadius="6"
+                                        Padding="{TemplateBinding Padding}" BorderBrush="Transparent" BorderThickness="1">
+                                    <ContentPresenter ContentSource="Header" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="NavBackground" Property="Background" Value="{DynamicResource {x:Static SystemColors.ControlBrushKey}}"/>
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="NavBackground" Property="Background" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                    </Trigger>
+                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                        <Setter TargetName="NavBackground" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </TabControl.ItemContainerStyle>
             <TabItem Header="Overview" x:Name="OverviewTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="16">
@@ -184,14 +218,12 @@
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button x:Name="SaveConnectionButton" Content="Save connection"
                                     Margin="0,0,8,0" Click="SaveConnection_Click"/>
-                            <Button x:Name="ConnectButton" Content="Connect" Width="120"
-                                    Click="Connect_Click"/>
                         </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Settings" x:Name="SettingsTab">
+            <TabItem Header="Workspaces" x:Name="SettingsTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="16">
                         <Grid>
@@ -207,8 +239,17 @@
 
                         <TextBlock Text="Additional approved workspaces"
                                    FontWeight="SemiBold" Margin="0,16,0,7"/>
-                        <ListBox x:Name="WorkspaceListBox" Height="106" DisplayMemberPath="Name"
-                                 SelectionChanged="WorkspaceSelectionChanged"/>
+                        <ListBox x:Name="WorkspaceListBox" Height="148" SelectionChanged="WorkspaceSelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="3,4">
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Path}" FontSize="11" TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Path}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                         <TextBox x:Name="WorkspaceNameBox" Margin="0,7,0,6"
                                  ToolTip="Friendly name for the selected workspace (does not change its folder or ID)"/>
                         <WrapPanel>
@@ -230,19 +271,88 @@
                                 <ComboBoxItem Content="10"/><ComboBoxItem Content="12"/><ComboBoxItem Content="16"/>
                             </ComboBox>
                         </StackPanel>
-                        <CheckBox x:Name="EnableCommandsCheckBox" Margin="120,14,0,0" Content="Allow shell commands"
+                        <Button x:Name="SaveSettingsButton" Content="Save workspace" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Command center" x:Name="TasksTab">
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="170"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Margin="0,0,0,8">
+                        <TextBlock x:Name="TasksSummaryText"
+                                   Text="Connect to review tasks across approved workspaces."
+                                   TextWrapping="Wrap" Foreground="Gray"/>
+                        <TextBlock x:Name="ReceiptStatusText" Margin="0,5,0,0"
+                                   Text="Connect to view prior interrupted command receipts."
+                                   TextWrapping="Wrap" Foreground="DarkOrange"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
+                        <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
+                        <Button Content="History…" Click="OpenCommandHistory_Click" Margin="0,0,8,0"/>
+                        <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"
+                                IsEnabled="False" Margin="0,0,8,0"/>
+                        <Button x:Name="RevealTaskButton" Content="Open folder" Click="RevealTask_Click"
+                                IsEnabled="False" Margin="0,0,8,0"/>
+                        <Button x:Name="CopyTaskOutputButton" Content="Copy output" Click="CopyTaskOutput_Click"
+                                IsEnabled="False" ToolTip="Command output may contain secrets. Review before sharing."/>
+                    </StackPanel>
+                    <ListBox x:Name="TaskListBox" Grid.Row="2" DisplayMemberPath="Display"
+                             SelectionChanged="TaskSelectionChanged"/>
+                    <TextBlock x:Name="TaskDetailText" Grid.Row="3" Margin="0,8,0,0"
+                               TextWrapping="Wrap" Foreground="Gray"
+                               Text="Select a session to review its scope and status."/>
+                    <TextBox x:Name="TaskOutputBox" Grid.Row="4" Margin="0,9,0,0"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             FontFamily="Consolas" FontSize="11"
+                             ToolTip="Captured, bounded stdout/stderr of the selected command session; refreshes automatically while visible."/>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Activity">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Activity audit…" Click="OpenActivityAudit_Click" Margin="0,0,8,0"/>
+                        <TextBlock Text="Diagnostic logs (not the durable audit)" VerticalAlignment="Center" Foreground="Gray"/>
+                    </StackPanel>
+                    <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             FontFamily="Consolas" FontSize="11" Background="#191919" Foreground="White"/>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Security" x:Name="SecurityTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock Text="Permissions &amp; security" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                        <TextBlock Text="Global permissions are upper bounds. Individual workspace restrictions are managed in Workspaces. OAuth verifies a client grant, not a chat conversation." TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10"/>
+                        <CheckBox x:Name="EnableCommandsCheckBox" Margin="0,14,0,0" Content="Allow shell commands"
                                   ToolTip="Allow ChatToComputerMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
-                        <TextBlock Margin="120,5,0,0" Foreground="Gray" TextWrapping="Wrap"
+                        <TextBlock Margin="0,5,0,0" Foreground="Gray" TextWrapping="Wrap"
                                    Text="Allows ChatGPT to run PowerShell/CLI commands with the current Windows user's permissions. Enable only for workspaces you trust."/>
-                        <CheckBox x:Name="CaptureCommandHistoryBox" Margin="120,10,0,0"
+                        <CheckBox x:Name="PersistLongTasksBox" Margin="0,10,0,0" Content="Keep running commands through app restarts (stores bounded output)" ToolTip="Quitting preserves launched jobs; Disconnect cancels. Queued jobs are never replayed."/>
+                        <CheckBox x:Name="CaptureCommandHistoryBox" Margin="0,10,0,0"
                                   Content="Keep command text and output in local history"
                                   ToolTip="May contain secrets. Off by default; only local metadata is recorded unless you opt in."/>
                         <CheckBox x:Name="EnableGitPushBox" Content="Allow Git push to remote servers"
-                                  Margin="120,12,0,0"
+                                  Margin="0,12,0,0"
                                   ToolTip="Sends repository contents to configured remote servers and may use existing credentials. Disabled by default."/>
-                        <TextBlock Margin="120,4,0,0" Foreground="Gray" TextWrapping="Wrap"
+                        <TextBlock Margin="0,4,0,0" Foreground="Gray" TextWrapping="Wrap"
                                    Text="Git push can disclose source to remotes and requires separate approval."/>
 
+                        <Button x:Name="SaveSecurityButton" Content="Save permissions" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Settings" x:Name="PreferencesTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock Text="Application settings" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,8"/>
                         <Expander Header="Optional integrations" Margin="0,16,0,0">
                             <StackPanel Margin="0,8,0,0">
                                 <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow importing conversations into Codex history"
@@ -317,62 +427,13 @@
                                     Click="CheckUpdates_Click" Margin="0,0,8,0"/>
                             <Button x:Name="InstallUpdateButton" Content="Install update"
                                     Click="InstallUpdate_Click" IsEnabled="False"/>
+                            <Button x:Name="ActivateUpdateButton" Content="Activate update…" Margin="8,0,0,0"
+                                    Click="ActivateUpdate_Click" IsEnabled="False"/>
                         </StackPanel>
 
-                        <Button x:Name="SaveSettingsButton" Content="Save settings" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
+                        <Button x:Name="SavePreferencesButton" Content="Save settings" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
                     </StackPanel>
                 </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="Tasks" x:Name="TasksTab">
-                <Grid Margin="12">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
-                        <RowDefinition Height="170"/>
-                    </Grid.RowDefinitions>
-                    <StackPanel Grid.Row="0" Margin="0,0,0,8">
-                        <TextBlock x:Name="TasksSummaryText"
-                                   Text="Connect to review tasks across approved workspaces."
-                                   TextWrapping="Wrap" Foreground="Gray"/>
-                        <TextBlock x:Name="ReceiptStatusText" Margin="0,5,0,0"
-                                   Text="Connect to view prior interrupted command receipts."
-                                   TextWrapping="Wrap" Foreground="DarkOrange"/>
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
-                        <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
-                        <Button Content="History…" Click="OpenCommandHistory_Click" Margin="0,0,8,0"/>
-                        <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"
-                                IsEnabled="False" Margin="0,0,8,0"/>
-                        <Button x:Name="RevealTaskButton" Content="Open folder" Click="RevealTask_Click"
-                                IsEnabled="False" Margin="0,0,8,0"/>
-                        <Button x:Name="CopyTaskOutputButton" Content="Copy output" Click="CopyTaskOutput_Click"
-                                IsEnabled="False" ToolTip="Command output may contain secrets. Review before sharing."/>
-                    </StackPanel>
-                    <ListBox x:Name="TaskListBox" Grid.Row="2" DisplayMemberPath="Display"
-                             SelectionChanged="TaskSelectionChanged"/>
-                    <TextBlock x:Name="TaskDetailText" Grid.Row="3" Margin="0,8,0,0"
-                               TextWrapping="Wrap" Foreground="Gray"
-                               Text="Select a session to review its scope and status."/>
-                    <TextBox x:Name="TaskOutputBox" Grid.Row="4" Margin="0,9,0,0"
-                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
-                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                             FontFamily="Consolas" FontSize="11"
-                             ToolTip="Captured, bounded stdout/stderr of the selected command session; refreshes automatically while visible."/>
-                </Grid>
-            </TabItem>
-
-            <TabItem Header="Activity">
-                <Grid Margin="10">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button Content="Activity audit…" Click="OpenActivityAudit_Click" Margin="0,0,8,0"/>
-                        <TextBlock Text="Diagnostic logs (not the durable audit)" VerticalAlignment="Center" Foreground="Gray"/>
-                    </StackPanel>
-                    <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
-                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                             FontFamily="Consolas" FontSize="11" Background="#191919" Foreground="White"/>
-                </Grid>
             </TabItem>
         </TabControl>
 
@@ -381,9 +442,14 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" VerticalAlignment="Center" Foreground="Gray"
-                       Text="Closing the window keeps ChatToComputerMCP running in the system tray."/>
-            <Button Grid.Column="1" Content="Quit ChatToComputerMCP" Click="Quit_Click"/>
+            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                <TextBlock x:Name="FooterStatus" Text="Disconnected" FontWeight="SemiBold"/>
+                <TextBlock Foreground="Gray" FontSize="11" Text="Closing the window keeps the gateway in the tray." TextWrapping="Wrap"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button Content="Quit" Click="Quit_Click" Margin="0,0,8,0"/>
+                <Button x:Name="ConnectButton" Content="Connect" Width="126" Click="Connect_Click"/>
+            </StackPanel>
         </Grid>
     </Grid>
 </Window>

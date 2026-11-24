@@ -99,6 +99,7 @@ internal sealed class CuaService : IDisposable
     }
     private readonly Dictionary<string,ExtensionSession> _extensions=new(StringComparer.Ordinal);
     private readonly bool _guestMode;
+    private readonly bool _relayOnly;
     private readonly object _gate = new();
     private readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
     private readonly HashSet<string> _revoked = new(StringComparer.Ordinal);
@@ -121,14 +122,20 @@ internal sealed class CuaService : IDisposable
         ["set_window_frame"] = ["x","y","width","height"]
     };
 
-    internal CuaService(string? policyPath = null,bool guestMode=false)
+    internal CuaService(string? policyPath = null,bool guestMode=false,bool relayOnly=false)
     {
-        _guestMode=guestMode;
+        _guestMode=guestMode;_relayOnly=relayOnly;
         _policyPath = policyPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ChatToComputerMCP", "cua-policy.json");
         _timer = new Timer(_ => { try { Sweep(); } catch { /* fail closed at next admission */ } }, null, 1000, 1000);
     }
 
+    internal static bool ListenerAllows(string name,bool guest,bool relay)
+    {
+        if(guest)return name.StartsWith("cua_",StringComparison.Ordinal)&&!name.StartsWith("cua_extension_",StringComparison.Ordinal);
+        if(relay)return name is "cua_capabilities" or "cua_extension_list" or "cua_extension_open" or "cua_extension_call" or "cua_extension_close" or "cua_receipt_status";
+        return true;
+    }
     internal static JsonArray Definitions()
     {
         static JsonObject String() => new() { ["type"] = "string" };
@@ -195,6 +202,9 @@ internal sealed class CuaService : IDisposable
             policy.grants is null || policy.grants.Length > 64 || (policy.profiles?.Length ?? 0)>32 || (policy.profiles??[]).Select(p=>p.id).Distinct(StringComparer.Ordinal).Count()!=(policy.profiles?.Length??0) || policy.grants.Any(g => g is null || g.application is null || g.clients is null) ||
             policy.driverSHA256 is null || policy.driverSHA256.Length != 64 || !policy.driverSHA256.All(Uri.IsHexDigit))
             throw Fail("cua_disabled: invalid or disabled local policy");
+        if(_relayOnly&&(policy.grants.Length!=0||policy.requireVerifiedClient==true||policy.profiles is not {Length:1}||
+            policy.profiles[0].kind!="guest"||!policy.profiles[0].clients.SequenceEqual(new[]{SharedOwner})))
+            throw Fail("cua_relay_requires_one_dedicated_guest_no_host_grants");
         return (policy, bytes);
     }
 
@@ -576,6 +586,7 @@ internal sealed class CuaService : IDisposable
 
     internal async Task<ToolCallOutput> CallAsync(string name, JsonObject args, string? verifiedOwner, CancellationToken cancellation)
     {
+        if(!ListenerAllows(name,_guestMode,_relayOnly))throw Fail("cua_listener_scope_denied");
         var owner = verifiedOwner ?? SharedOwner;
         var def = Definitions().FirstOrDefault(x => x?["name"]?.GetValue<string>() == name);
         if (def?["inputSchema"] is not JsonObject schema || schema["properties"] is not JsonObject props ||
@@ -590,7 +601,7 @@ internal sealed class CuaService : IDisposable
             try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal));
                 enabled=(!requiresVerified||owner!=SharedOwner)&&(extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal))); } catch { }
             return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",
-                ["identity"] = _guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["requires_verified_client"]=requiresVerified,
+                ["identity"] = _relayOnly?"dedicated_relay_credential":_guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["relay_only"]=_relayOnly,["host_tools_allowed"]=!_guestMode&&!_relayOnly,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
                 ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["extension_profiles_enabled"]=extEnabled });
         }

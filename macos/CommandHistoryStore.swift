@@ -19,14 +19,14 @@ struct CommandHistoryRecord: Codable, Equatable {
     var output: String?
     var truncated: Bool
 
-    var isTerminal: Bool { state != "running" }
+    var isTerminal: Bool { state != "running" && state != "queued" }
 }
 
 final class CommandHistoryStore {
     static let maxCompleted = 200
     static let retentionDays = 30
     static let contentLimit = 65_536
-    private static let states = Set(["running", "exited", "cancelled", "timed_out", "launch_failed", "interrupted"])
+    private static let states = Set(["queued", "running", "exited", "cancelled", "timed_out", "launch_failed", "interrupted"])
     let captureContent: Bool
     private let directory: URL
     private let lock = NSLock()
@@ -61,7 +61,7 @@ final class CommandHistoryStore {
     @discardableResult
     func begin(id: UUID = UUID(), workspaceID: String, workspaceName: String,
                cwd: String, kind: String, requestID: String?, clientID: String?,
-               command: String) throws -> UUID {
+               command: String, queued: Bool = false) throws -> UUID {
         lock.lock(); defer { lock.unlock() }
         guard recordsByID[id] == nil else { throw CommandReceiptLedger.LedgerError.duplicateRequest }
         let now = Date()
@@ -69,17 +69,45 @@ final class CommandHistoryStore {
         let record = CommandHistoryRecord(id: id, workspaceID: workspaceID,
             workspaceName: workspaceName, cwd: cwd, kind: kind, requestID: requestID,
             clientID: clientID == "__local_admin__" ? nil : clientID,
-            startedAt: now, updatedAt: now, state: "running", exitCode: nil,
+            startedAt: now, updatedAt: now, state: queued ? "queued" : "running", exitCode: nil,
             command: text?.0, output: nil, truncated: text?.1 ?? false)
         try persist(record)
         recordsByID[id] = record
         return id
     }
 
+    func reconcileSupervised(_ job: SupervisedCommandJob, status: SupervisedCommandStatus) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var record = recordsByID[job.record.historyID] else { return }
+        let metadata = job.record
+        guard record.workspaceID == metadata.scopeID, record.cwd == metadata.cwd,
+              record.requestID == metadata.requestID,
+              record.clientID == (metadata.ownerID == "__local_admin__" ? nil : metadata.ownerID)
+        else { throw CommandReceiptLedger.LedgerError.invalidStore }
+        if record.isTerminal && record.state != "interrupted" { return }
+        record.state = status.terminal ? status.state : "running"
+        record.exitCode = status.exitCode
+        record.updatedAt = Date()
+        if captureContent && status.terminal {
+            let output = Self.bounded(status.chunks.map(\.text).joined())
+            record.output = output.0
+            record.truncated = record.truncated || output.1 || (status.chunks.first?.cursor ?? 1) > 1
+        }
+        try persist(record); recordsByID[record.id] = record
+        try prune()
+    }
+
+    func markRunning(id: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var record = recordsByID[id], record.state == "queued" else { throw CommandReceiptLedger.LedgerError.missingReceipt }
+        record.state = "running"; record.updatedAt = Date()
+        try persist(record); recordsByID[id] = record
+    }
+
     func finish(id: UUID, state: String, exitCode: Int32?, output: String = "",
                 truncated: Bool = false) throws {
         lock.lock(); defer { lock.unlock() }
-        guard Self.states.contains(state), state != "running",
+        guard Self.states.contains(state), state != "running", state != "queued",
               var record = recordsByID[id], !record.isTerminal else {
             throw CommandReceiptLedger.LedgerError.missingReceipt
         }

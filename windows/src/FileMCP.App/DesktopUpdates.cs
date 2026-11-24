@@ -122,12 +122,54 @@ internal static class DesktopUpdates
         return File.Exists(program);
     }
 
+    internal static string ActivationExecutable(string version, string? releases = null)
+    {
+        if (!ValidVersion(version)) throw new ArgumentException("Invalid release version");
+        var root = releases ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ChatToComputerMCP", "releases");
+        var directory = Path.Combine(root, version);
+        var executable = Path.Combine(directory, "ChatToComputerMCP.exe");
+        if (!Directory.Exists(directory) || !File.Exists(executable) ||
+            (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0 ||
+            (File.GetAttributes(executable) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("Installed release is missing or linked");
+        var info = FileVersionInfo.GetVersionInfo(executable);
+        var installedVersion = $"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}";
+        if (!string.Equals(installedVersion, version, StringComparison.Ordinal))
+            throw new IOException("Installed executable version does not match");
+        return executable;
+    }
+
+    // Use a fixed, noninteractive helper with a base64-encoded data-only path.
+    // It never terminates the old process, and refuses to launch if it stays alive.
+    internal static void ScheduleActivation(string version)
+    {
+        var executable = ActivationExecutable(version);
+        var pathData = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(executable));
+        var script = "$ErrorActionPreference='Stop'; " +
+            "$target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + pathData + "')); " +
+            "$old=Get-Process -Id " + Environment.ProcessId + " -ErrorAction SilentlyContinue; " +
+            "if ($old -and !$old.WaitForExit(60000)) { exit 1 }; " +
+            "Start-Process -FilePath $target -WorkingDirectory ([IO.Path]::GetDirectoryName($target))";
+        var command = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+        var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell", "v1.0", "powershell.exe");
+        var start = new ProcessStartInfo { FileName = powershell, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", command })
+            start.ArgumentList.Add(argument);
+        using var helper = Process.Start(start) ?? throw new IOException("Could not schedule update activation");
+    }
+
     internal static async Task InstallAsync(string version)
     {
         if (!ValidVersion(version)) throw new ArgumentException("Invalid release version");
         var arguments = "npm exec --yes --registry=" + Registry +
             " --package=" + PackageName + "@" + version +
             " -- chat-to-computer-mcp install";
+        var isolated = Path.Combine(Path.GetTempPath(), "ctcmcp-gui-official-update-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(isolated);
+        try
+        {
         using var child = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -135,6 +177,7 @@ internal static class DesktopUpdates
                 FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                WorkingDirectory = isolated,
                 Arguments = "/d /s /c \"" + arguments + "\"",
                 RedirectStandardInput = false,
                 RedirectStandardOutput = false,
@@ -146,5 +189,7 @@ internal static class DesktopUpdates
         await child.WaitForExitAsync();
         if (child.ExitCode != 0 || !Installed(version))
             throw new IOException("Native build failed. Run 'chat-to-computer-mcp update install' in a terminal to see npm logs.");
+        }
+        finally { try { Directory.Delete(isolated, true); } catch { } }
     }
 }

@@ -31,6 +31,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private readonly string? _publicHost;
     private readonly CuaService _cua;
     private readonly bool _cuaGuest;
+    private readonly bool _cuaRelayOnly;
     private readonly object _ownerGate = new();
     private readonly SemaphoreSlim _ownerAdmission = new(1, 1);
     private readonly Dictionary<string, string> _ownerBySession = new(StringComparer.Ordinal);
@@ -58,12 +59,12 @@ public sealed class LocalMcpServer : IAsyncDisposable
         bool enableGitPush = false, bool enableCodexHistory = false,
         CommandHistoryStore? commandHistory = null,
         WorkspacePermissions? defaultWorkspacePermissions = null,
-        ActivityAuditStore? activityAudit = null, bool cuaGuest = false, string? cuaPolicyPath = null)
+        ActivityAuditStore? activityAudit = null, CommandSupervisor? commandSupervisor = null, bool cuaGuest = false, string? cuaPolicyPath = null, bool cuaRelayOnly = false)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
-        if(cuaGuest&&(enableCommands||enableGitPush||enableCodexHistory||additionalWorkspaces?.Count>0||oauth is not null||publicHost is not null))
+        if((cuaGuest||cuaRelayOnly)&&(enableCommands||enableGitPush||enableCodexHistory||additionalWorkspaces?.Count>0||oauth is not null||publicHost is not null||commandSupervisor is not null||(cuaGuest&&cuaRelayOnly)))
             throw new FileMcpException("Isolated guest gateway is CUA-only and loopback-only");
-        _cuaGuest=cuaGuest;_cua=new CuaService(policyPath:cuaPolicyPath,guestMode:cuaGuest);
+        _cuaGuest=cuaGuest;_cuaRelayOnly=cuaRelayOnly;_cua=new CuaService(policyPath:cuaPolicyPath,guestMode:cuaGuest,relayOnly:cuaRelayOnly);
         _port = port; _localAuthToken = localAuthToken; _log = log;
         _oauth = oauth;
         _activityAudit = activityAudit;
@@ -86,13 +87,15 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 enableGitPush: enableGitPush && (definition.Permissions?.AllowGitPush ?? true),
                 enableCodexHistory: enableCodexHistory && (definition.Permissions?.AllowCodexHistory ?? true),
                 workspaceName: definition.Name, commandHistory: commandHistory,
-                allowWrite: definition.Permissions?.AllowWrite ?? true);
+                allowWrite: definition.Permissions?.AllowWrite ?? true,
+                isolatedShellImage: definition.Permissions?.IsolatedShellImage, commandSupervisor: commandSupervisor);
         };
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
             enableCommands && (defaultWorkspacePermissions?.AllowShell ?? true), sharedBudget: budget, receiptLedger: receiptLedger,
             workspaceScopeID: "default", enableGitPush: enableGitPush && (defaultWorkspacePermissions?.AllowGitPush ?? true),
             enableCodexHistory: enableCodexHistory && (defaultWorkspacePermissions?.AllowCodexHistory ?? true),
-            commandHistory: commandHistory, allowWrite: defaultWorkspacePermissions?.AllowWrite ?? true);
+            commandHistory: commandHistory, allowWrite: defaultWorkspacePermissions?.AllowWrite ?? true,
+            isolatedShellImage: defaultWorkspacePermissions?.IsolatedShellImage, commandSupervisor: commandSupervisor);
         var roots = new List<string> { _tools.WorkspaceRoot };
         var additional = additionalWorkspaces ?? [];
         if (additional.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
@@ -110,6 +113,22 @@ public sealed class LocalMcpServer : IAsyncDisposable
             roots.Add(canonical);
             _catalog.Add(definition.Id, (definition, scoped));
         }
+        if (commandSupervisor is not null)
+            foreach (var job in commandSupervisor.Jobs())
+            {
+                var record = job.Record;
+                var scoped = record.ScopeId == "default" ? _tools : _catalog.TryGetValue(record.ScopeId, out var item) ? item.Tools : null;
+                var permitted = record.OwnerId == "__local_admin__" ? oauth is null :
+                    oauth?.ApprovedClients().Any(client => client.Id == record.OwnerId && client.Workspaces.Contains(record.ScopeId)) == true;
+                var status = job.ReadStatus();
+                if (scoped is not null && permitted && scoped.CanRestore(job)) scoped.Restore(job, status);
+                else if (!status.Terminal)
+                {
+                    job.RequestCancel(); var until = DateTime.UtcNow.AddSeconds(8);
+                    while (!job.ReadStatus().Terminal && DateTime.UtcNow < until) Thread.Sleep(50);
+                    if (!job.ReadStatus().Terminal) throw new FileMcpException("Unapproved supervised job did not stop");
+                }
+            }
     }
 
     private static bool OverlappingRoots(string one, string two) =>
@@ -196,7 +215,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     private JsonArray PublishedToolDefinitionsLocked(WindowsOAuthServer.VerifiedClient? verified)
     {
-        if(_cuaGuest)return new JsonArray(CuaService.Definitions().Where(d=>d?["name"]?.GetValue<string>()?.StartsWith("cua_extension_",StringComparison.Ordinal)==false).Select(d=>d!.DeepClone()).ToArray());
+        if(_cuaGuest||_cuaRelayOnly)return new JsonArray(CuaService.Definitions().Where(d=>CuaService.ListenerAllows(d?["name"]?.GetValue<string>()??"",_cuaGuest,_cuaRelayOnly)).Select(d=>d!.DeepClone()).ToArray());
         var tools = new JsonArray();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var scope in new[] { _tools }.Concat(_approved
@@ -211,6 +230,20 @@ public sealed class LocalMcpServer : IAsyncDisposable
             };
         }
         foreach (var definition in CuaService.Definitions()) tools.Add(definition!.DeepClone());
+        tools.Add(new JsonObject {
+            ["name"] = "connection_identity",
+            ["description"] = "Report server-verified principal and allowed workspace IDs. OAuth verifies a client grant, not a chat conversation. Shared tunnel credentials are not individual identities.",
+            ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray(), ["additionalProperties"] = false },
+            ["outputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject {
+                ["authentication_mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("verified_oauth_client", "shared_connection") },
+                ["verified_client_id"] = new JsonObject { ["type"] = new JsonArray("string", "null") },
+                ["conversation_authenticated"] = new JsonObject { ["type"] = "boolean" },
+                ["task_ownership"] = new JsonObject { ["type"] = "string" },
+                ["allowed_workspace_ids"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } }
+            }, ["required"] = new JsonArray("authentication_mode", "verified_client_id", "conversation_authenticated", "task_ownership", "allowed_workspace_ids"),
+            ["additionalProperties"] = false },
+            ["annotations"] = new JsonObject { ["readOnlyHint"] = true, ["destructiveHint"] = false, ["openWorldHint"] = false }
+        });
         tools.Add(new JsonObject
         {
             ["name"] = "list_workspaces",
@@ -224,9 +257,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
                             ["id"] = new JsonObject { ["type"] = "string" },
                             ["name"] = new JsonObject { ["type"] = "string" },
                             ["path"] = new JsonObject { ["type"] = "string" },
+                            ["shell_execution"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("disabled", "host", "isolated_linux") },
                             ["allowed_tools"] = new JsonObject { ["type"] = "array",
                                 ["items"] = new JsonObject { ["type"] = "string" } } },
-                        ["required"] = new JsonArray("id", "name", "path", "allowed_tools") } } },
+                        ["required"] = new JsonArray("id", "name", "path", "shell_execution", "allowed_tools") } } },
                 ["required"] = new JsonArray("workspaces"), ["additionalProperties"] = false },
             ["annotations"] = new JsonObject { ["readOnlyHint"] = true, ["destructiveHint"] = false,
                 ["openWorldHint"] = false }
@@ -268,17 +302,19 @@ public sealed class LocalMcpServer : IAsyncDisposable
         // Revoke server token families before touching subprocesses.
         oauth.RevokeClient(id);
         _cua.Revoke(id);
-        string[] owned;
-        lock (_ownerGate)
-            owned = _ownerBySession.Where(item => item.Value == id)
-                .Select(item => item.Key).ToArray();
-        foreach (var sessionID in owned)
+        foreach (var scope in new[] { _tools }.Concat(_approved.Values.Select(x => x.Tools)))
+            scope.CancelOwnedCommands(id);
+    }
+
+    internal void FreezeForIdleActivation(Action schedule)
+    {
+        lock (_workspaceGate)
         {
-            foreach (var scope in new[] { _tools }.Concat(_approved.Values.Select(x => x.Tools)))
-            {
-                try { scope.CancelDesktopCommand(sessionID); break; }
-                catch (FileMcpException) { /* session belongs to another scope */ }
-            }
+            if (_catalogStopped || _workspaceLeases.Values.Any(value => value != 0) || _commandBudget.HasActiveCommands())
+                throw new FileMcpException("Active or queued work remains. Finish it before activating an update.");
+            _catalogStopped = true;
+            try { schedule(); }
+            catch { _catalogStopped = false; throw; }
         }
     }
 
@@ -337,13 +373,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
         }
     }
 
-    public void Stop()
+    public void Stop(bool preserveSupervised = false)
     {
         _cua.Stop();
         LocalTools[] scopes;
         lock (_workspaceGate) { _catalogStopped = true; scopes = _catalog.Values.Select(item => item.Tools).ToArray(); }
-        _tools.StopCommandSessions();
-        foreach (var scoped in scopes) scoped.StopCommandSessions();
+        _tools.StopCommandSessions(preserveSupervised);
+        foreach (var scoped in scopes) scoped.StopCommandSessions(preserveSupervised);
         IsReady = false;
         try { _cts?.Cancel(); } catch { }
         try { _listener?.Stop(); } catch { }
@@ -567,7 +603,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         CancellationToken cancellationToken, WindowsOAuthServer.VerifiedClient? verified = null)
     {
         if (parameters["name"] is not JsonValue nameNode || !nameNode.TryGetValue<string>(out var name)) return JsonRpcError(id, -32602, "Missing tool name", status: modern ? 400 : 200);
-        if (!PublishedToolDefinitions(verified).Any(d=>d?["name"]?.GetValue<string>()==name))
+        if (!CuaService.ListenerAllows(name,_cuaGuest,_cuaRelayOnly)||!PublishedToolDefinitions(verified).Any(d=>d?["name"]?.GetValue<string>()==name))
             return JsonRpcError(id, -32602, $"Unknown tool: {name}");
         JsonObject arguments;
         if (parameters["arguments"] is null) arguments = new JsonObject();
@@ -589,14 +625,32 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 if(verified is not null && (_oauth is null || !_oauth.IsCurrent(verified)))throw new FileMcpException("OAuth authorization changed");
                 output = await _cua.CallAsync(name, arguments, verified?.Id, cuaCancellation.Token).ConfigureAwait(false);
             }
+            else if (name == "connection_identity")
+            {
+                lock (_workspaceGate)
+                {
+                    if (_catalogStopped || arguments.Count != 0) throw new FileMcpException("Identity query takes no arguments");
+                    if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified))
+                        throw new FileMcpException("OAuth authorization changed; reconnect client");
+                    var ids = new JsonArray("default");
+                    foreach (var scope in _catalog.Keys.Where(id => verified is null || verified.Workspaces.Contains(id)).OrderBy(id => id, StringComparer.Ordinal)) ids.Add(scope);
+                    var payload = new JsonObject {
+                        ["authentication_mode"] = verified is null ? "shared_connection" : "verified_oauth_client",
+                        ["verified_client_id"] = verified?.Id, ["conversation_authenticated"] = false,
+                        ["task_ownership"] = verified is null ? "shared_credential" : "oauth_client_grant", ["allowed_workspace_ids"] = ids
+                    };
+                    output = new ToolCallOutput(new JsonArray(new JsonObject { ["type"] = "text", ["text"] = payload.ToJsonString() }), payload);
+                }
+            }
             else if (name == "list_workspaces")
             {
                 lock (_workspaceGate)
                 {
+                if (_catalogStopped) throw new FileMcpException("Runtime is stopping");
                 if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified))
                     throw new FileMcpException("OAuth authorization changed; reconnect client");
                 var listed = new JsonArray {
-                    new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot,
+                    new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot, ["shell_execution"] = _tools.ShellExecution,
                         ["allowed_tools"] = AllowedTools(_tools) }
                 };
                 foreach (var (_, item) in _approved
@@ -605,7 +659,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 {
                     listed.Add(new JsonObject {
                         ["id"] = item.Definition.Id, ["name"] = item.Definition.Name,
-                        ["path"] = item.Tools.WorkspaceRoot, ["allowed_tools"] = AllowedTools(item.Tools) });
+                        ["path"] = item.Tools.WorkspaceRoot, ["shell_execution"] = item.Tools.ShellExecution, ["allowed_tools"] = AllowedTools(item.Tools) });
                 }
                 var text = listed.ToJsonString();
                 output = new ToolCallOutput(new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
@@ -707,7 +761,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             var session = args["session_id"]?.GetValue<string>() ?? "";
             lock (_ownerGate)
             {
-                if (!_ownerBySession.TryGetValue(session, out var owner) || owner != verified.Id)
+                if (!scoped.OwnsCommandSession(session, verified.Id))
                     throw new FileMcpException("Command belongs to another authenticated client");
             }
         }

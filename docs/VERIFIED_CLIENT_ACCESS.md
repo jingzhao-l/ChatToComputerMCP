@@ -50,12 +50,16 @@ CUA offers a local fail-closed option, `chat-to-computer-mcp cua require-verifie
 
 ## Other limits
 
-- Both native platforms implement Cloudflare OAuth client authorization and local client management. The shared OpenAI Secure MCP Tunnel configuration remains connection-level.
-- The shell runs with the computer user's OS privileges. A cwd overlap guard
-  is not an OS sandbox.
-- Command session ownership is still runtime-bound. Durable command receipts
-  prevent accidental replay after restart, but cannot reattach orphaned
-  processes or their lost output streams.
+- Both native GUIs manage Cloudflare OAuth clients. The OpenAI shared tunnel
+  remains a single connection principal, not an authenticated chat identity.
+- The default host shell runs with the current user's privileges. Optional
+  isolated Linux execution uses a separately approved Docker image with
+  restricted mounts and no network; the cwd overlap guard is not a sandbox.
+- connection_identity reports the verified principal and grant scope;
+  list_my_commands lists sessions of that principal only.
+- Independent worker mode can recover a live worker across gateway restarts,
+  subject to the original owner, durable receipt and current workspace grant.
+  An OS reboot or worker loss is not live recovery.
 
 ## Testing
 
@@ -64,3 +68,15 @@ default-only backward compatibility, scope forgery rejection, independent
 workspace routing, cross-client output/cancel denial, request-ID collision
 refusal, and revocation. A deployment still needs real authenticated client
 end-to-end verification before claiming production isolation.
+
+### Dedicated execution domains
+
+For clients without a trustworthy per-conversation identity assertion, a
+dedicated connector and credential can be assigned to a separate execution
+domain. The new CUA relay-only listener enforces a single Guest profile and
+rejects all host file/shell/Git/workspace and native desktop routes. See
+[dedicated relay execution domains](CUA.md#dedicated-relay-execution-domains-no-host-tool-fallback).
+A separate credential verifies access to that domain, never that a particular
+cloud conversation originated the call. Use distinct trusted VMs or restricted
+OS accounts for a strong resource boundary; do not grant a restricted caller
+another route to the general-purpose host gateway.

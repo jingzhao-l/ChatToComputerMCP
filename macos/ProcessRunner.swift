@@ -90,7 +90,8 @@ final class ProcessRunner {
         timeoutSeconds: Int,
         outputLimitBytes: Int = defaultOutputLimitBytes,
         maxTimeoutSeconds: Int = maxCommandTimeoutSeconds,
-        shouldCancel: (() -> Bool)? = nil
+        shouldCancel: (() -> Bool)? = nil,
+        onOutput: ((Data, Bool) -> Void)? = nil
     ) throws -> ProcessResult {
         let handles = try spawn(
             executable: executable,
@@ -102,8 +103,8 @@ final class ProcessRunner {
         let stdoutBuffer = BoundedDataBuffer(limit: outputLimitBytes)
         let stderrBuffer = BoundedDataBuffer(limit: outputLimitBytes)
         let readers = DispatchGroup()
-        drain(handles.stdoutRead, into: stdoutBuffer, group: readers)
-        drain(handles.stderrRead, into: stderrBuffer, group: readers)
+        drain(handles.stdoutRead, into: stdoutBuffer, group: readers, onOutput: { onOutput?($0, false) })
+        drain(handles.stderrRead, into: stderrBuffer, group: readers, onOutput: { onOutput?($0, true) })
 
         let timeout = max(1, min(timeoutSeconds, maxTimeoutSeconds))
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
@@ -299,18 +300,22 @@ final class ProcessRunner {
     private static func drain(
         _ handle: FileHandle,
         into buffer: BoundedDataBuffer,
-        group: DispatchGroup
+        group: DispatchGroup,
+        onOutput: ((Data) -> Void)? = nil
     ) {
         group.enter()
         readerQueue.async {
             defer { group.leave() }
-            do {
-                while let chunk = try handle.read(upToCount: 16_384), !chunk.isEmpty {
-                    buffer.append(chunk)
-                }
-            } catch {
-                // The owner may close the descriptor after process-group cleanup.
-                // Treat that close race like EOF instead of letting FileHandle abort.
+            // POSIX read delivers available bytes without waiting for a full
+            // Foundation read buffer, so short commands stream immediately.
+            var bytes = [UInt8](repeating: 0, count: 16_384)
+            while true {
+                let count = Darwin.read(handle.fileDescriptor, &bytes, bytes.count)
+                if count < 0 && errno == EINTR { continue }
+                if count <= 0 { break }
+                let chunk = Data(bytes.prefix(count))
+                buffer.append(chunk)
+                onOutput?(chunk)
             }
         }
     }

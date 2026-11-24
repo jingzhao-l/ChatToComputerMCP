@@ -102,15 +102,17 @@ public static class ProcessRunner
         int timeoutSeconds = DefaultCommandTimeoutSeconds,
         int outputLimitBytes = DefaultOutputLimitBytes,
         CancellationToken cancellationToken = default,
-        bool utf8Output = false)
+        bool utf8Output = false,
+        Action<string, bool>? onOutput = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ValidateProcessStrings(executable, arguments, cwd, environment);
         var process = StartProcess(executable, arguments, cwd, environment, utf8Output);
         using var job = WindowsJob.CreateAndAssign(process);
         var stdout = new BoundedTextBuffer(outputLimitBytes);
         var stderr = new BoundedTextBuffer(outputLimitBytes);
-        var stdoutTask = DrainAsync(process.StandardOutput, stdout);
-        var stderrTask = DrainAsync(process.StandardError, stderr);
+        var stdoutTask = DrainAsync(process.StandardOutput, stdout, text => onOutput?.Invoke(text, false));
+        var stderrTask = DrainAsync(process.StandardError, stderr, text => onOutput?.Invoke(text, true));
 
         var timeout = Math.Max(1, Math.Min(timeoutSeconds, MaxCommandTimeoutSeconds));
         var timedOut = false;
@@ -241,7 +243,7 @@ public static class ProcessRunner
         }
     }
 
-    private static async Task DrainAsync(StreamReader reader, BoundedTextBuffer buffer)
+    private static async Task DrainAsync(StreamReader reader, BoundedTextBuffer buffer, Action<string>? onOutput = null)
     {
         var chars = new char[8192];
         while (true)
@@ -252,6 +254,7 @@ public static class ProcessRunner
                 return;
             }
             buffer.Append(chars.AsSpan(0, read));
+            onOutput?.Invoke(new string(chars, 0, read));
         }
     }
 

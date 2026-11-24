@@ -9,6 +9,6 @@ import Foundation
 try runAgentToolChecks(rootPath: CommandLine.arguments[1])
 SWIFT
 swiftc -module-cache-path "${SWIFT_MODULECACHE_PATH:-$TEST_DIR/cache}" \
-    -framework Network -o "$TEST_DIR/check" macos/ProcessRunner.swift macos/Ripgrep.swift macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/CUA.swift macos/CommandHistoryStore.swift macos/ActivityAuditStore.swift \
+    -framework Network -o "$TEST_DIR/check" macos/ProcessRunner.swift macos/Ripgrep.swift macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/CUA.swift macos/CommandHistoryStore.swift macos/ActivityAuditStore.swift macos/CommandSupervisor.swift \
     "$TEST_DIR/LocalMCPServer.swift" "$TEST_DIR/main.swift"
 FILEMCP_RG="$PWD/vendor/ripgrep/darwin-arm64/rg" "$TEST_DIR/check" "$TEST_DIR/workspace"

@@ -9,6 +9,9 @@ export const extensionHelp=[
   'cua browser-grant --profile <id> --origin <origin> --client <id> (repeat --origin; optional --allow-files)',
   'cua guest-init --port <port> --confirm-isolated-desktop (inside a dedicated guest)',
   'cua guest-serve                    Run CUA-only guest listener inside that guest',
+  'cua relay-init --domain <id> --port <listener-port> --guest-port <forwarded-port> --token-file <private-guest-token> --confirm-dedicated-guest',
+  'cua relay-serve --domain <id>       Run an independent guest-only relay listener',
+  'cua relay-status --domain <id>      Inspect relay configuration (never print token contents)',
   'cua guest-grant --profile <id> --port <forwarded-port> --token-file <file> --client <id>',
   'cua profile-revoke --profile <id> --client <id>',
   'cua vm status|start|stop --profile <id> (registered Lume/Hyper-V VM)',
@@ -112,6 +115,53 @@ function guestInit(args,h){
   catch(e){fs.rmSync(credential,{force:true});throw e}
   console.log('Dedicated guest configured. Keep its credential file private.');
 }
+function relayDirectory(h,domain){
+  return path.join(h.root(),'cua-relays',id(domain));
+}
+function relayInit(args,h){
+  if(!args.includes('--confirm-dedicated-guest'))throw Error('Confirm a dedicated guest not shared with other execution domains');
+  const o=options(args.filter(x=>x!=='--confirm-dedicated-guest'),['--domain','--port','--guest-port','--token-file']);
+  const domain=id(o['--domain']),listener=port(o['--port']),guestPort=port(o['--guest-port']);
+  if(listener===guestPort)throw Error('Listener and guest forwarding ports must differ');
+  const tokenFile=regularFile(o['--token-file']);
+  const st=fs.lstatSync(tokenFile);
+  if(st.size!==65||process.platform!=='win32'&&((st.mode&0o077)!==0||st.uid!==process.getuid()))
+    throw Error('Use a private dedicated guest credential file');
+  const guestDigest=crypto.createHash('sha256').update(fs.readFileSync(tokenFile)).digest('hex');
+  const parent=path.join(h.root(),'cua-relays');
+  fs.mkdirSync(parent,{recursive:true,mode:0o700});
+  const lock=path.join(parent,'.registry-lock');
+  fs.mkdirSync(lock,{mode:0o700});
+  let created=false;
+  const destination=relayDirectory(h,domain);
+  try{
+    for(const item of fs.readdirSync(parent,{withFileTypes:true})){
+      if(item.name==='.registry-lock')continue;
+      if(!item.isDirectory()||item.isSymbolicLink())throw Error('Unsafe relay registry entry');
+      const old=JSON.parse(fs.readFileSync(path.join(parent,item.name,'relay.json'),'utf8'));
+      if(old.port===listener||old.port===guestPort||old.guestPort===listener||old.guestPort===guestPort||old.guestDigest===guestDigest)
+        throw Error('Each execution domain requires distinct ports and a distinct dedicated guest credential');
+    }
+    const ordinary=h.readPolicy();
+    if((ordinary?.profiles??[]).some(p=>p.kind==='guest'&&(p.port===guestPort||p.tokenFile===tokenFile)))
+      throw Error('Guest is already registered with the ordinary gateway; use a different dedicated guest');
+    fs.mkdirSync(destination,{mode:0o700});created=true;
+    h.writePrivate(path.join(destination,'relay-token'),crypto.randomBytes(32).toString('hex')+'\n');
+    h.writePrivate(path.join(destination,'cua-policy.json'),JSON.stringify({
+      enabled:true,...h.installedDriver(),extensionRuntime:runtime(h),grants:[],
+      profiles:[{id:domain,kind:'guest',port:guestPort,tokenFile,clients:['shared-connection']}]
+    })+'\n');
+    h.writePrivate(path.join(destination,'relay.json'),JSON.stringify({domain,port:listener,guestPort,guestDigest,dedicatedGuestConfirmed:true})+'\n');
+    console.log('Dedicated relay configured. Use a distinct tunnel/connector for this domain; do not share its credential.');
+    console.log('Private credential file: '+path.join(destination,'relay-token'));
+  }catch(e){if(created)fs.rmSync(destination,{recursive:true,force:true});throw e}
+  finally{fs.rmdirSync(lock)}
+}
+function relayStatus(args,h){
+  const o=options(args,['--domain']),domain=id(o['--domain']);
+  const config=JSON.parse(fs.readFileSync(path.join(relayDirectory(h,domain),'relay.json'),'utf8'));
+  console.log(JSON.stringify({domain,port:config.port,guestPort:config.guestPort,credential:'private_file',relayOnly:true,conversationAuthenticated:false},null,2));
+}
 function revoke(args,h){
   const o=options(args,['--profile','--client']),p=h.readPolicy();
   const profile=id(o['--profile']),owner=client(o['--client']);
@@ -199,7 +249,7 @@ function vm(args,h){
   }else throw Error('VM provider not supported on this host');
 }
 export function extensionCommand(action,args,h){
-  const handler={'extension-install':install,'browser-grant':browserGrant,'guest-grant':guestGrant,'guest-init':guestInit,'guest-connect':guestConnect,'profile-revoke':revoke,'vm':vm}[action];
+  const handler={'extension-install':install,'browser-grant':browserGrant,'guest-grant':guestGrant,'guest-init':guestInit,'guest-connect':guestConnect,'relay-init':relayInit,'relay-status':relayStatus,'profile-revoke':revoke,'vm':vm}[action];
   if(!handler)return false;
   handler(args,h);return true;
 }

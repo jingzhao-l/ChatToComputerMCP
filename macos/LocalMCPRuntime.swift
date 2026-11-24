@@ -31,6 +31,7 @@ struct LocalMCPConfiguration {
     var enableGitPush: Bool = false
     var enableCodexHistory: Bool = false
     var captureCommandHistoryContent: Bool = false
+    var persistLongTasks: Bool = false
     var defaultWorkspacePermissions: WorkspacePermissions? = nil
 }
 
@@ -149,6 +150,10 @@ final class LocalMCPRuntime {
     private var _state: LocalMCPRuntimeState = .stopped
     private var server: LocalMCPServer?
     private var tunnelProcess: ManagedProcess?
+    private var restartTransport: (() throws -> Void)?
+    private var transportStarted = false
+    private var transportRecoveryID = UUID()
+    private var transportRetryDelay: TimeInterval = 2
     private var profileLock: ProfileLock?
     private var sleepActivity: NSObjectProtocol?
     private var requestedStop = false
@@ -163,13 +168,15 @@ final class LocalMCPRuntime {
     private var cloudHealth: TunnelCloudHealth = .awaitingPoll
     private var healthCheckGeneration = UUID()
     private let profileDirectoryOverride: URL?
+    private let dataDirectoryOverride: URL?
 
     var onStateChange: ((LocalMCPRuntimeState) -> Void)?
     var onCloudHealthChange: ((TunnelCloudHealth) -> Void)?
     var onLog: ((String) -> Void)?
 
-    init(profileDirectory: URL? = nil) {
+    init(profileDirectory: URL? = nil, dataDirectory: URL? = nil) {
         profileDirectoryOverride = profileDirectory
+        dataDirectoryOverride = dataDirectory
         queue.setSpecific(key: queueSpecificKey, value: ())
     }
 
@@ -214,11 +221,10 @@ final class LocalMCPRuntime {
                 DispatchQueue.main.async { completion(false) }
                 return
             }
-            self.emitLog("Control plane has been unavailable; restarting idle tunnel.\n")
-            self.setStopRequested(true)
-            self.setState(.stopping)
-            self.tunnelProcess?.stop()
-            if self.tunnelProcess == nil { self.finishStop() }
+            self.emitLog("Control plane has been unavailable; restarting the transport without stopping the local gateway.\n")
+            self.setState(.starting)
+            if let process = self.tunnelProcess { process.stop() }
+            else { self.scheduleTransportRecovery() }
             DispatchQueue.main.async { completion(true) }
         }
     }
@@ -342,6 +348,34 @@ final class LocalMCPRuntime {
         }
     }
 
+    func activateUpdateWhenIdle(schedule: @escaping () throws -> Void, completion: @escaping (String?) -> Void) {
+        queue.async { [weak self] in
+            do {
+                guard let self else { return }
+                switch self.state {
+                case .running:
+                    guard let server = self.server else {
+                        throw NSError(domain: "ChatToComputerMCP", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "No running local server."])
+                    }
+                    try server.freezeForIdleActivation(schedule: schedule)
+                case .stopped, .failed:
+                    try schedule()
+                default:
+                    throw NSError(domain: "ChatToComputerMCP", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Wait until connection startup or shutdown finishes."])
+                }
+                self.setStopRequested(true)
+                self.setState(.stopping)
+                self.shutdownOnQueue()
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { completion(message) }
+            }
+        }
+    }
+
     func shutdownImmediately() {
         setStopRequested(true)
         if DispatchQueue.getSpecific(key: queueSpecificKey) != nil {
@@ -352,18 +386,13 @@ final class LocalMCPRuntime {
     }
 
     private func shutdownOnQueue() {
+        // Invalidate callbacks before stopping the transport. A delayed exit
+        // notification must never tear down a newly started gateway.
+        tunnelAttempt = UUID()
+        transportRecoveryID = UUID()
+        restartTransport = nil
         tunnelProcess?.stopSynchronously()
-        removeCloudflaredTokenFile()
-        removeTunnelHealthURLFile()
-        server?.stop()
-        server = nil
-        profileLock?.release()
-        profileLock = nil
-
-        if tunnelProcess == nil {
-            setStopRequested(false)
-            setState(.stopped)
-        }
+        finishStop(preserveSupervised: true)
     }
 
     private func startOnQueue(_ configuration: LocalMCPConfiguration) {
@@ -373,6 +402,10 @@ final class LocalMCPRuntime {
             return
         }
         tunnelAttempt = UUID()
+        transportRecoveryID = UUID()
+        transportStarted = false
+        transportRetryDelay = 2
+        restartTransport = nil
         healthCheckGeneration = UUID()
         cloudHealth = .awaitingPoll
         lastSuccessfulControlPlanePoll = nil
@@ -420,12 +453,17 @@ final class LocalMCPRuntime {
             // Separate ChatToComputerMCP App Support path; never read or
             // mutate production FileMCP process data or its Keychain.
             let commandReceiptLedger = configuration.enableCommands
-                ? try CommandReceiptLedger(fileURL: CommandReceiptLedger.applicationStoreURL())
+                ? try CommandReceiptLedger(fileURL: dataDirectoryOverride?.appendingPathComponent("receipts/commands.json")
+                    ?? CommandReceiptLedger.applicationStoreURL())
                 : nil
             let history = configuration.enableCommands ? try CommandHistoryStore(
-                directory: CommandHistoryStore.directory(for: configuration.profile),
+                directory: dataDirectoryOverride?.appendingPathComponent("history/" + configuration.profile)
+                    ?? CommandHistoryStore.directory(for: configuration.profile),
                 captureContent: configuration.captureCommandHistoryContent) : nil
-            let audit = try ActivityAuditStore(directory: ActivityAuditStore.directory(for: configuration.profile))
+            let audit = try ActivityAuditStore(directory: dataDirectoryOverride?.appendingPathComponent("audit/" + configuration.profile)
+                ?? ActivityAuditStore.directory(for: configuration.profile))
+            let supervisorDirectory = dataDirectoryOverride?.appendingPathComponent("supervised-jobs/" + configuration.profile) ?? CommandSupervisor.directory(for: configuration.profile)
+            let supervisor = (configuration.persistLongTasks && configuration.enableCommands) || FileManager.default.fileExists(atPath: supervisorDirectory.path) ? try CommandSupervisor(directory: supervisorDirectory, allowsNew: configuration.persistLongTasks && configuration.enableCommands) : nil
             let server = try LocalMCPServer(
                 port: configuration.port,
                 allowedDirectory: configuration.allowedDirectory,
@@ -437,6 +475,7 @@ final class LocalMCPRuntime {
                 receiptLedger: commandReceiptLedger,
                 commandHistory: history,
                 activityAudit: audit,
+                commandSupervisor: supervisor,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
                 defaultWorkspacePermissions: configuration.defaultWorkspacePermissions,
@@ -450,6 +489,7 @@ final class LocalMCPRuntime {
             self.server = server
 
             if isCloudflare {
+                restartTransport = { [weak self] in try self?.startCloudflared(configuration) }
                 try startCloudflared(configuration)
                 return
             }
@@ -511,42 +551,20 @@ final class LocalMCPRuntime {
             }
             try requireSuccess(doctorResult, operation: "tunnel-client doctor", sensitiveValues: sensitiveValues)
 
-            // The tunnel-client health command reads this private, per-run
-            // locator to report actual successful OpenAI control-plane polls.
-            let healthURLFile = try makeTunnelHealthURLFile()
-            let managed = try ProcessRunner.startManaged(
-                executable: tunnelClient,
-                arguments: [
-                    "run",
-                    "--profile", configuration.profile,
-                    "--profile-dir", profileDirectory,
-                    "--health-listen-addr", healthAddress,
-                    "--health.url-file", healthURLFile.path,
-                ],
-                environment: environment,
-                sensitiveValues: sensitiveValues,
-                onOutput: { [weak self] text in
-                    guard let self else { return }
-                    let safe = self.redactSensitiveValues(text, sensitiveValues: sensitiveValues)
-                    self.recordOutput(safe)
-                    self.emitLog(safe)
-                },
-                onExit: { [weak self] exitCode in
-                    self?.queue.async {
-                        self?.tunnelDidExit(exitCode: exitCode)
-                    }
-                }
-            )
-            tunnelProcess = managed
-            setState(.running)
-            notifyCloudHealth(.awaitingPoll)
-            scheduleControlPlaneHealthCheck(for: tunnelAttempt, after: 5)
-            emitLog("OpenAI Secure MCP Tunnel process started; verifying cloud polling. Command execution: \(configuration.enableCommands ? "enabled" : "disabled").\n")
+            restartTransport = { [weak self] in
+                try self?.launchOpenAITransport(executable: tunnelClient,
+                    configuration: configuration, profileDirectory: profileDirectory,
+                    healthAddress: healthAddress, environment: environment, sensitiveValues: sensitiveValues)
+            }
+            try restartTransport?()
         } catch {
             if isStopRequested {
                 finishStop()
                 return
             }
+            restartTransport = nil
+            tunnelAttempt = UUID()
+            transportRecoveryID = UUID()
             server?.stop()
             server = nil
             tunnelProcess = nil
@@ -559,7 +577,52 @@ final class LocalMCPRuntime {
         }
     }
 
+    private func launchOpenAITransport(executable: String, configuration: LocalMCPConfiguration,
+                                       profileDirectory: String, healthAddress: String,
+                                       environment: [String: String], sensitiveValues: [String]) throws {
+        // The tunnel-client health command reads this private, per-run
+        // locator to report actual successful OpenAI control-plane polls.
+        tunnelAttempt = UUID()
+        healthCheckGeneration = UUID()
+        let attempt = tunnelAttempt
+        tunnelStartedAt = Date().timeIntervalSince1970
+        lastSuccessfulControlPlanePoll = nil
+        hasObservedPollHealth = false
+        let healthURLFile = try makeTunnelHealthURLFile()
+        let managed = try ProcessRunner.startManaged(
+            executable: executable,
+            arguments: [
+                "run",
+                "--profile", configuration.profile,
+                "--profile-dir", profileDirectory,
+                "--health-listen-addr", healthAddress,
+                "--health.url-file", healthURLFile.path,
+            ],
+            environment: environment,
+            sensitiveValues: sensitiveValues,
+            onOutput: { [weak self] text in
+                guard let self else { return }
+                let safe = self.redactSensitiveValues(text, sensitiveValues: sensitiveValues)
+                self.recordOutput(safe)
+                self.emitLog(safe)
+            },
+            onExit: { [weak self] exitCode in
+                self?.queue.async {
+                    self?.tunnelDidExit(exitCode: exitCode, attempt: attempt)
+                }
+            }
+        )
+        tunnelProcess = managed
+        transportStarted = true
+        setState(.running)
+        notifyCloudHealth(.awaitingPoll)
+        scheduleControlPlaneHealthCheck(for: tunnelAttempt, after: 5)
+        emitLog("OpenAI Secure MCP Tunnel process started; verifying cloud polling. Command execution: \(configuration.enableCommands ? "enabled" : "disabled").\n")
+    }
+
     private func startCloudflared(_ configuration: LocalMCPConfiguration) throws {
+        tunnelAttempt = UUID()
+        healthCheckGeneration = UUID()
         let cloudflared = try CloudflareCLI.locate()
         let isNamedTunnel = Self.isCloudflareTunnelName(configuration.cloudflareToken)
         let sensitiveValues = [
@@ -603,6 +666,8 @@ final class LocalMCPRuntime {
                     self.queue.async {
                         guard self.tunnelAttempt == attempt, self.state == .starting, !self.isStopRequested else { return }
                         self.removeCloudflaredTokenFile()
+                        self.transportStarted = true
+                        self.transportRetryDelay = 2
                         self.setState(.running)
                         self.emitLog("Cloudflare Tunnel connected.\n")
                     }
@@ -610,7 +675,7 @@ final class LocalMCPRuntime {
             },
             onExit: { [weak self] exitCode in
                 self?.queue.async {
-                    self?.tunnelDidExit(exitCode: exitCode)
+                    self?.tunnelDidExit(exitCode: exitCode, attempt: attempt)
                 }
             }
         )
@@ -642,6 +707,7 @@ final class LocalMCPRuntime {
         if status != previous {
             switch status {
             case .connected:
+                transportRetryDelay = 2
                 emitLog("OpenAI control-plane polling verified.\n")
             case .stalled:
                 emitLog("WARNING: OpenAI control-plane polling has not succeeded recently; waiting for recovery.\n")
@@ -783,36 +849,59 @@ final class LocalMCPRuntime {
         return String(line.prefix(300))
     }
 
-    private func tunnelDidExit(exitCode: Int32) {
+    private func tunnelDidExit(exitCode: Int32, attempt: UUID) {
+        guard attempt == tunnelAttempt else { return }
         tunnelProcess = nil
         removeCloudflaredTokenFile()
         removeTunnelHealthURLFile()
-        server?.stop()
-        server = nil
-        profileLock?.release()
-        profileLock = nil
-
         if isStopRequested {
-            setStopRequested(false)
-            setState(.stopped)
-            emitLog("Tunnel stopped.\n")
-        } else if exitCode == 0 {
-            setState(.stopped)
-            emitLog("Tunnel stopped.\n")
-        } else {
+            finishStop()
+            return
+        }
+        if transportStarted, server?.isReady == true, restartTransport != nil {
+            emitLog("Tunnel exited (status \(exitCode)); retaining the local gateway and command sessions.\n")
+            scheduleTransportRecovery()
+            return
+        }
+        restartTransport = nil
+        server?.stop(); server = nil
+        profileLock?.release(); profileLock = nil
+        if exitCode == 0 { setState(.stopped) }
+        else {
             var message = "Tunnel stopped unexpectedly (exit status \(exitCode))."
-            if let detail = lastOutputLine() {
-                message += " Last output: \(detail)"
-            }
-            setState(.failed(message))
-            emitLog(message + "\n")
+            if let detail = lastOutputLine() { message += " Last output: \(detail)" }
+            setState(.failed(message)); emitLog(message + "\n")
         }
     }
 
-    private func finishStop() {
+    private func scheduleTransportRecovery() {
+        guard !isStopRequested, server?.isReady == true, restartTransport != nil else { return }
+        transportRecoveryID = UUID()
+        let recovery = transportRecoveryID
+        let delay = transportRetryDelay
+        transportRetryDelay = min(60, delay * 2)
+        setState(.starting)
+        emitLog("Reconnecting transport in \(Int(delay)) seconds; local commands continue.\n")
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.transportRecoveryID == recovery, !self.isStopRequested,
+                  self.server?.isReady == true, let restart = self.restartTransport else { return }
+            do { try restart() }
+            catch {
+                self.removeCloudflaredTokenFile(); self.removeTunnelHealthURLFile()
+                self.emitLog("Transport restart failed; local tasks retained.\n")
+                self.scheduleTransportRecovery()
+            }
+        }
+    }
+
+    private func finishStop(preserveSupervised: Bool = false) {
+        transportRecoveryID = UUID()
+        tunnelAttempt = UUID()
+        restartTransport = nil
+        transportStarted = false
         removeCloudflaredTokenFile()
         removeTunnelHealthURLFile()
-        server?.stop()
+        server?.stop(preserveSupervised: preserveSupervised)
         server = nil
         tunnelProcess = nil
         profileLock?.release()
@@ -1167,7 +1256,7 @@ final class LocalMCPRuntime {
     // takes it offline. Keep the system awake while connected; the display may still sleep.
     // Caller must hold stateLock.
     private func updateSleepActivity(for state: LocalMCPRuntimeState) {
-        if state == .running {
+        if state == .running || (state == .starting && transportStarted) {
             guard sleepActivity == nil else { return }
             sleepActivity = ProcessInfo.processInfo.beginActivity(
                 options: [.idleSystemSleepDisabled, .userInitiated],

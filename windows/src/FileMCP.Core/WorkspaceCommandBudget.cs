@@ -10,6 +10,8 @@ internal sealed class WorkspaceCommandBudget
     private readonly int _capacity;
     private readonly Dictionary<CommandSession, string> _long = new();
     private readonly Dictionary<Guid, string> _sync = new();
+    private readonly List<(CommandSession Session, Action Launch)> _pending = [];
+    private bool _pumpScheduled;
 
     public WorkspaceCommandBudget(int capacity)
     {
@@ -33,6 +35,8 @@ internal sealed class WorkspaceCommandBudget
     private void Check(string cwd)
     {
         var paths = ActivePaths();
+        _pending.RemoveAll(item => !item.Session.Active);
+        if (_pending.Count != 0) throw new FileMcpException("Global command queue has waiting jobs; use queue_if_busy or retry after it drains");
         if (paths.Count >= _capacity) throw new FileMcpException(
             "Concurrent command limit reached (" + _capacity + ")");
         if (paths.Any(existing => Overlaps(existing, cwd))) throw new FileMcpException(
@@ -48,9 +52,62 @@ internal sealed class WorkspaceCommandBudget
         }
     }
 
+    public void Enqueue(CommandSession session, Action launch)
+    {
+        lock (_gate)
+        {
+            _pending.RemoveAll(item => !item.Session.Active);
+            if (_pending.Count >= 64) throw new FileMcpException("Global command queue is full (64)");
+            _pending.Add((session, launch));
+            SchedulePumpUnderLock();
+        }
+    }
+
+    private void SchedulePumpUnderLock()
+    {
+        if (_pumpScheduled || _pending.Count == 0) return;
+        _pumpScheduled = true;
+        _ = Task.Run(async () => { await Task.Delay(50).ConfigureAwait(false); Pump(); });
+    }
+
+    private void Pump()
+    {
+        List<Action> launches = [];
+        lock (_gate)
+        {
+            _pumpScheduled = false;
+            _pending.RemoveAll(item => !item.Session.Active);
+            var paths = ActivePaths();
+            while (_pending.Count > 0 && paths.Count < _capacity)
+            {
+                var item = _pending[0];
+                if (paths.Any(path => Overlaps(path, item.Session.Cwd))) break;
+                _pending.RemoveAt(0);
+                _long.Add(item.Session, item.Session.Cwd);
+                paths.Add(item.Session.Cwd);
+                launches.Add(item.Launch);
+            }
+            SchedulePumpUnderLock();
+        }
+        foreach (var launch in launches) launch();
+    }
+
+    public void TrackRecovered(CommandSession session)
+    {
+        lock (_gate)
+        {
+            if (ActivePaths().Any(path => Overlaps(path, session.Cwd))) throw new FileMcpException("Recovered jobs have overlapping directories");
+            _long.Add(session, session.Cwd);
+        }
+    }
+
     public void Forget(CommandSession session)
     {
-        lock (_gate) _long.Remove(session);
+        lock (_gate)
+        {
+            _long.Remove(session);
+            _pending.RemoveAll(item => ReferenceEquals(item.Session, session));
+        }
     }
 
     public Guid AcquireSynchronous(string cwd)
@@ -71,12 +128,12 @@ internal sealed class WorkspaceCommandBudget
 
     public bool HasActiveCommands()
     {
-        lock (_gate) return ActivePaths().Count > 0;
+        lock (_gate) return ActivePaths().Count > 0 || _pending.Any(item => item.Session.Active);
     }
 
     public bool HasActivityUnderRoot(string root)
     {
-        lock (_gate) return ActivePaths().Any(path =>
+        lock (_gate) return ActivePaths().Concat(_pending.Where(item => item.Session.Active).Select(item => item.Session.Cwd)).Any(path =>
             string.Equals(path, root, StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase));
@@ -93,6 +150,7 @@ internal sealed class WorkspaceCommandBudget
                 ["active_long_running"]=_long.Count,
                 ["active_synchronous"]=_sync.Count,
                 ["active_total"]=paths.Count,
+                ["queued_total"]=_pending.Count(item => item.Session.Active),
                 ["available_slots"]=Math.Max(0,_capacity-paths.Count),
                 ["accepting_new_commands"]=true,
             };

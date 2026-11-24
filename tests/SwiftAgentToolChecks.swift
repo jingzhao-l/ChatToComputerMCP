@@ -23,7 +23,7 @@ func runAgentToolChecks(rootPath: String) throws {
         let end = Date().addingTimeInterval(deadline)
         while Date() < end {
             let result = try call(full, "read_command_output", ["session_id": id, "cursor": cursor])
-            if !["running", "stopping"].contains(result["state"] as! String) { return result }
+            if !["queued", "running", "stopping"].contains(result["state"] as! String) { return result }
             Thread.sleep(forTimeInterval: 0.03)
         }
         fatalError("Session did not finish")
@@ -32,7 +32,7 @@ func runAgentToolChecks(rootPath: String) throws {
     check(!restricted.hasTool(named: "git_push") && !restricted.hasTool(named: "save_conversation_to_codex"))
     rejects("disabled Git push") { _ = try call(restricted, "git_push") }
     rejects("disabled Codex history") { _ = try call(restricted, "save_conversation_to_codex", ["title": "disabled", "messages": [["role": "user", "content": "test"]]]) }
-    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 32)
+    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 33)
     for name in ["file_info", "create_directory", "copy_file", "move_file"] {
         check(safe.hasTool(named: name))
     }
@@ -266,6 +266,37 @@ func runAgentToolChecks(rootPath: String) throws {
         FileManager.default.fileExists(atPath: root.appendingPathComponent($0 + "/completed").path)
     }))
     print("PASS: simultaneous synchronous commands with scoped collision protection")
+    let syncDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        defer { syncDone.signal() }
+        do {
+            _ = try full.call(name: "run_command", arguments: ["cwd": "sync-a",
+                "command": "printf desktop-sync-live; sleep 20", "timeout_seconds": 25],
+                verifiedOwnerID: "desktop-sync-client")
+            preconditionFailure("Cancelled short command reported success")
+        } catch {}
+    }
+    let syncDeadline = Date().addingTimeInterval(6)
+    var syncTask: DesktopCommandSnapshot?
+    while Date() < syncDeadline {
+        if let task = full.desktopCommandSnapshots(workspaceID: "default", name: "Default")
+            .first(where: { $0.active && $0.sessionID.hasPrefix("sync-") }),
+           let output = try? full.desktopTaskOutput(task.sessionID),
+           (output["output"] as? String ?? "").contains("desktop-sync-live") {
+            syncTask = task; break
+        }
+        Thread.sleep(forTimeInterval: 0.03)
+    }
+    check(syncTask != nil)
+    let selectedSyncID = syncTask!.sessionID
+    rejects("remote long-command API cannot read local short-task ID") {
+        _ = try call(full, "read_command_output", ["session_id": selectedSyncID])
+    }
+    try full.cancelDesktopTask(selectedSyncID)
+    check(syncDone.wait(timeout: .now() + 6) == .success)
+    check(try full.desktopTaskOutput(selectedSyncID)["state"] as? String == "cancelled")
+    print("PASS: real synchronous command live output, local-only task ID and targeted cancellation")
+
 
     let cancel = try call(full, "start_command", ["request_id": "cancel", "command": "sleep 30 & echo $! > child.pid; wait"])
     let cancelID = cancel["session_id"] as! String
@@ -404,6 +435,33 @@ func runAgentToolChecks(rootPath: String) throws {
     let boundedRecord = history.records().first { $0.id == boundedID }!
     check(boundedRecord.truncated && boundedRecord.output!.utf8.count <= CommandHistoryStore.contentLimit)
     print("PASS: real sync/async history, owner/workspace metadata, opt-in content, restart interruption and Unicode bounds")
+    let isolation = LocalTools(resolver: resolver, gitUserName: "Test", gitUserEmail: "test@example.invalid",
+        enableCommands: true, enableGitPush: true, enableCodexHistory: true,
+        isolatedShellImage: "invalid-fixture-image")
+    check(isolation.shellExecution == "isolated_linux")
+    check(!isolation.hasTool(named: "git_push") && !isolation.hasTool(named: "save_conversation_to_codex"))
+    rejects("invalid isolated image cannot fall back to host shell") {
+        _ = try isolation.call(name: "run_command", arguments: ["command": "touch isolation-escape"])
+    }
+    rejects("invalid isolated long command cannot fall back to host shell") {
+        _ = try isolation.call(name: "start_command", arguments: ["request_id": "isolated-failure",
+            "command": "touch isolation-escape"])
+    }
+    check(!FileManager.default.fileExists(atPath: root.appendingPathComponent("isolation-escape").path))
+    if let image = ProcessInfo.processInfo.environment["MCP_TEST_ISOLATED_IMAGE"] {
+        let sandbox = LocalTools(resolver: resolver, gitUserName: "", gitUserEmail: "",
+            enableCommands: true, isolatedShellImage: image)
+        let outside = root.deletingLastPathComponent().appendingPathComponent("ctcmcp-isolation-" + UUID().uuidString)
+        try Data("host-secret".utf8).write(to: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let result = try sandbox.call(name: "run_command", arguments: ["command":
+            "test ! -r '" + outside.path + "' && test ! -w /etc && printf isolated-ok && touch /workspace/isolation-write"])
+        check(String(describing: result.structuredContent).contains("isolated-ok"))
+        check(FileManager.default.fileExists(atPath: root.appendingPathComponent("isolation-write").path))
+        print("PASS: actual locally approved isolated Linux execution")
+    }
+    print("PASS: isolation configuration disables host privilege paths and rejects invalid image without fallback")
+
     print("PASS: synchronous command cancellation and descendant cleanup on disconnect")
     print("PASS: command streaming/cursors/exit status/retries/bounds/cancel/timeout/descendant cleanup/shutdown")
 }

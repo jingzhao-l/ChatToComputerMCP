@@ -1,12 +1,12 @@
 # macOS / Windows functional parity audit
 
-Audited against the independent ChatToComputerMCP source tree, 2026-11-23.
+Audited against the independent ChatToComputerMCP source tree, 2026-11-24.
 Matching Swift and C# tool names do not guarantee equivalent execution.
 Native test results and unverified external steps are kept distinct.
 
 | Capability | macOS | Windows | Evidence and limits |
 | --- | --- | --- | --- |
-| 31 MCP tool names | Implemented | Implemented | Source guard checks names; native integration suites check runtime behaviors |
+| 33 scoped MCP tool names plus routing tools | Implemented | Implemented | Source guard checks names; native integration suites check runtime behaviors |
 | File/Git operations, search, repo overview, batch reading | Implemented | Implemented | Swift runtime/agent and Windows native tests |
 | 4–16 concurrent slots, workspace isolation and task cancellation | Implemented | Implemented | Independent native tests; no claim of unlimited concurrency |
 | Multiple approved workspaces and GUI management | Implemented | Implemented | Native GUI and integration suites |
@@ -20,8 +20,10 @@ Native test results and unverified external steps are kept distinct.
 | npm local source installer and updater | Implemented | Implemented | Shared CLI and local native compile |
 | GUI check/install update | Implemented | Implemented | AppKit and WPF tests; never restarts active jobs |
 | Durable command receipts and replay prevention | Implemented | Implemented | Incomplete commands marked interrupted, not replayed |
-| Restart-safe owner-scoped command receipt status | Implemented | Implemented | New command_receipt_status tool binds salted owner identities to authenticated clients; status only, no process reattachment |
-| True background task execution reattachment after crash/reboot | NOT implemented | NOT implemented | Requires independent task supervisor, not just receipts |
+| Restart-safe owner-scoped command receipt status | Implemented | Implemented | New command_receipt_status tool binds salted owner identities to authenticated clients; receipt alone is status only; opted-in live workers support reattachment |
+| Independent task execution and reattachment after gateway crash | Implemented; SIGKILL test passed | Implemented; native test added | Opt-in; OS reboot or worker death is interrupted, not replayed |
+| Restricted Linux container shell | Implemented | Implemented | Docker Desktop and approved image required; actual engine validation pending |
+| Seven-area native GUI | Implemented | Implemented | 210 Mac layout cases, WPF build; manual Windows acceptance pending |
 | Per-ChatGPT-conversation cryptographic identity in shared OpenAI Tunnel | NOT available | NOT available | Shared tunnel credential is not a per-conversation principal |
 | Windows ARM64 native execution | N/A | NOT tested | ARM64 package cross-compile alone cannot verify runtime |
 | Signed/native notarized public installers | NOT completed | NOT completed | Source-only npm distribution is not signed native distribution |
@@ -30,8 +32,8 @@ Native test results and unverified external steps are kept distinct.
 
 Before describing Mac/Windows as fully equivalent, finish native transport
 interoperability with real ChatGPT/Claude clients, live Cloudflare account
-validation, keyboard and accessibility checks, persistent background task
-supervision and reattachment, native Windows ARM64 runtime/restart tests,
+validation, keyboard and accessibility checks, actual Docker execution,
+native Windows worker recovery and ARM64 runtime/restart tests,
 and signed/notarized distribution milestones where relevant.
 
 OS-specific implementations correctly differ (LaunchAgent vs HKCU,

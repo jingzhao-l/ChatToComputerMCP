@@ -489,6 +489,12 @@ function main() {
       }
     case 'status':return status();
     case 'cua':
+      if(subcommand==='relay-serve'){
+        if(rest.length!==2||rest[0]!=='--domain'||!/^[A-Za-z0-9_-]{1,48}$/.test(rest[1]))throw Error('cua relay-serve --domain <id>');
+        const native=selectedApp();
+        const exe=platform==='darwin'?path.join(native,'Contents','MacOS',name):native;
+        return run(exe,['--cua-relay-server',rest[1]],{timeout:undefined,windowsHide:true});
+      }
       if(subcommand==='guest-serve'){
         if(rest.length)throw Error('cua guest-serve takes no arguments');
         const native=selectedApp();

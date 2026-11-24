@@ -101,6 +101,58 @@ enum DesktopUpdater {
         return FileManager.default.isExecutableFile(atPath: executable.path)
     }
 
+    static func activationBundle(version: String, releases: URL? = nil) throws -> URL {
+        guard validVersion(version) else { throw NSError(domain: "ChatToComputerMCP updater", code: 10) }
+        let root = releases ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/chat-to-computer-mcp/releases", isDirectory: true)
+        let versionDirectory = root.appendingPathComponent(version, isDirectory: true)
+        let bundle = versionDirectory.appendingPathComponent("ChatToComputerMCP.app", isDirectory: true)
+        let executable = bundle.appendingPathComponent("Contents/MacOS/ChatToComputerMCP")
+        for item in [versionDirectory, bundle, executable] {
+            var metadata = stat()
+            guard lstat(item.path, &metadata) == 0, metadata.st_mode & S_IFMT != S_IFLNK else {
+                throw NSError(domain: "ChatToComputerMCP updater", code: 11,
+                    userInfo: [NSLocalizedDescriptionKey: "Installed release is missing or linked."])
+            }
+        }
+        guard let info = Bundle(url: bundle), info.bundleIdentifier == "com.localfilesmcp.app",
+              info.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == version,
+              FileManager.default.isExecutableFile(atPath: executable.path) else {
+            throw NSError(domain: "ChatToComputerMCP updater", code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "Installed app identity or version does not match."])
+        }
+        return bundle
+    }
+
+    /// Explicit activation only. Wait for the current PID to exit before asking
+    /// LaunchServices to open the validated version; never terminate a process.
+    static func scheduleActivation(version: String) throws {
+        let bundle = try activationBundle(version: version)
+        let verify = Process()
+        verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        verify.arguments = ["--verify", "--deep", "--strict", bundle.path]
+        verify.standardOutput = FileHandle.nullDevice; verify.standardError = FileHandle.nullDevice
+        try verify.run(); verify.waitUntilExit()
+        guard verify.terminationStatus == 0 else {
+            throw NSError(domain: "ChatToComputerMCP updater", code: 13,
+                userInfo: [NSLocalizedDescriptionKey: "Installed app signature verification failed."])
+        }
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = ["-c", """
+            n=0
+            while kill -0 "$1" 2>/dev/null; do
+                [ "$n" -lt 120 ] || exit 1
+                n=$((n+1))
+                sleep 0.5
+            done
+            exec /usr/bin/open -a "$2"
+            """, "ctcmcp-activate", String(ProcessInfo.processInfo.processIdentifier), bundle.path]
+        helper.standardInput = FileHandle.nullDevice
+        helper.standardOutput = FileHandle.nullDevice; helper.standardError = FileHandle.nullDevice
+        try helper.run()
+    }
+
     /// Only official npm registry, no private keys or ChatGPT credentials.
     static func check(completion: @escaping (Result<String, Error>) -> Void) {
         var request = URLRequest(url: registry)
