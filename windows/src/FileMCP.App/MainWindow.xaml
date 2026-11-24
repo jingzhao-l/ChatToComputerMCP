@@ -240,11 +240,17 @@
                         <CheckBox x:Name="EnableGitPushBox" Content="Allow Git push to remote servers"
                                   Margin="120,12,0,0"
                                   ToolTip="Sends repository contents to configured remote servers and may use existing credentials. Disabled by default."/>
-                        <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow writing to Codex history"
-                                  Margin="120,8,0,0"
-                                  ToolTip="Writes conversation content to the user's Codex history outside approved workspaces. Disabled by default."/>
                         <TextBlock Margin="120,4,0,0" Foreground="Gray" TextWrapping="Wrap"
-                                   Text="Git push can disclose source to remotes. Codex history writes outside the workspace. Both need separate approval."/>
+                                   Text="Git push can disclose source to remotes and requires separate approval."/>
+
+                        <Expander Header="Optional integrations" Margin="0,16,0,0">
+                            <StackPanel Margin="0,8,0,0">
+                                <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow importing conversations into Codex history"
+                                          ToolTip="Writes conversation content to the user's Codex history outside approved workspaces. Disabled by default."/>
+                                <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,5,0,0"
+                                           Text="Enable only if you use Codex. Import writes outside approved folders, and workspace-specific permission still applies."/>
+                            </StackPanel>
+                        </Expander>
 
                         <Expander x:Name="AdvancedExpander" Header="Advanced options" Margin="0,16,0,0">
                             <Grid Margin="0,12,0,0">

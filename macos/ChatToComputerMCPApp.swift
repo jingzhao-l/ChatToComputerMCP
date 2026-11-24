@@ -1088,11 +1088,17 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             checkbox.target = self
             checkbox.action = #selector(workspaceOptionsChanged)
         }
-        let extraPermissionsHelp = NSTextField(wrappingLabelWithString: "Git push sends code to remote servers. Codex history writes outside this folder. Both permissions are off by default.")
+        let extraPermissionsHelp = NSTextField(wrappingLabelWithString: "Git push sends code to remote servers and is off by default.")
         extraPermissionsHelp.font = .systemFont(ofSize: 11)
         extraPermissionsHelp.textColor = .secondaryLabelColor
         extraPermissionsHelp.preferredMaxLayoutWidth = Layout.contentWidth
         extraPermissionsHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        let integrationTitle = NSTextField(labelWithString: "Optional integrations")
+        integrationTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        let integrationHelp = NSTextField(wrappingLabelWithString: "Codex import creates conversations in local Codex history outside approved folders. Enable only if you use Codex; workspace-specific permission still applies.")
+        integrationHelp.font = .systemFont(ofSize: 11)
+        integrationHelp.textColor = .secondaryLabelColor
+        integrationHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let profileRow = fieldRow("Profile", profileField)
         let portRow = fieldRow("MCP port", portField)
         let directoryRow = fieldRow("Default workspace folder", directoryControls)
@@ -1113,14 +1119,14 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         advancedSettingsGroup.alignment = .leading
         advancedSettingsGroup.spacing = 8
         advancedSettingsGroup.detachesHiddenViews = true
-        [profileRow, portRow, healthRow, gitNameRow, gitEmailRow, resetButton].forEach {
+        [profileRow, portRow, healthRow, gitNameRow, gitEmailRow, integrationTitle, enableCodexHistoryCheckbox, integrationHelp, resetButton].forEach {
             advancedSettingsGroup.addArrangedSubview($0)
         }
         advancedSettingsGroup.isHidden = true
         advancedSettingsGroup.translatesAutoresizingMaskIntoConstraints = false
 
         let workspaceHelp = NSTextField(wrappingLabelWithString:
-            "Choose a default workspace for existing clients, then add separately approved folders. AI clients can discover folders using list_workspaces and pass workspace_id directly to their tools. All folders use the access permissions below.")
+            "Choose a default workspace for existing clients, then add separately approved folders. AI clients can discover folders using list_workspaces and pass workspace_id directly to their tools. Each folder has separate permissions; global switches set the maximum allowed access.")
         workspaceHelp.font = .systemFont(ofSize: 12)
         workspaceHelp.textColor = .secondaryLabelColor
         workspaceHelp.preferredMaxLayoutWidth = Layout.contentWidth
@@ -1236,7 +1242,6 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             commandWarning,
             captureCommandHistoryCheckbox,
             enableGitPushCheckbox,
-            enableCodexHistoryCheckbox,
             extraPermissionsHelp,
             loginItemTitle,
             loginItemHelp,
