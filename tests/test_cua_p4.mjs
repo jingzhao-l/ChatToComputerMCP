@@ -46,6 +46,17 @@ async function spawnServer(port,policy,auth,mode,approval=path.join(path.dirname
     proc.once('exit',code=>{clearTimeout(timer);reject(Error('server exited '+code+' '+error))});
     proc.stdout.on('data',d=>{if(d.toString().includes('READY')){clearTimeout(timer);resolve()}});
   });
+  return proc;
+}
+async function idleCheck(proc,expected){
+  const response=new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{proc.stdout.off("data",onData);reject(Error("idle gate test timed out"))},5000);
+    let data="";
+    function onData(chunk){data+=chunk.toString();if(data.includes("IDLE_ADMITTED")||data.includes("IDLE_BLOCKED")){clearTimeout(timer);proc.stdout.off("data",onData);resolve(data.trim())}}
+    proc.stdout.on("data",onData);
+  });
+  proc.stdin.write("idle-gate-check\n");
+  assert.equal(await response,expected);
 }
 async function rpc(port,auth,method,params){
   const id=crypto.randomUUID();
@@ -125,7 +136,8 @@ try{
   }else{
     privateFile(guestApproval,token()+'\n');
     await spawnServer(guestPort,guestPolicy,guestAuth,'guest');
-    await spawnServer(hostPort,hostPolicy,hostAuth,'host');
+    const hostProcess=await spawnServer(hostPort,hostPolicy,hostAuth,'host');
+    await idleCheck(hostProcess,"IDLE_ADMITTED");
     const guestList=await rpc(guestPort,guestAuth,'tools/list',{});
     assert(guestList.result.tools.every(t=>t.name.startsWith('cua_')&&!t.name.startsWith('cua_extension_')));
     await tool(guestPort,guestAuth,'read_file',{relative_path:'policy.json'},true);
@@ -142,6 +154,8 @@ try{
     console.log('PASS saved guest configuration is inert without explicit local approval');
     const opened=await call('cua_extension_open',{profile_id:'web',request_id:requestID()});
     browser=opened.structuredContent.session_id;
+    await idleCheck(hostProcess,"IDLE_BLOCKED");
+    console.log("PASS idle activation refuses active browser lease and restores admission after failed idle schedule");
     assert(opened.structuredContent.result.headless);assert(opened.content[0].text.includes(browser));
     step=(operation,parameters={},refusal=false,request_id=requestID())=>{
       console.log('browser step:',operation);

@@ -167,3 +167,7 @@ never restarts a currently running process.
 Before installing, confirm the package and version on the npm registry with
 `npm view chat-to-computer-mcp version`. Do not confuse the GitHub
 source prerelease with a published npm release.
+
+## Optional computer use (0.6.0+)
+
+The source package includes the native CUA gateway and optional browser worker source. Run `chat-to-computer-mcp cua help` and follow [CUA.md](CUA.md). Driver/Chromium installation and application grants are separate local steps; normal installs or updates do not enable Guest, launch a VM, or grant desktop permissions.

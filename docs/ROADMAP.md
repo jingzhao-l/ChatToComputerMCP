@@ -66,3 +66,11 @@
 ## Cross-platform parity evidence
 
 See [Platform parity audit](PLATFORM_PARITY.md). Shared MCP tool names do not prove semantic equivalence or persistent task supervision. Live account verification, Windows ARM64 hardware and signed distribution remain separate acceptance gates.
+
+## R3: Direct background computer use (0.6.0)
+
+- [x] Native bounded Cua Driver integration, explicit app grants, observation/verification and durable action receipts on both platforms
+- [x] Optional independent browser and Guest relay, Guest disabled by default
+- [x] Reject foreground/Guest fallback, integrate CUA into idle update admission
+- [ ] Expand native application compatibility and measure user-desktop non-interference on real Mac/Windows apps
+- [ ] Real Windows ARM64 and physical VM lifecycle acceptance; verified per-conversation identity remains dependent on trusted clients

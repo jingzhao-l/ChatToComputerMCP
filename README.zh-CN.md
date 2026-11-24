@@ -7,7 +7,7 @@
 <p align="center"><a href="./README.md"><strong>English</strong></a> · <a href="./README.zh-CN.md"><strong>简体中文</strong></a></p>
 
 <p align="center"><strong>让 ChatGPT 等云端聊天 AI 直接连接并使用你的本地电脑。</strong><br>
-免费开源的本机 MCP 工具 · 付费电脑访问插件的替代选择 · 多工作区 · 4–16 路命令并发</p>
+免费开源的本机 MCP 工具 · 付费电脑访问插件的替代选择 · 原生后台电脑操控 · 多工作区 · 4–16 路命令并发</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/chat-to-computer-mcp"><img alt="npm 版本" src="https://img.shields.io/npm/v/chat-to-computer-mcp?logo=npm&color=cb3837"></a>
@@ -45,7 +45,7 @@
 
 **ChatGPT 在云端能分析和规划任务，但怎样才能真正操作你自己的 Mac 或 Windows 电脑？** 这就是 ChatToComputerMCP 要解决的问题：它是面向 **ChatGPT 云端聊天对话**，同时兼容 Claude 等支持 MCP 的 AI 客户端的**免费开源本机电脑连接工具**。
 
-通过 ChatToComputerMCP，AI 可以在你批准的目录内**读取、搜索和编辑本地文件，操作 Git 仓库，并在明确授权后执行终端命令**。针对这类常见开发和文件操作，它可以作为 ChatGPT 付费插件 **@Remote Desktop Commander** 的开源替代选择，**不需要为了这些本机工具能力再购买一个同类付费插件**。但它**不是** Remote Desktop Commander 所有远程桌面、系统管理功能的逐项复刻，也不是 ChatGPT 官方插件。
+通过 ChatToComputerMCP，AI 可以在你批准的目录内**读取、搜索和编辑本地文件，操作 Git 仓库，并在明确授权后执行终端命令**，还可以在独立授权后直接后台操控应用窗口。针对这类常见开发和文件操作，它可以作为 ChatGPT 付费插件 **@Remote Desktop Commander** 的开源替代选择，**不需要为了这些本机工具能力再购买一个同类付费插件**。但它**不是** Remote Desktop Commander 所有远程桌面、系统管理功能的逐项复刻，也不是 ChatGPT 官方插件。
 
 **专为多 AI 会话并发而设计：**你可以批准多个独立工作区，让不同聊天会话同时执行 **4–16 个命令任务**（默认 8），并通过目录冲突保护和定向取消避免相互干扰。这里指有上限的命令并发，并非无限并行、已实现逐客户端加密身份隔离，或完整远程桌面 GUI 控制。
 
@@ -77,12 +77,31 @@ ChatGPT / Claude / 其他兼容 MCP 的客户端
 | **多 AI 并发命令** | 总容量可设为 **4–16**，默认 **8**；拒绝重叠目录的冲突命令。 |
 | **任务管理** | 查询命令会话、分页读取输出、取消指定任务。 |
 | **安全文件操作** | 不开启 Shell 即可查看文件属性、创建目录、复制和移动/重命名文件；目标文件存在时不覆盖。 |
-| **Mac OAuth 客户端权限** | Cloudflare OAuth 可以校验真实令牌、按客户端限制工作区和任务操作，并在 GUI 中撤销授权。私有 OpenAI Tunnel 仍使用共享连接身份。 |
-| **原生桌面 GUI** | Mac 提供概览、工作区、连接、任务、日志五个页面；Windows 有独立 WPF 界面。 |
-| **连接方案** | Mac/Windows 支持 OpenAI Secure MCP Tunnel；Mac 另有 Cloudflare 连接方式。 |
+| **Mac/Windows OAuth 客户端权限** | Cloudflare OAuth 可以校验真实令牌、按客户端限制工作区和任务操作，并在 GUI 中撤销授权。私有 OpenAI Tunnel 仍使用共享连接身份。 |
+| **原生桌面 GUI** | 两端均提供概览、工作区、连接、任务、活动、安全及设置七个功能区。 |
+| **连接方案** | 两端均支持 OpenAI Secure MCP Tunnel 和 Cloudflare。 |
+| **可选原生后台 CUA** | 固定版本 Cua Driver，按应用授权、精确窗口租约、控件树及截图、输入和验证；禁止自动切换前台。 |
+| **可选浏览器与 Guest** | 独立无头 Chromium，按来源授权；独立 Guest 默认关闭，须本地手动开启。 |
 | **本机编译安装** | npm 包提供源码和固定版本工具，在用户自己的设备上编译应用。 |
 | **可选保活** | Mac LaunchAgent 和 Windows 用户登录监督器均支持主动开启自启、异常恢复、持续保活与自动连接；默认关闭。 |
 | **安全自动更新** | Mac/Windows GUI 都有检查和安装更新按钮，可选择自动检查/安装；版本化本机编译不打断 AI 任务。 |
+
+## 可选后台电脑操控
+
+直接原生后台窗口操控是首选，不以虚拟机作为默认执行环境。工作区授权不等于桌面授权。
+安装驱动后，必须由本机用户授权指定应用及客户端：
+
+```bash
+chat-to-computer-mcp cua install
+chat-to-computer-mcp cua status
+chat-to-computer-mcp cua help
+```
+
+详见 [CUA 安装、授权和工具说明](docs/CUA.md)。Mac 要求 macOS 14+ 及用户授予辅助功能和录屏权限；
+Windows 要求交互式 Windows 10/11 会话。无头浏览器需独立安装并批准网站来源。
+**独立 Guest 默认完全关闭**，需在本地交互式终端手动开启。
+后台操作失败不会自动切换前台或 Guest；应用兼容性仍需真实验收。
+共享 OpenAI 隧道不是经过认证的逐 Chat 会话身份，原生后台 CUA 也不构成 OS 级沙箱。
 
 ## 🚀 快速开始
 

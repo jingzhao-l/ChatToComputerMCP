@@ -19,3 +19,7 @@ its new import SHA equals the historical source SHA.
 
 Original Apache-2.0 license and vendored dependency notices are preserved.
 No author credit is removed by the independent project branding.
+
+## Optional CUA dependencies
+
+[Cua Driver](https://github.com/trycua/cua) v0.61.0 is obtained from its official release archives, pinned by platform SHA-256; the unmodified upstream payload and notices are retained. [Playwright](https://github.com/microsoft/playwright) 1.65.1 and its corresponding Chromium runtime are optional, installed separately using the locked npm dependencies and official browser installer. These components are not silently bundled into the main npm source package. Their respective upstream licenses apply.

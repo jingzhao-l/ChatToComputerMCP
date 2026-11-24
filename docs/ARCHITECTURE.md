@@ -94,3 +94,7 @@ This ledger is protection against unintended replays, not a task supervisor.
 The Windows x64 real-device CI must pass before calling runtime parity verified.
 
 Optional background window automation: see [CUA setup and security](CUA.md).
+
+## CUA runtime (0.6.0)
+
+The native host owns the application grant, exact process/window lease, observation nonce, bounded pinned driver subprocess and durable dispatch receipt. It rechecks target ownership and refuses foreground fallback. Browser sessions use separate headless Chromium processes with explicit origin grants. Guest-only relays are isolated optional routes, disabled until a local interactive enablement epoch exists; they cannot invoke host workspace or shell tools. Active CUA calls and leases participate in the idle update gate. See [CUA](CUA.md) and [verified-client boundaries](VERIFIED_CLIENT_ACCESS.md).

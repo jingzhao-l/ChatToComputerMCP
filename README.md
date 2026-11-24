@@ -10,7 +10,7 @@
 </p>
 
 <p align="center"><strong>Connect ChatGPT and other cloud AI chats to your local computer.</strong><br>
-Free, open-source MCP alternative to paid computer-access plugins · Multiple workspaces · 4–16 concurrent commands.</p>
+Free, open-source MCP alternative to paid computer-access plugins · Native background computer use · Multiple workspaces · 4–16 concurrent commands.</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/chat-to-computer-mcp"><img alt="npm version" src="https://img.shields.io/npm/v/chat-to-computer-mcp?logo=npm&color=cb3837"></a>
@@ -50,7 +50,7 @@ Free, open-source MCP alternative to paid computer-access plugins · Multiple wo
 
 **ChatGPT can plan a task in the cloud—but how does it actually work on your Mac or Windows computer?** ChatToComputerMCP closes that gap. It is a **free, open-source local-computer MCP bridge** built for cloud-based AI chat conversations, especially **ChatGPT**, and other compatible MCP clients such as **Claude**.
 
-Instead of needing a separate paid computer-access plugin for common development workflows, connect ChatToComputerMCP and let your AI chat **inspect and edit approved local files, search code, use Git, and (when you opt in) run terminal commands**. For these workflows, it is an open-source alternative to the paid **Remote Desktop Commander** connector. It is **not** a feature-for-feature replacement for its entire desktop-control or system-management toolset, nor an official ChatGPT plugin.
+Instead of needing a separate paid computer-access plugin for common development workflows, connect ChatToComputerMCP and let your AI chat **inspect and edit approved local files, search code, use Git, and (when you opt in) run terminal commands**, and optionally control approved application windows in the background. For these workflows, it is an open-source alternative to the paid **Remote Desktop Commander** connector. It is **not** a feature-for-feature replacement for its entire desktop-control or system-management toolset, nor an official ChatGPT plugin.
 
 **Designed for multiple conversations, not just one:** approve multiple independent workspaces and allow **4–16 simultaneous command jobs** (default 8), with per-directory conflict protection and targeted task cancellation. This is bounded command concurrency—not unlimited parallelism, complete per-client identity isolation, or a remote GUI desktop.
 
@@ -82,12 +82,34 @@ ChatGPT / Claude / another compatible MCP client
 | **Concurrent commands** | One shared configurable 4–16 command budget (default 8); overlapping cwd trees are rejected. |
 | **Task controls** | Command IDs, bounded output, status and targeted cancellation. |
 | **Safe everyday file tools** | Metadata lookup, folder creation, file copy and move/rename without Shell access; refuse destination overwrite. |
-| **Verified OAuth scopes (Mac)** | Cloudflare OAuth clients can be approved for specific roots, own their command sessions and be revoked in the GUI. Private OpenAI Tunnel remains shared. |
-| **Native GUI** | Mac: Overview, Workspaces, Connection, Tasks, Activity. Windows: connection, workspace and task management. |
-| **Connection providers** | OpenAI Secure MCP Tunnel on Mac/Windows; Cloudflare alternative on Mac. |
+| **Verified OAuth scopes (Mac/Windows)** | Cloudflare OAuth clients can be approved for specific roots, own their command sessions and be revoked in the GUI. Private OpenAI Tunnel remains shared. |
+| **Native GUI** | Both platforms: Overview, Workspaces, Connection, Tasks, Activity, Security and Settings. |
+| **Connection providers** | OpenAI Secure MCP Tunnel and Cloudflare on both platforms. |
+| **Optional background CUA** | Pinned Cua Driver, approved windows, accessibility tree and screenshot, one-use observation, typed input and verification. No foreground fallback. |
+| **Optional browser / Guest** | Headless Chromium with origin grants; independent Guest disabled until local manual opt-in. |
 | **Local installation** | npm ships native source and pinned vendor binaries; installation **compiles locally**. |
 | **Optional background mode** | Mac LaunchAgent and Windows per-user login supervisor, crash recovery, optional always-on and explicit auto-connect. |
 | **Safe auto-updates** | CLI update commands and Mac/Windows GUI buttons, optional auto-check/auto-install while app is open, with versioned native builds. |
+
+## Background computer use (optional)
+
+Native background window control is the primary CUA path. CUA does not acquire
+permissions merely because a workspace is approved. Install the pinned driver
+and explicitly grant only the apps and client identities you intend to control:
+
+```bash
+chat-to-computer-mcp cua install
+chat-to-computer-mcp cua status
+chat-to-computer-mcp cua help
+```
+
+See [CUA setup, exact grant syntax and tool reference](docs/CUA.md). macOS
+requires 14+ and user-granted accessibility/capture permissions; Windows
+requires an interactive Windows 10/11 session. The optional headless browser
+has a separate install and origin grants. Independent Guest is **off by
+default** and requires manual local activation. No automatic foreground or
+Guest fallback; application compatibility varies. This is not a full remote
+desktop or cryptographically verified per-Chat session sandbox.
 
 ## 🚀 Quick start
 

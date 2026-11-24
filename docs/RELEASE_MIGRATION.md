@@ -32,3 +32,7 @@ as non-public compatibility layers; do not reinterpret those as product branding
 
 Never install this development build over a live FileMCP service without a
 signed staged rollout, real tunnel health acceptance and automatic rollback.
+
+## 0.6.0 optional CUA migration
+
+Normal users retain existing workspace, command and connection configuration. CUA app permissions remain separate from workspace access. No driver/Chromium download, Guest activation, or VM startup is triggered by an upgrade. Existing experimental Guest profiles are inert until explicit local `cua guest-enable`. Close active CUA leases before activating an update.

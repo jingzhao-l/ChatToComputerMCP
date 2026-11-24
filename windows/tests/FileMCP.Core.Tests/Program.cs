@@ -37,7 +37,14 @@ internal static partial class Program
         {
             await using var server = new LocalMcpServer(ushort.Parse(args[1]),Path.GetDirectoryName(args[2])!,"","",false,args[3],_=>{},cuaGuest:args[4]=="guest",cuaPolicyPath:args[2],cuaRelayOnly:args[4]=="relay",cuaGuestApprovalPath:args[5]);
             await server.StartAsync();Console.WriteLine("READY");await Console.Out.FlushAsync();
-            await Console.In.ReadLineAsync();return 0;
+            while(await Console.In.ReadLineAsync() is {Length:>0} line){
+                if(line=="idle-gate-check"){
+                    bool entered=false;
+                    try {server.FreezeForIdleActivation(()=>{entered=true;throw new IOException("test rollback");});}catch{}
+                    Console.WriteLine(entered?"IDLE_ADMITTED":"IDLE_BLOCKED");await Console.Out.FlushAsync();
+                }
+            }
+            return 0;
         }
         if (args.Length > 0 && args[0] == "mcp") return await RunCuaFixtureAsync();
 

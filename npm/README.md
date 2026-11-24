@@ -22,3 +22,5 @@ not an opaque executable downloader.
 
 The @latest npx command requires a real npm registry version. Automatic future
 releases use the GitHub Actions OIDC workflow; see docs/PUBLISHING.md.
+
+Optional native computer use: run `chat-to-computer-mcp cua help` after installing. The pinned driver and optional browser runtime are installed separately; no desktop permissions are granted by npm. Guest is disabled by default. See [CUA documentation](../docs/CUA.md).

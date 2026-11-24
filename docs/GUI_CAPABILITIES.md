@@ -95,3 +95,7 @@ or account changes. Windows Cloudflare login can be cancelled; switching
 accounts retains a backup of the previous certificate and restores it when
 a failed login leaves no replacement. These operations still require actual
 native Windows and provider acceptance.
+
+## Optional CUA (0.6.0+)
+
+Native background computer use is configured through the local CUA CLI in this release, not through a new GUI page. The normal connection/workspace controls remain unchanged. Guest is default-off, and idle activation refuses active CUA leases. See [CUA](CUA.md).

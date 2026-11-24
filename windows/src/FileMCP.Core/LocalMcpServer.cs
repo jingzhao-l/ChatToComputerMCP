@@ -42,6 +42,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private readonly Func<ApprovedWorkspace, LocalTools> _makeWorkspaceTools;
     private readonly WorkspaceCommandBudget _commandBudget;
     private bool _catalogStopped;
+    private int _activeCuaCalls;
     private Dictionary<string, (ApprovedWorkspace Definition, LocalTools Tools)> _approved
     {
         get { lock (_workspaceGate) return new(_catalog, StringComparer.Ordinal); }
@@ -307,13 +308,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
             scope.CancelOwnedCommands(id);
     }
 
-    internal bool HasActiveCommands() => _commandBudget.HasActiveCommands();
+    internal bool HasActiveCommands(){lock(_workspaceGate)return _commandBudget.HasActiveCommands()||_activeCuaCalls>0||_cua.HasLiveWork();}
 
     internal void FreezeForIdleActivation(Action schedule)
     {
         lock (_workspaceGate)
         {
-            if (_catalogStopped || _workspaceLeases.Values.Any(value => value != 0) || _commandBudget.HasActiveCommands())
+            if (_catalogStopped || _workspaceLeases.Values.Any(value => value != 0) || _commandBudget.HasActiveCommands() || _activeCuaCalls>0 || _cua.HasLiveWork())
                 throw new FileMcpException("Active or queued work remains. Finish it before activating an update.");
             _catalogStopped = true;
             try { schedule(); }
@@ -620,6 +621,9 @@ public sealed class LocalMcpServer : IAsyncDisposable
             ToolCallOutput output;
             if (name.StartsWith("cua_", StringComparison.Ordinal))
             {
+                lock(_workspaceGate){if(_catalogStopped)throw new FileMcpException("Runtime is stopping");_activeCuaCalls++;}
+                try {
+
                 using var cuaCancellation=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 using var verifier=new Timer(_=>{
                     try {if(verified is not null && (_oauth is null || !_oauth.IsCurrent(verified)))cuaCancellation.Cancel();}
@@ -627,6 +631,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 },null,0,100);
                 if(verified is not null && (_oauth is null || !_oauth.IsCurrent(verified)))throw new FileMcpException("OAuth authorization changed");
                 output = await _cua.CallAsync(name, arguments, verified?.Id, cuaCancellation.Token).ConfigureAwait(false);
+                }finally{lock(_workspaceGate)_activeCuaCalls--;}
             }
             else if (name == "connection_identity")
             {

@@ -9,7 +9,13 @@ let args=CommandLine.arguments
 let server=try LocalMCPServer(port:UInt16(args[2])!,allowedDirectory:URL(fileURLWithPath:args[3]).deletingLastPathComponent().path,gitUserName:"",gitUserEmail:"",enableCommands:false,localAuthToken:args[4],cuaGuest:args[5]=="guest",cuaRelayOnly:args[5]=="relay",cuaPolicyURL:URL(fileURLWithPath:args[3]),cuaGuestApprovalURL:URL(fileURLWithPath:args[6]),log:{_ in})
 try server.start()
 print("READY");fflush(stdout)
-_ = readLine()
+while let line=readLine(), !line.isEmpty {
+    if line=="idle-gate-check" {
+        var entered=false
+        do { try server.freezeForIdleActivation { entered=true; throw NSError(domain:"test rollback",code:1) } } catch {}
+        print(entered ? "IDLE_ADMITTED" : "IDLE_BLOCKED");fflush(stdout)
+    }
+}
 server.stop()
 SWIFT
 swiftc -module-cache-path "${SWIFT_MODULECACHE_PATH:-$tmp/cache}" -o "$tmp/cua-test-server" \

@@ -56,8 +56,17 @@ secret redaction and Cloudflare registration parsing. The native Windows
 suite additionally contains actual process/reconnect, scoped mutation,
 profile mutex and Cloudflare login rollback fixtures. Those native
 fixtures and interactive WPF acceptance require a Windows host; compilation
-does not establish their runtime results. This section excludes CUA work
-on its separate development branch.
+does not establish their runtime results. This section describes pre-CUA Windows parity work. See the following section for the integrated CUA backend.
+
+## Native CUA (0.6.0)
+
+Both platforms implement 15 CUA MCP tools in addition to the existing 33
+coding tools and routing/identity tools. Native driver input schemas differ
+where platform capabilities differ. Native background control is preferred;
+no automatic foreground or Guest fallback. Guest is disabled by default and
+requires local interactive enablement. The real Chromium and native
+loopback guest relay tests are not full desktop or VM acceptance.
+See [CUA.md](CUA.md) for the exact platform limitations and opt-in requirements.
 
 ## Acceptance gates
 

@@ -394,6 +394,7 @@ internal sealed class CuaService : IDisposable
         }
         try{s.Worker.Dispose();}finally{lock(_gate)_sessions.Remove(id);}
     }
+    internal bool HasLiveWork(){lock(_gate)return _sessions.Count>0||_extensions.Count>0||_launching.Count>0;}
     internal void Revoke(string owner)
     {
         string[] ids,ext; Worker[] workers;

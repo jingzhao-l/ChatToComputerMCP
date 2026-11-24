@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## [0.6.0] — 2026-11-24
+
+- Integrate optional Cua Driver 0.61.0 native background window control on macOS and Windows: application grants, exact PID/window leases, bounded observation, input, menus, geometry and independent verification.
+- Negotiate the pinned driver's tool contract, bind one-use observations to each lease, preserve durable action receipts, reject unsafe foreground/global input and retire failed workers without replay.
+- Add optional pinned Playwright 1.65.1 headless browser, origin-scoped sessions, tabs, frames, verification, dialogs and explicitly granted bounded file transfer.
+- Independent Guest/VM is off by default, including existing configurations; local interactive opt-in is mandatory. Guest-only relays have distinct credentials and no host-tool routes. Revocation invalidates prior Guest leases without interrupting normal browser/host CUA.
+- Preserve the existing workspace, command, OAuth, updater and transport features. Idle update activation refuses active CUA work; release gates include native CUA and real Chromium/guest-transport regression.
+- CUA is locally authorized and requires a separate driver installation. Real app compatibility, user-desktop non-interference, Windows ARM64 and live VM/provider acceptance remain separately unverified; shared tunnel credentials are not authenticated Chat identities.
+
+## [0.5.1] — 2026-11-24
+
+- Correct the Windows FIFO ordering fixture to use explicit .NET file I/O and
+  check both predecessor and successor terminal receipts, exact order and
+  cancelled-job absence. The v0.5.0 native Windows gate failed before npm
+  publication; its immutable source tag is retained for audit.
+
+## [0.5.0] — 2026-11-24
+
+- Make approved workspaces first-class MCP routing targets, with local live
+  add/revoke, per-workspace policies and verified OAuth grant binding.
+- Add bounded shared FIFO scheduling, local command history, structured activity
+  audit, and live cancellation/output for short and long commands.
+- Add opt-in independent long-task workers with original-session recovery after
+  gateway restart, durable receipt reconciliation and no blind replay.
+- Add opt-in restricted Linux container shell for locally approved immutable
+  Docker images; missing engines/images fail closed rather than run host shell.
+- Add connection identity and owner-scoped task discovery; a shared OpenAI
+  tunnel remains a shared principal, not an authenticated conversation.
+- Preserve local jobs when a transport exits, and align Windows cloud-poll
+  health, wake/recovery, proxy discovery, fragmented log redaction and
+  directory-level command collision checks with macOS.
+- Reorganize both native desktops into seven sections, with adaptive navigation,
+  remembered geometry, diagnostic log controls and idle update activation.
+- Add Windows Cloudflare login cancellation, certificate rollback and profile
+  mutex ownership fixes. Keep OS-specific implementations native.
+- This independent release excludes the separate experimental CUA branch.
+  Local Docker and live provider/Windows device acceptance are not implied by
+  source compilation; see the platform parity and independent-task docs.
+
 ## [0.4.4] — 2026-11-23
 
 - Fix macOS GUI being permanently stuck on **Connecting to OpenAI** even

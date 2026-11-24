@@ -13,7 +13,7 @@ private let mcpModernProtocolVersion = "2026-07-28"
 private let mcpLegacySupportedVersions = ["2025-03-26", "2025-06-18", "2025-11-25"]
 private let mcpAllSupportedVersions = [mcpModernProtocolVersion] + mcpLegacySupportedVersions.reversed()
 private let mcpServerName = "chat-to-computer-mcp"
-private let mcpServerVersion = "0.4.4-swift"
+private let mcpServerVersion = "0.6.0-swift"
 private let maxFileBytes = 5_000_000
 private let maxWriteBytes = 5_000_000
 private let maxPatchAggregateBytes = 32_000_000
@@ -3449,6 +3449,7 @@ final class LocalMCPServer {
     private var catalogTools: [String: LocalTools]
     private var workspaceLeases: [String: Int] = [:]
     private var catalogStopped = false
+    private var activeCUACalls = 0
     private let makeWorkspaceTools: (WorkspaceDefinition) throws -> LocalTools
     private var workspaceDefinitions: [WorkspaceDefinition] {
         workspaceGate.lock(); defer { workspaceGate.unlock() }; return catalogDefinitions
@@ -3699,7 +3700,7 @@ final class LocalMCPServer {
     func freezeForIdleActivation(schedule: () throws -> Void) throws {
         workspaceGate.lock(); defer { workspaceGate.unlock() }
         guard !catalogStopped, workspaceLeases.values.allSatisfy({ $0 == 0 }),
-              !commandBudget.hasActiveCommands() else {
+              !commandBudget.hasActiveCommands(), activeCUACalls == 0, !cua.hasLiveWork() else {
             throw MCPServerError.operationFailed("Active or queued work remains. Finish it before activating an update.")
         }
         catalogStopped = true
@@ -3713,7 +3714,8 @@ final class LocalMCPServer {
     /// Includes long-running sessions and synchronous command leases.
     /// Never restart the tunnel supervisor while user work is in flight.
     func hasActiveCommands() -> Bool {
-        commandBudget.hasActiveCommands()
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        return commandBudget.hasActiveCommands() || activeCUACalls > 0 || cua.hasLiveWork()
     }
 
     func desktopCommandSnapshots() -> [DesktopCommandSnapshot] {
@@ -4411,6 +4413,11 @@ final class LocalMCPServer {
         do {
             let output: LocalToolCallOutput
             if toolName.hasPrefix("cua_") {
+                workspaceGate.lock()
+                guard !catalogStopped else { workspaceGate.unlock(); throw MCPServerError.operationFailed("Runtime is stopping") }
+                activeCUACalls += 1
+                workspaceGate.unlock()
+                defer { workspaceGate.lock(); activeCUACalls -= 1; workspaceGate.unlock() }
                 let (content, structured) = try cua.call(toolName, args: arguments, owner: verifiedClient?.id, requestAlive: { requestAlive() && (verifiedClient.map { self.oauth?.isCurrent($0) == true } ?? true) })
                 output = LocalToolCallOutput(content: content, structuredContent: structured)
             } else if toolName == "connection_identity" {

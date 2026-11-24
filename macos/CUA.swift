@@ -553,6 +553,10 @@ final class CUAService {
         s.worker.close()
         gate.lock();sessions.removeValue(forKey:id);gate.unlock()
     }
+    func hasLiveWork() -> Bool {
+        gate.lock(); defer { gate.unlock() }
+        return !sessions.isEmpty || !extensions.isEmpty || !launching.isEmpty
+    }
     func revoke(owner: String) {
         gate.lock(); revoked.insert(owner); let ids = sessions.values.filter { $0.owner == owner }.map(\.id); let ext = extensions.values.filter { $0.owner == owner }.map(\.id); let workers = launchWorkers.values.filter { $0.owner == owner }.map(\.worker); gate.unlock()
         for worker in workers { worker.close() }

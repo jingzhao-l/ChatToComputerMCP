@@ -196,7 +196,7 @@ internal static partial class Program
             ("command", "while (!(Test-Path release)) { Start-Sleep -Milliseconds 100 }"), ("timeout_seconds", 25)));
         Assert(!blocker["isError"]!.GetValue<bool>(), "blocker started");
         JsonObject FirstArgs() => Obj(("workspace_id", "queue"), ("request_id", "fifo-first"),
-            ("command", "Set-Content -NoNewline order first"), ("queue_if_busy", true));
+            ("command", "$ErrorActionPreference = 'Stop'; [IO.File]::WriteAllText((Join-Path (Get-Location).Path 'order'), 'first'); exit 0"), ("queue_if_busy", true));
         var firstQueued = (await Rpc("start_command", FirstArgs()))["structuredContent"]!;
         Assert(firstQueued["state"]!.GetValue<string>() == "queued", "first queued");
         var retry = (await Rpc("start_command", FirstArgs()))["structuredContent"]!;
@@ -204,7 +204,7 @@ internal static partial class Program
         var cancelQueued = (await Rpc("start_command", Obj(("workspace_id", "queue"), ("request_id", "fifo-cancel"),
             ("command", "Set-Content should-not-exist bad"), ("queue_if_busy", true))))["structuredContent"]!;
         var secondQueued = (await Rpc("start_command", Obj(("workspace_id", "queue"), ("request_id", "fifo-second"),
-            ("command", "if ((Get-Content order -Raw) -ne 'first') { exit 7 }; Add-Content -NoNewline order second"), ("queue_if_busy", true))))["structuredContent"]!;
+            ("command", "$ErrorActionPreference = 'Stop'; $path = Join-Path (Get-Location).Path 'order'; if (![IO.File]::Exists($path)) { [Console]::Error.WriteLine('FIFO predecessor did not create order file'); exit 7 }; if ([IO.File]::ReadAllText($path) -cne 'first') { [Console]::Error.WriteLine('FIFO predecessor wrote unexpected content'); exit 8 }; [IO.File]::AppendAllText($path, 'second'); exit 0"), ("queue_if_busy", true))))["structuredContent"]!;
         var queueStatus = (await Rpc("command_capacity_status"))["structuredContent"]!;
         Assert(queueStatus["queued_total"]!.GetValue<int>() == 3 && queueStatus["active_total"]!.GetValue<int>() == 1, "queue separate from capacity");
         var scheduled = false;
@@ -220,7 +220,13 @@ internal static partial class Program
         while (wait.Elapsed < TimeSpan.FromSeconds(15))
         {
             var result = (await Rpc("read_command_output", Obj(("workspace_id", "queue"), ("session_id", secondQueued["session_id"]!.GetValue<string>()))))["structuredContent"]!;
-            if (result["state"]!.GetValue<string>() == "exited") { Assert(result["exit_code"]!.GetValue<int>() == 0, "FIFO completion"); terminal = true; break; }
+            if (result["state"]!.GetValue<string>() is not ("queued" or "running" or "stopping")) {
+                var predecessor = (await Rpc("read_command_output", Obj(("workspace_id", "queue"), ("session_id", firstQueued["session_id"]!.GetValue<string>()))))["structuredContent"]!;
+                Assert(predecessor["state"]!.GetValue<string>() == "exited" && predecessor["exit_code"]?.GetValue<int>() == 0,
+                    "FIFO predecessor completion: " + predecessor.ToJsonString());
+                Assert(result["state"]!.GetValue<string>() == "exited" && result["exit_code"]?.GetValue<int>() == 0,
+                    "FIFO completion: " + result.ToJsonString()); terminal = true; break;
+            }
             await Task.Delay(50);
         }
         Assert(terminal && File.ReadAllText(Path.Combine(queueRoot, "order")) == "firstsecond" &&

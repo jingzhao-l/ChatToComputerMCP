@@ -71,3 +71,7 @@ Use fake credentials in examples and tests. Never attach a real `.env`, `.oauth_
 Run `bash tests/check_secrets.sh` with Gitleaks installed. The CI secret-scan job installs Gitleaks 8.30.1, fetches full Git history and scans reachable commits plus the publishable working tree. Reports are redacted; do not upload raw findings as public artifacts. Also review ignored files, archived releases and any host-side refs that are not present in your local clone. A passing pattern scan does not prove that all secrets or private data have been found.
 
 If a real credential was committed, revoke or rotate it before considering history cleanup. Deleting the latest copy does not revoke a credential or erase prior commits. Never publish a working-directory ZIP containing local settings or credential files; use the tracked-source archive workflow after committing and reviewing the final tree.
+
+### Optional CUA boundary
+
+Native CUA requires local app grants and a current one-use window observation. It does not permit arbitrary driver scripts or foreground fallback. Guest execution requires a separate local manual opt-in; dedicated relay listeners never expose host tools. Browser origins and file transfer require explicit grants. These controls do not sandbox arbitrary host Shell or prove individual ChatGPT conversation identity. See [CUA](docs/CUA.md) and [verified client access](docs/VERIFIED_CLIENT_ACCESS.md).

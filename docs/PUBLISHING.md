@@ -71,8 +71,9 @@ The job verifies that:
 2. The Git ref is on the default branch history.
 3. `package.json` version equals the pushed tag without the `v`.
 4. npm CLI and local installer tests pass.
-5. The package content manifest contains required sources and no generated build artifacts.
-6. The same registry version has not already been published.
+5. The package content manifest contains required sources (including the CUA backend, optional worker and lockfile) and no generated build artifacts.
+6. Native Mac/Windows quality gates include CUA security, real headless Chromium and loopback Guest transport regression.
+7. The same registry version has not already been published.
 
 It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, followed by a registry read-back. The tag alone does not produce a Mac/Windows installer binary: recipients compile natively from the npm package.
 
