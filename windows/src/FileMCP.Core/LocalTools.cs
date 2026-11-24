@@ -37,6 +37,8 @@ internal sealed partial class LocalTools
     private readonly string _gitUserEmail;
     private readonly bool _allowWrite;
     private readonly bool _enableCommands;
+    private readonly string? _isolatedShellImage;
+    private bool TrustedHostShell => _enableCommands && _isolatedShellImage is null;
     private readonly bool _enableGitPush;
     private readonly bool _enableCodexHistory;
     private readonly string? _safeGitEmptyFile;
@@ -93,7 +95,7 @@ internal sealed partial class LocalTools
         CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default",
         bool enableGitPush = false, bool enableCodexHistory = false,
         string workspaceName = "Default workspace", CommandHistoryStore? commandHistory = null,
-        bool allowWrite = true)
+        bool allowWrite = true, string? isolatedShellImage = null)
     {
         _workspaceName = workspaceName;
         _commandHistory = commandHistory;
@@ -106,16 +108,18 @@ internal sealed partial class LocalTools
         _gitUserName = gitUserName;
         _gitUserEmail = gitUserEmail;
         _allowWrite = allowWrite;
+        _isolatedShellImage = isolatedShellImage;
         _enableCommands = allowWrite && enableCommands;
-        _enableGitPush = allowWrite && enableGitPush;
-        _enableCodexHistory = allowWrite && enableCodexHistory;
-        if (!_enableCommands)
+        _enableGitPush = allowWrite && enableGitPush && isolatedShellImage is null;
+        _enableCodexHistory = allowWrite && enableCodexHistory && isolatedShellImage is null;
+        if (!TrustedHostShell)
         {
             (_safeGitEmptyFile, _safeGitHooksDirectory) = PrepareSafeGitResources();
         }
     }
 
     internal string WorkspaceRoot => _resolver.Root;
+    internal string ShellExecution => !_enableCommands ? "disabled" : _isolatedShellImage is null ? "host" : "isolated_linux";
     internal System.Text.Json.Nodes.JsonObject CommandCapacityStatus() => _commandBudget.Status();
 
     public JsonArray ToolDefinitions
@@ -251,7 +255,7 @@ internal sealed partial class LocalTools
             };
             if (_enableCommands)
             {
-                tools.Add(Tool("run_command", "Run a PowerShell command on the local machine. The command inherits the current user's environment and is not OS-sandboxed. cwd must stay inside the shared directory.",
+                tools.Add(Tool("run_command", "Run a command in the configured workspace shell. Inspect shell_execution: host PowerShell inherits user privileges; isolated_linux uses a restricted Linux container. No automatic fallback.",
                     Props(
                         ("command", StringProperty("PowerShell command to execute.")),
                         ("cwd", StringProperty("Working directory relative to the shared root.")),
@@ -1729,10 +1733,14 @@ internal sealed partial class LocalTools
             }
             finally { _serializedSlot.Release(); }
             historyID = _commandHistory?.Begin(_workspaceScopeID, _workspaceName, workdir, "sync", null, ownerID, command);
-            var result = await ProcessRunner.RunAsync(PowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], workdir,
-                Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>().ToDictionary(e => (string)e.Key, e => (string?)e.Value ?? "", StringComparer.OrdinalIgnoreCase),
-                timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, control.Token,
-                onOutput: control.Append).ConfigureAwait(false);
+            var plan = ShellExecutionPlan.Build(_resolver.Root, workdir, command, PowerShellPath(),
+                Math.Min(timeoutSeconds, ProcessRunner.MaxCommandTimeoutSeconds), _isolatedShellImage);
+            ProcessResult result;
+            try {
+                result = await ProcessRunner.RunAsync(plan.Executable, plan.Arguments, plan.Cwd, plan.Environment,
+                    timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, control.Token,
+                    onOutput: control.Append).ConfigureAwait(false);
+            } finally { plan.Cleanup?.Invoke(); }
             finalState = control.Token.IsCancellationRequested ? "cancelled" : result.TimedOut ? "timed_out" : "exited";
             if (historyID is Guid recorded)
             {

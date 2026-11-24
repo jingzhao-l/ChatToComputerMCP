@@ -75,15 +75,18 @@ struct WorkspacePermissions: Codable, Equatable {
     var allowShell: Bool
     var allowGitPush: Bool
     var allowCodexHistory: Bool
+    // A locally selected immutable Linux image ID. Nil preserves trusted host shell.
+    var isolatedShellImage: String? = nil
 
     static let readOnly = WorkspacePermissions(allowWrite: false, allowShell: false,
         allowGitPush: false, allowCodexHistory: false)
     var fingerprint: String {
         [allowWrite, allowShell, allowGitPush, allowCodexHistory].map { $0 ? "1" : "0" }.joined()
+            + (isolatedShellImage.map { ":" + $0 } ?? "")
     }
     var summary: String {
         guard allowWrite else { return "Read only" }
-        return (["Files read/write"] + (allowShell ? ["Shell"] : []) +
+        return (["Files read/write"] + (allowShell ? [isolatedShellImage == nil ? "Host shell" : "Isolated Linux shell"] : []) +
                 (allowGitPush ? ["Git push"] : []) + (allowCodexHistory ? ["Codex import"] : [])).joined(separator: " · ")
     }
 }
@@ -369,6 +372,72 @@ private final class SynchronousTaskControl {
     }
 }
 
+/// An opt-in VM/container execution backend. No remote caller can choose the
+/// image, daemon, mount, privileges or environment. Host shell is never a fallback.
+private struct ShellExecutionPlan {
+    let executable: String
+    let arguments: [String]
+    let cwd: String
+    let environment: [String: String]
+    let cleanup: (() -> Void)?
+
+    static func build(root: String, cwd: String, command: String, shell: String,
+                      timeout: Int, image: String?) throws -> ShellExecutionPlan {
+        guard let image else {
+            return ShellExecutionPlan(executable: shell, arguments: ["-lc", command],
+                cwd: cwd, environment: ProcessInfo.processInfo.environment, cleanup: nil)
+        }
+        guard image.range(of: "^sha256:[a-f0-9]{64}$", options: .regularExpression) != nil,
+              !root.contains(","), !root.contains("\n"), !root.contains("\r"), !root.contains("\""), root != "/" else {
+            throw MCPServerError.invalidArguments("Isolated shell requires a pinned local image ID and a non-root workspace without comma/newline")
+        }
+        let canonical = URL(fileURLWithPath: cwd).resolvingSymlinksInPath().standardizedFileURL.path
+        guard canonical == root || canonical.hasPrefix(root + "/") else {
+            throw MCPServerError.invalidPath("Isolated shell working directory is outside the workspace")
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+                          "/Applications/Docker.app/Contents/Resources/bin/docker"]
+        guard let docker = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw MCPServerError.operationFailed("Isolated shell requires local Docker Desktop; host execution is not permitted")
+        }
+        let sockets = [home + "/.docker/run/docker.sock", "/var/run/docker.sock"]
+        guard let socket = sockets.first(where: { path in
+            var info = stat()
+            return stat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFSOCK
+        }) else { throw MCPServerError.operationFailed("Local Docker socket unavailable; isolated shell refused") }
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("ctcmcp-docker-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: config, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let environment = ["PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                           "HOME": home, "DOCKER_CONFIG": config.path]
+        let prefix = ["--config", config.path, "--host", "unix://" + socket]
+        let name = "ctcmcp-" + UUID().uuidString.lowercased()
+        let relative = canonical == root ? "" : String(canonical.dropFirst(root.count + 1))
+        let args = prefix + ["run", "--rm", "--pull=never", "--name", name,
+            "--network", "none", "--read-only", "--cap-drop", "ALL", "--no-healthcheck", "--log-driver", "none", "--restart", "no",
+            "--security-opt", "no-new-privileges", "--user", "65532:65532",
+            "--pids-limit", "256", "--memory", "2g", "--cpus", "2",
+            "--mount", "type=bind,source=" + root + ",target=/workspace,bind-recursive=disabled",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
+            "--env", "HOME=/tmp", "--env", "HTTP_PROXY=", "--env", "HTTPS_PROXY=",
+            "--env", "ALL_PROXY=", "--env", "http_proxy=", "--env", "https_proxy=", "--env", "all_proxy=",
+            "--workdir", relative.isEmpty ? "/workspace" : "/workspace/" + relative,
+            "--entrypoint", "/usr/bin/timeout", image,
+            "--signal=TERM", "--kill-after=2s", String(max(1, timeout)) + "s", "/bin/sh", "-c", command]
+        let cleanup = {
+            // Killing the CLI is not equivalent to stopping the container.
+            // Use its unguessable name and the same local daemon; in-container
+            // timeout additionally bounds orphaned execution after a GUI crash.
+            _ = try? ProcessRunner.run(executable: docker, arguments: prefix + ["rm", "-f", name],
+                cwd: root, environment: environment, timeoutSeconds: 10)
+            try? FileManager.default.removeItem(at: config)
+        }
+        return ShellExecutionPlan(executable: docker, arguments: args, cwd: root,
+                                  environment: environment, cleanup: cleanup)
+    }
+}
+
 private final class LocalTools {
     private let resolver: SafePathResolver
     private let sessionLock = NSLock()
@@ -396,6 +465,8 @@ private final class LocalTools {
     private let gitUserEmail: String
     private let allowWrite: Bool
     private let enableCommands: Bool
+    private let isolatedShellImage: String?
+    private var trustedHostShell: Bool { enableCommands && isolatedShellImage == nil }
     private let enableGitPush: Bool
     private let enableCodexHistory: Bool
     private let toolSlots = DispatchSemaphore(value: 16)
@@ -453,7 +524,8 @@ private final class LocalTools {
         workspaceScopeID: String = "default",
         workspaceName: String = "Default workspace",
         commandHistory: CommandHistoryStore? = nil,
-        allowWrite: Bool = true
+        allowWrite: Bool = true,
+        isolatedShellImage: String? = nil
     ) {
         self.workspaceName = workspaceName
         self.commandHistory = commandHistory
@@ -468,12 +540,14 @@ private final class LocalTools {
         self.gitUserName = gitUserName
         self.gitUserEmail = gitUserEmail
         self.allowWrite = allowWrite
+        self.isolatedShellImage = isolatedShellImage
         self.enableCommands = allowWrite && enableCommands
-        self.enableGitPush = allowWrite && enableGitPush
-        self.enableCodexHistory = allowWrite && enableCodexHistory
+        self.enableGitPush = allowWrite && enableGitPush && isolatedShellImage == nil
+        self.enableCodexHistory = allowWrite && enableCodexHistory && isolatedShellImage == nil
     }
 
     var workspaceRootPath: String { resolver.root.path }
+    var shellExecution: String { !enableCommands ? "disabled" : isolatedShellImage == nil ? "host" : "isolated_linux" }
 
     func desktopCommandSnapshots(workspaceID: String, name: String) -> [DesktopCommandSnapshot] {
         sessionLock.lock()
@@ -756,7 +830,7 @@ private final class LocalTools {
             tools.append(
                 tool(
                     name: "run_command",
-                    description: "Run a shell command on the local machine. The command inherits the current user's environment and is not OS-sandboxed. cwd must stay inside the shared directory.",
+                    description: "Run a command in the configured workspace shell. Inspect shell_execution: host inherits user privileges; isolated_linux uses a restricted Linux container. No automatic fallback.",
                     properties: [
                         "command": stringProperty("Shell command to execute."),
                         "cwd": stringProperty("Working directory relative to the shared root."),
@@ -2381,11 +2455,14 @@ private final class LocalTools {
         guard !control.isCancelled, !runtimeHasStopped else {
             throw MCPServerError.operationFailed("Command cancelled before launch")
         }
-        let shell = preferredShell()
+        let plan = try ShellExecutionPlan.build(root: resolver.root.path, cwd: workdir.path,
+            command: command, shell: preferredShell(), timeout: min(timeoutSeconds, ProcessRunner.maxCommandTimeoutSeconds),
+            image: isolatedShellImage)
+        defer { plan.cleanup?() }
         let result = try ProcessRunner.run(
-            executable: shell,
-            arguments: ["-lc", command],
-            cwd: workdir.path,
+            executable: plan.executable,
+            arguments: plan.arguments,
+            cwd: plan.cwd, environment: plan.environment,
             timeoutSeconds: timeoutSeconds,
             outputLimitBytes: maxToolProcessOutputBytes,
             shouldCancel: { [weak self] in control.isCancelled || (self?.runtimeHasStopped ?? true) },
@@ -2428,7 +2505,7 @@ private final class LocalTools {
             try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
         }
         var arguments = ["init", "-b", "main"]
-        if !enableCommands { arguments.append("--template=") }
+        if !trustedHostShell { arguments.append("--template=") }
         _ = try runGit(repo: repo, arguments: arguments)
         _ = try gitRepo(repoPath)
         return "Initialized Git repository: \(repoPath.isEmpty ? "." : repoPath)"
@@ -2561,7 +2638,7 @@ private final class LocalTools {
     }
 
     private func ensureNoRepositoryConfigIncludes(repo: URL) throws {
-        guard !enableCommands else { return }
+        guard !trustedHostShell else { return }
         let localConfig = try runGit(
             repo: repo,
             arguments: ["config", "--local", "--no-includes", "--list"],
@@ -2608,7 +2685,7 @@ private final class LocalTools {
     private func gitStatus(repoPath: String) throws -> String {
         let repo = try gitRepo(repoPath)
         var arguments = ["status", "--short"]
-        if !enableCommands { arguments.append("--ignore-submodules=all") }
+        if !trustedHostShell { arguments.append("--ignore-submodules=all") }
         let out = try runGit(repo: repo, arguments: arguments)
         return out.isEmpty ? "(working tree clean)" : out
     }
@@ -2620,7 +2697,7 @@ private final class LocalTools {
     private func gitDiff(repoPath: String, paths: String) throws -> String {
         let repo = try gitRepo(repoPath)
         var args = ["diff"]
-        if !enableCommands {
+        if !trustedHostShell {
             args += ["--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]
         }
         if !paths.isEmpty {
@@ -2646,7 +2723,7 @@ private final class LocalTools {
         if !gitUserName.isEmpty { args += ["-c", "user.name=\(gitUserName)"] }
         if !gitUserEmail.isEmpty { args += ["-c", "user.email=\(gitUserEmail)"] }
         args.append("commit")
-        if !enableCommands { args.append("--no-gpg-sign") }
+        if !trustedHostShell { args.append("--no-gpg-sign") }
         args += ["-m", message]
         return try runGit(repo: gitRepo(repoPath), arguments: args)
     }
@@ -2655,7 +2732,7 @@ private final class LocalTools {
         let repo = try gitRepo(repoPath)
         try ensureSafeGitPushConfiguration(repo: repo)
         var args = ["push"]
-        if !enableCommands {
+        if !trustedHostShell {
             args += ["--no-verify", "--no-signed", "--no-recurse-submodules", "--receive-pack=git-receive-pack"]
         }
         return try runGit(repo: repo, arguments: args)
@@ -2672,7 +2749,7 @@ private final class LocalTools {
 
         var environment = sanitizedGitEnvironment()
         environment["GIT_TERMINAL_PROMPT"] = "0"
-        if !enableCommands {
+        if !trustedHostShell {
             environment["GIT_ASKPASS"] = "/usr/bin/false"
             environment["SSH_ASKPASS"] = "/usr/bin/false"
             environment["GIT_SSH_COMMAND"] = "/usr/bin/ssh -F /dev/null -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none"
@@ -2720,7 +2797,7 @@ private final class LocalTools {
     }
 
     private func safeGitConfigurationArguments() -> [String] {
-        guard !enableCommands else { return [] }
+        guard !trustedHostShell else { return [] }
         return [
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.fsmonitor=false",
@@ -2738,7 +2815,7 @@ private final class LocalTools {
     }
 
     private func ensureGitAddDoesNotRunFilters(repo: URL, pathspecs: [String]) throws {
-        guard !enableCommands else { return }
+        guard !trustedHostShell else { return }
         let listed = try runGit(
             repo: repo,
             arguments: ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"] + pathspecs,
@@ -2796,7 +2873,7 @@ private final class LocalTools {
     }
 
     private func ensureSafeGitPushConfiguration(repo: URL) throws {
-        guard !enableCommands else { return }
+        guard !trustedHostShell else { return }
         let localConfig = try runGit(
             repo: repo,
             arguments: ["config", "--local", "--includes", "--list"],
@@ -3442,7 +3519,8 @@ final class LocalMCPServer {
             globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
             receiptLedger: receiptLedger, workspaceScopeID: "default",
             commandHistory: commandHistory,
-            allowWrite: defaultWorkspacePermissions?.allowWrite ?? true
+            allowWrite: defaultWorkspacePermissions?.allowWrite ?? true,
+            isolatedShellImage: defaultWorkspacePermissions?.isolatedShellImage
         )
         // Canonical roots may not overlap, even through symlinks. This rejects
         // accidental cross-workspace access and ambiguous command isolation.
@@ -3463,7 +3541,8 @@ final class LocalMCPServer {
                 globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
                 receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
                 workspaceName: workspace.name, commandHistory: commandHistory,
-                allowWrite: workspace.permissions?.allowWrite ?? true)
+                allowWrite: workspace.permissions?.allowWrite ?? true,
+                isolatedShellImage: workspace.permissions?.isolatedShellImage)
         }
         self.makeWorkspaceTools = makeTools
         var roots = [resolver.root.path]
@@ -3976,8 +4055,9 @@ final class LocalMCPServer {
                     "type": "object", "properties": [
                         "id": ["type": "string"], "name": ["type": "string"],
                         "path": ["type": "string"],
+                        "shell_execution": ["type": "string", "enum": ["disabled", "host", "isolated_linux"]],
                         "allowed_tools": ["type": "array", "items": ["type": "string"]]],
-                    "required": ["id", "name", "path", "allowed_tools"], "additionalProperties": false]]],
+                    "required": ["id", "name", "path", "shell_execution", "allowed_tools"], "additionalProperties": false]]],
                 "required": ["workspaces"], "additionalProperties": false]
             let callSchema: [String: Any] = [
                 "type": "object", "properties": [
@@ -4251,11 +4331,11 @@ final class LocalMCPServer {
                     verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
                 }.compactMap { workspace -> [String: Any]? in
                     guard let scoped = workspaceTools[workspace.id] else { return nil }
-                    return ["id": workspace.id, "name": workspace.name, "path": scoped.workspaceRootPath,
+                    return ["id": workspace.id, "name": workspace.name, "path": scoped.workspaceRootPath, "shell_execution": scoped.shellExecution,
                             "allowed_tools": scoped.toolDefinitions.compactMap { $0["name"] as? String }.sorted()]
                 }
                 let all: [[String: Any]] = [["id": "default", "name": "Default workspace",
-                            "path": tools.workspaceRootPath,
+                            "path": tools.workspaceRootPath, "shell_execution": tools.shellExecution,
                             "allowed_tools": tools.toolDefinitions.compactMap { $0["name"] as? String }.sorted()]] + list
                 let payload: [String: Any] = ["workspaces": all]
                 let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -4661,16 +4741,20 @@ private final class CommandSession {
         return state == "queued" || state == "running" || state == "stopping"
     }
 
-    func launch(shell: String, beforeLaunch: () throws -> Void = {}) throws {
+    func launch(plan: () throws -> ShellExecutionPlan, beforeLaunch: () throws -> Void = {}) throws {
         lock.lock()
         defer { lock.unlock() }
         guard state == "queued" || state == "running" else { return }
         try beforeLaunch()
         state = "running"
-        let child = try ProcessRunner.startManaged(executable: shell, arguments: ["-lc", command], cwd: cwd,
-            onOutput: { [weak self] text in self?.append(text) },
-            onExit: { [weak self] code in self?.finish(code) })
-        process = child
+        let execution = try plan()
+        do {
+            let child = try ProcessRunner.startManaged(executable: execution.executable, arguments: execution.arguments,
+                cwd: execution.cwd, environment: execution.environment,
+                onOutput: { [weak self] text in self?.append(text) },
+                onExit: { [weak self] code in execution.cleanup?(); self?.finish(code) })
+            process = child
+        } catch { execution.cleanup?(); throw error }
         if state == "running" {
             let work = DispatchWorkItem { [weak self] in self?.cancel(reason: "timed_out") }
             deadline = work
@@ -4678,8 +4762,8 @@ private final class CommandSession {
         }
     }
 
-    func launchQueued(shell: String, beforeLaunch: () throws -> Void) {
-        do { try launch(shell: shell, beforeLaunch: beforeLaunch) }
+    func launchQueued(plan: () throws -> ShellExecutionPlan, beforeLaunch: () throws -> Void) {
+        do { try launch(plan: plan, beforeLaunch: beforeLaunch) }
         catch { complete(nil, fallback: "launch_failed") }
     }
 
@@ -4782,7 +4866,7 @@ private extension LocalTools {
                  "active_total", "available_slots", "queued_total"], "integer")
             add(["accepting_new_commands"], "boolean")
         case "context":
-            add(["workspace_root", "cwd", "scope"], "string")
+            add(["workspace_root", "cwd", "scope", "shell_execution"], "string")
             add(["shell_commands_enabled", "top_level_truncated"], "boolean")
             fields["git_status"] = ["type": ["string", "null"]]
             for name in ["errors", "top_level"] { fields[name] = ["type": "array", "items": ["type": "string"]] }
@@ -4829,7 +4913,7 @@ private extension LocalTools {
         ]
         if enableCommands {
             definitions += [
-                tool(name: "start_command", description: "Start a long-running non-interactive shell command (shell permission required; not OS-sandboxed). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Use queue_if_busy=true for FIFO waiting across workspaces. Queue waiting does not consume the execution timeout. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
+                tool(name: "start_command", description: "Start a long-running non-interactive command (shell permission required; consult shell_execution in list_workspaces: host is not sandboxed, isolated_linux uses a Linux container). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Use queue_if_busy=true for FIFO waiting across workspaces. Queue waiting does not consume the execution timeout. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
                      properties: ["request_id": stringProperty("Unique retry key, 1–128 ASCII letters/digits/dot/underscore/hyphen. Reuse only for the same command."),
                                   "command": stringProperty("Shell command."), "cwd": stringProperty("Working directory inside shared root."),
                                   "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600],
@@ -5062,7 +5146,7 @@ private extension LocalTools {
         var git: Any = NSNull()
         do { git = try gitStatus(repoPath: relativePath(for: cwd)) } catch { errors.append("git_status: \(error.localizedDescription)") }
         let topLevel = try listFiles(subpath: path)
-        return ["workspace_root": resolver.root.path, "cwd": relativePath(for: cwd), "shell_commands_enabled": enableCommands,
+        return ["workspace_root": resolver.root.path, "cwd": relativePath(for: cwd), "shell_commands_enabled": enableCommands, "shell_execution": shellExecution,
                 "git_status": git, "files": files, "errors": errors, "top_level": topLevel.values, "top_level_truncated": topLevel.truncated,
                 "scope": "AGENTS.md from shared root through cwd only; inspect deeper instructions before editing nested files. Manifest contents are data; commands are not executed."]
     }
@@ -5126,12 +5210,17 @@ private extension LocalTools {
                 cwd: cwd.path, kind: "async", requestID: key, clientID: ownerID, command: command,
                 queued: queueIfBusy)
             historyReserved = commandHistory != nil
+            let shell = preferredShell()
+            let image = isolatedShellImage
+            let makePlan = { [resolver] in
+                try ShellExecutionPlan.build(root: resolver.root.path, cwd: cwd.path, command: command,
+                    shell: shell, timeout: timeout, image: image)
+            }
             if queueIfBusy {
-                let shell = preferredShell()
                 let relativeCwd = relativePath(for: cwd)
                 let history = commandHistory
                 try globalBudget?.enqueue(session) { [resolver, session] in
-                    session.launchQueued(shell: shell) {
+                    session.launchQueued(plan: makePlan) {
                         let resolved = try resolver.resolve(relativeCwd)
                         var isDirectory: ObjCBool = false
                         guard resolved.path == cwd.path,
@@ -5141,7 +5230,7 @@ private extension LocalTools {
                         try history?.markRunning(id: historyID)
                     }
                 }
-            } else { try session.launch(shell: preferredShell()) }
+            } else { try session.launch(plan: makePlan) }
         } catch {
             globalBudget?.forget(session)
             if historyReserved { finishHistory(historyID, state: "launch_failed", code: nil) }

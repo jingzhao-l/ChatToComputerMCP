@@ -71,3 +71,29 @@ blocked directory can delay independent later work, intentionally preserving
 FIFO order. Queued or running work also prevents changing affected workspace
 permissions. Runtime restart marks unfinished local records interrupted and
 never automatically replays queued commands.
+
+## Optional isolated Linux Shell
+
+The local workspace permission dialog supports an immutable local Docker
+image ID (`sha256:` plus 64 lowercase hex digits). This is a distinct Linux
+execution environment, not native macOS/Windows shell emulation. It requires
+local Docker Desktop Linux engine and a locally trusted image containing
+`/bin/sh` and GNU `/usr/bin/timeout`; no automatic image download or host-shell
+fallback is allowed. The image must support the host architecture or Docker's
+configured emulation and allow the non-root container UID 65532 to write the
+approved bind mount. The gateway uses an isolated Docker CLI config and local
+socket/pipe, a read-only container root, one workspace mount (no recursive
+submounts), bounded tmpfs, disabled network, dropped capabilities, no privilege
+escalation, and process/memory/CPU limits. No host Git push or Codex import is
+published for that workspace; other host Git tools use safe mode. Docker
+container output is streamed through the usual bounded command channel.
+Cancellation and timeout request removal of the named container, with an
+in-container timeout as a second bound. A trusted Docker engine and image are
+prerequisites, not a guarantee against kernel or engine vulnerabilities.
+`list_workspaces` and `workspace_context` report the selected shell execution
+mode. The regular host Shell still has full user privileges.
+
+Real Docker validation can be enabled explicitly using a locally prepared
+image with `MCP_TEST_ISOLATED_IMAGE=sha256:...` in the command integration tests.
+Without a local engine, tests cover invalid-image rejection and absence of
+host fallback, not actual container isolation.

@@ -43,12 +43,12 @@ public static class FileMcpConstants
     public const int MaxHttpRequestBodyBytes = 8_000_000;
 }
 
-public sealed record WorkspacePermissions(bool AllowWrite, bool AllowShell, bool AllowGitPush, bool AllowCodexHistory)
+public sealed record WorkspacePermissions(bool AllowWrite, bool AllowShell, bool AllowGitPush, bool AllowCodexHistory, string? IsolatedShellImage = null)
 {
     public static WorkspacePermissions ReadOnly { get; } = new(false, false, false, false);
-    public string Fingerprint => string.Concat(new[] { AllowWrite, AllowShell, AllowGitPush, AllowCodexHistory }.Select(value => value ? "1" : "0"));
+    public string Fingerprint => string.Concat(new[] { AllowWrite, AllowShell, AllowGitPush, AllowCodexHistory }.Select(value => value ? "1" : "0")) + (IsolatedShellImage is null ? "" : ":" + IsolatedShellImage);
     public string Summary => !AllowWrite ? "Read only" : "Files read/write" +
-        (AllowShell ? " · Shell" : "") + (AllowGitPush ? " · Git push" : "") + (AllowCodexHistory ? " · Codex import" : "");
+        (AllowShell ? (IsolatedShellImage is null ? " · Host shell" : " · Isolated Linux shell") : "") + (AllowGitPush ? " · Git push" : "") + (AllowCodexHistory ? " · Codex import" : "");
 }
 public sealed record ApprovedWorkspace(string Id, string Name, string Path, WorkspacePermissions? Permissions = null);
 public sealed record CloudflareNamedTunnel(string Id, string Name);

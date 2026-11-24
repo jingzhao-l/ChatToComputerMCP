@@ -435,6 +435,33 @@ func runAgentToolChecks(rootPath: String) throws {
     let boundedRecord = history.records().first { $0.id == boundedID }!
     check(boundedRecord.truncated && boundedRecord.output!.utf8.count <= CommandHistoryStore.contentLimit)
     print("PASS: real sync/async history, owner/workspace metadata, opt-in content, restart interruption and Unicode bounds")
+    let isolation = LocalTools(resolver: resolver, gitUserName: "Test", gitUserEmail: "test@example.invalid",
+        enableCommands: true, enableGitPush: true, enableCodexHistory: true,
+        isolatedShellImage: "invalid-fixture-image")
+    check(isolation.shellExecution == "isolated_linux")
+    check(!isolation.hasTool(named: "git_push") && !isolation.hasTool(named: "save_conversation_to_codex"))
+    rejects("invalid isolated image cannot fall back to host shell") {
+        _ = try isolation.call(name: "run_command", arguments: ["command": "touch isolation-escape"])
+    }
+    rejects("invalid isolated long command cannot fall back to host shell") {
+        _ = try isolation.call(name: "start_command", arguments: ["request_id": "isolated-failure",
+            "command": "touch isolation-escape"])
+    }
+    check(!FileManager.default.fileExists(atPath: root.appendingPathComponent("isolation-escape").path))
+    if let image = ProcessInfo.processInfo.environment["MCP_TEST_ISOLATED_IMAGE"] {
+        let sandbox = LocalTools(resolver: resolver, gitUserName: "", gitUserEmail: "",
+            enableCommands: true, isolatedShellImage: image)
+        let outside = root.deletingLastPathComponent().appendingPathComponent("ctcmcp-isolation-" + UUID().uuidString)
+        try Data("host-secret".utf8).write(to: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let result = try sandbox.call(name: "run_command", arguments: ["command":
+            "test ! -r '" + outside.path + "' && test ! -w /etc && printf isolated-ok && touch /workspace/isolation-write"])
+        check(String(describing: result.structuredContent).contains("isolated-ok"))
+        check(FileManager.default.fileExists(atPath: root.appendingPathComponent("isolation-write").path))
+        print("PASS: actual locally approved isolated Linux execution")
+    }
+    print("PASS: isolation configuration disables host privilege paths and rejects invalid image without fallback")
+
     print("PASS: synchronous command cancellation and descendant cleanup on disconnect")
     print("PASS: command streaming/cursors/exit status/retries/bounds/cancel/timeout/descendant cleanup/shutdown")
 }

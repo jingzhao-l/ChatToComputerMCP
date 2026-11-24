@@ -81,13 +81,15 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 enableGitPush: enableGitPush && (definition.Permissions?.AllowGitPush ?? true),
                 enableCodexHistory: enableCodexHistory && (definition.Permissions?.AllowCodexHistory ?? true),
                 workspaceName: definition.Name, commandHistory: commandHistory,
-                allowWrite: definition.Permissions?.AllowWrite ?? true);
+                allowWrite: definition.Permissions?.AllowWrite ?? true,
+                isolatedShellImage: definition.Permissions?.IsolatedShellImage);
         };
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
             enableCommands && (defaultWorkspacePermissions?.AllowShell ?? true), sharedBudget: budget, receiptLedger: receiptLedger,
             workspaceScopeID: "default", enableGitPush: enableGitPush && (defaultWorkspacePermissions?.AllowGitPush ?? true),
             enableCodexHistory: enableCodexHistory && (defaultWorkspacePermissions?.AllowCodexHistory ?? true),
-            commandHistory: commandHistory, allowWrite: defaultWorkspacePermissions?.AllowWrite ?? true);
+            commandHistory: commandHistory, allowWrite: defaultWorkspacePermissions?.AllowWrite ?? true,
+            isolatedShellImage: defaultWorkspacePermissions?.IsolatedShellImage);
         var roots = new List<string> { _tools.WorkspaceRoot };
         var additional = additionalWorkspaces ?? [];
         if (additional.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
@@ -217,9 +219,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
                             ["id"] = new JsonObject { ["type"] = "string" },
                             ["name"] = new JsonObject { ["type"] = "string" },
                             ["path"] = new JsonObject { ["type"] = "string" },
+                            ["shell_execution"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("disabled", "host", "isolated_linux") },
                             ["allowed_tools"] = new JsonObject { ["type"] = "array",
                                 ["items"] = new JsonObject { ["type"] = "string" } } },
-                        ["required"] = new JsonArray("id", "name", "path", "allowed_tools") } } },
+                        ["required"] = new JsonArray("id", "name", "path", "shell_execution", "allowed_tools") } } },
                 ["required"] = new JsonArray("workspaces"), ["additionalProperties"] = false },
             ["annotations"] = new JsonObject { ["readOnlyHint"] = true, ["destructiveHint"] = false,
                 ["openWorldHint"] = false }
@@ -562,7 +565,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified))
                     throw new FileMcpException("OAuth authorization changed; reconnect client");
                 var listed = new JsonArray {
-                    new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot,
+                    new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot, ["shell_execution"] = _tools.ShellExecution,
                         ["allowed_tools"] = AllowedTools(_tools) }
                 };
                 foreach (var (_, item) in _approved
@@ -571,7 +574,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 {
                     listed.Add(new JsonObject {
                         ["id"] = item.Definition.Id, ["name"] = item.Definition.Name,
-                        ["path"] = item.Tools.WorkspaceRoot, ["allowed_tools"] = AllowedTools(item.Tools) });
+                        ["path"] = item.Tools.WorkspaceRoot, ["shell_execution"] = item.Tools.ShellExecution, ["allowed_tools"] = AllowedTools(item.Tools) });
                 }
                 var text = listed.ToJsonString();
                 output = new ToolCallOutput(new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),

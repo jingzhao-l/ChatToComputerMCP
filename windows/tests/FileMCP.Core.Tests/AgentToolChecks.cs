@@ -260,6 +260,23 @@ internal static partial class Program
         var bounded = history.Records().Single(r => r.Id == boundedId);
         Assert(bounded.Truncated && Encoding.UTF8.GetByteCount(bounded.Output!) <= CommandHistoryStore.ContentLimit,
             "bounded Unicode history");
+        var isolation = new LocalTools(root, "", "", true, enableGitPush: true,
+            enableCodexHistory: true, isolatedShellImage: "invalid-fixture-image");
+        Assert(isolation.ShellExecution == "isolated_linux", "isolated mode reported");
+        Assert(!isolation.HasTool("git_push") && !isolation.HasTool("save_conversation_to_codex"), "isolated mode blocks host privilege tools");
+        await AssertThrowsAsync(() => isolation.CallAsync("run_command", Obj(("command", "Set-Content isolation-escape bad"))),
+            "image", "invalid image does not fall back");
+        await AssertThrowsAsync(() => isolation.CallAsync("start_command", Obj(("request_id", "isolated-failure"),
+            ("command", "Set-Content isolation-escape bad"))), "image", "invalid long command does not fall back");
+        Assert(!File.Exists(Path.Combine(root, "isolation-escape")), "no host command executed");
+        if (Environment.GetEnvironmentVariable("MCP_TEST_ISOLATED_IMAGE") is string image)
+        {
+            var sandbox = new LocalTools(root, "", "", true, isolatedShellImage: image);
+            var result = await sandbox.CallAsync("run_command", Obj(("command",
+                "test ! -w /etc && printf isolated-ok && touch /workspace/isolation-write")));
+            Assert(result.StructuredContent.ToJsonString().Contains("isolated-ok") &&
+                File.Exists(Path.Combine(root, "isolation-write")), "actual isolated Linux execution");
+        }
         Console.WriteLine("local command history: ok");
         Console.WriteLine("agent tools: ok");
     }

@@ -3432,7 +3432,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let current = scoped ? additionalWorkspaces[index].permissions : defaultWorkspacePermissions
         let alert = NSAlert()
         alert.messageText = "Workspace permissions"
-        alert.informativeText = "Global shell, Git push and Codex switches remain upper bounds. Shell uses your OS user privileges, not a filesystem sandbox. Read-only disables all writes and privileged tools."
+        alert.informativeText = "Global switches remain upper bounds. Host Shell uses your OS privileges. An optional isolated Linux Shell requires Docker Desktop and a trusted local image ID, disables host Git push and Codex import, and never falls back to host execution."
         let inherit = NSButton(checkboxWithTitle: "Inherit global settings", target: nil, action: nil)
         let write = NSButton(checkboxWithTitle: "Allow file and local Git changes", target: nil, action: nil)
         let shell = NSButton(checkboxWithTitle: "Allow shell (if globally enabled)", target: nil, action: nil)
@@ -3443,16 +3443,32 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         shell.state = (current?.allowShell ?? true) ? .on : .off
         push.state = (current?.allowGitPush ?? true) ? .on : .off
         codex.state = (current?.allowCodexHistory ?? true) ? .on : .off
-        let stack = NSStackView(views: [inherit, write, shell, push, codex])
+        let isolated = NSButton(checkboxWithTitle: "Use isolated Linux Shell (Docker Desktop)", target: nil, action: nil)
+        isolated.state = current?.isolatedShellImage == nil ? .off : .on
+        let image = NSTextField(string: current?.isolatedShellImage ?? "")
+        image.placeholderString = "sha256:<64 lowercase hex characters>"
+        let imageLabel = NSTextField(wrappingLabelWithString: "Locally trusted image with /bin/sh and GNU timeout. No automatic download.")
+        imageLabel.font = .systemFont(ofSize: 11)
+        imageLabel.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [inherit, write, shell, isolated, image, imageLabel, push, codex])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
-        stack.frame = NSRect(x: 0, y: 0, width: 330, height: 140)
+        stack.frame = NSRect(x: 0, y: 0, width: 410, height: 230)
+        image.widthAnchor.constraint(equalToConstant: 400).isActive = true
+        imageLabel.widthAnchor.constraint(equalToConstant: 400).isActive = true
         alert.accessoryView = stack
         alert.addButton(withTitle: "Apply")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let chosenImage = image.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let useIsolation = isolated.state == .on && shell.state == .on && write.state == .on && inherit.state != .on
+        if useIsolation && chosenImage.range(of: "^sha256:[a-f0-9]{64}$", options: .regularExpression) == nil {
+            showError("Enter the full immutable local image ID (sha256: plus 64 lowercase hexadecimal characters).")
+            return
+        }
         let permission: WorkspacePermissions? = inherit.state == .on ? nil :
             write.state != .on ? .readOnly : WorkspacePermissions(allowWrite: true,
-                allowShell: shell.state == .on, allowGitPush: push.state == .on, allowCodexHistory: codex.state == .on)
+                allowShell: shell.state == .on, allowGitPush: !useIsolation && push.state == .on,
+                allowCodexHistory: !useIsolation && codex.state == .on, isolatedShellImage: useIsolation ? chosenImage : nil)
         if scoped {
             let previous = additionalWorkspaces
             additionalWorkspaces[index].permissions = permission
