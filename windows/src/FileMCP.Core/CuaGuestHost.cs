@@ -10,6 +10,7 @@ public static class CuaGuestHost
 {
     public static async Task RunAsync(CancellationToken cancellationToken,string? relayDomain=null)
     {
+        var approvalEpoch=CuaGuestApproval.Epoch()??throw new FileMcpException("Guest is disabled; enable it locally first");
         var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ChatToComputerMCP");
         if(relayDomain is not null){
             if(!Regex.IsMatch(relayDomain,"^[A-Za-z0-9_-]{1,48}$"))throw new FileMcpException("Invalid relay domain");
@@ -40,7 +41,9 @@ public static class CuaGuestHost
             throw new FileMcpException("Run local cua guest-init in the isolated guest first");
         var workspace=Path.Combine(root,"guest-empty-workspace");Directory.CreateDirectory(workspace);
         await using var server=new LocalMcpServer((ushort)port,workspace,"","",false,token,_=>{},cuaGuest:relayDomain is null,cuaPolicyPath:Path.Combine(root,"cua-policy.json"),cuaRelayOnly:relayDomain is not null);
+        if(CuaGuestApproval.Epoch()!=approvalEpoch)throw new FileMcpException("Guest approval changed");
         await server.StartAsync(cancellationToken).ConfigureAwait(false);
-        await Task.Delay(Timeout.Infinite,cancellationToken).ConfigureAwait(false);
+        while(CuaGuestApproval.Epoch()==approvalEpoch)
+            await Task.Delay(250,cancellationToken).ConfigureAwait(false);
     }
 }

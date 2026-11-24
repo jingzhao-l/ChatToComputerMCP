@@ -429,6 +429,8 @@ test('CUA relay registry separates domain credentials and refuses duplicate gues
     fs.writeFileSync(tokenB,'b'.repeat(64)+'\n',{mode:0o600});
     fs.writeFileSync(copyA,'a'.repeat(64)+'\n',{mode:0o600});
     const args=(id,port,guest,file)=>['--domain',id,'--port',String(port),'--guest-port',String(guest),'--token-file',file,'--confirm-dedicated-guest'];
+    assert.throws(()=>extensionCommand('relay-init',args('one',18801,18766,tokenA),h),/disabled/);
+    h.writePrivate(path.join(tmp,'cua-guest-approval'),'c'.repeat(64)+'\n');
     extensionCommand('relay-init',args('one',18801,18766,tokenA),h);
     extensionCommand('relay-init',args('two',18802,18767,tokenB),h);
     const read=(id,file)=>fs.readFileSync(path.join(tmp,'cua-relays',id,file),'utf8');
@@ -441,4 +443,24 @@ test('CUA relay registry separates domain credentials and refuses duplicate gues
     assert.throws(()=>extensionCommand('guest-grant',['--profile','oops','--port','18769','--token-file',copyA,'--client','shared-connection'],h),/reserved/);
     assert.equal(fs.existsSync(path.join(tmp,'cua-relays','three')),false);
   }finally{fs.rmSync(tmp,{recursive:true,force:true})}
+});
+
+
+test('Guest is disabled by default and noninteractive CLI cannot enable it',()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-guest-default-'));
+  try{
+    if(!['darwin','win32'].includes(process.platform))return;
+    const state=()=>JSON.parse(invoke(['cua','guest-status'],home).stdout);
+    assert.equal(state().enabled,false);
+    assert.equal(state().preferredExecution,'native_background');
+    const refused=invoke(['cua','guest-enable'],home);
+    assert.notEqual(refused.status,0);assert.match(refused.stderr,/interactive/);
+    for(const args of [['guest-init','--confirm-isolated-desktop'],['guest-grant'],['relay-init'],['guest-connect'],['guest-serve'],['relay-serve','--domain','one'],['vm','start'],['vm','provision']]){
+      const r=invoke(['cua',...args],home);
+      assert.notEqual(r.status,0,args.join(' '));assert.match(r.stderr,/disabled/i);
+    }
+    assert.equal(state().enabled,false);
+    assert.equal(invoke(['cua','guest-disable'],home).status,0);
+    assert.equal(state().enabled,false);
+  }finally{fs.rmSync(home,{recursive:true,force:true})}
 });

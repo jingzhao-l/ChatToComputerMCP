@@ -3498,6 +3498,7 @@ final class LocalMCPServer {
         cuaGuest: Bool = false,
         cuaRelayOnly: Bool = false,
         cuaPolicyURL: URL? = nil,
+        cuaGuestApprovalURL: URL = CUAGuestApproval.defaultURL,
         log: @escaping (String) -> Void
     ) throws {
         guard localAuthToken.utf8.count >= 32 else {
@@ -3515,7 +3516,7 @@ final class LocalMCPServer {
         }
         self.cuaGuest = cuaGuest
         self.cuaRelayOnly = cuaRelayOnly
-        self.cua = CUAService(policyURL:cuaPolicyURL ?? CUAPolicy.defaultURL,guestMode:cuaGuest,relayOnly:cuaRelayOnly)
+        self.cua = CUAService(policyURL:cuaPolicyURL ?? CUAPolicy.defaultURL,guestMode:cuaGuest,relayOnly:cuaRelayOnly,guestApprovalURL:cuaGuestApprovalURL)
         self.requestTimeoutSeconds = requestTimeoutSeconds
         self.responseTimeoutSeconds = responseTimeoutSeconds
         self.maxConnections = maxConnections

@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import cp from 'node:child_process';
 import crypto from 'node:crypto';
-import {extensionCommand,extensionHelp} from './cua-extension-support.mjs';
+import {extensionCommand,extensionHelp,guestApprovalFile,guestEpoch} from './cua-extension-support.mjs';
 
 export const driverVersion = '0.61.0';
 export const driverAssets = Object.freeze({
@@ -182,11 +182,12 @@ export function cuaCommand(action,args) {
     let driver='not installed or integrity mismatch';
     try{installedDriver();driver=driverVersion;}catch{}
     const p=readPolicy();
-    console.log(JSON.stringify({driver,enabled:p?.enabled===true,requireVerifiedClient:p?.requireVerifiedClient===true,grants:p?.grants??[],profiles:(p?.profiles??[]).map(({tokenFile,...safe})=>safe),
+    console.log(JSON.stringify({driver,enabled:p?.enabled===true,requireVerifiedClient:p?.requireVerifiedClient===true,guestEnabled:guestEpoch(root())!==null,preferredExecution:'native_background',grants:p?.grants??[],profiles:(p?.profiles??[]).map(({tokenFile,...safe})=>safe),
       note:'Local configuration only; live OS permission and desktop compatibility require an MCP probe/real test.'},null,2));
     return;
   }
   if(action==='disable'&&args.length===0){
+    fs.rmSync(guestApprovalFile(root()),{force:true});
     fs.rmSync(policyPath(),{force:true});
     console.log('CUA grants removed. Existing leases are invalidated by the native runtime; dispatched actions cannot be undone.');
     return;

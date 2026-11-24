@@ -59,12 +59,12 @@ public sealed class LocalMcpServer : IAsyncDisposable
         bool enableGitPush = false, bool enableCodexHistory = false,
         CommandHistoryStore? commandHistory = null,
         WorkspacePermissions? defaultWorkspacePermissions = null,
-        ActivityAuditStore? activityAudit = null, CommandSupervisor? commandSupervisor = null, bool cuaGuest = false, string? cuaPolicyPath = null, bool cuaRelayOnly = false)
+        ActivityAuditStore? activityAudit = null, CommandSupervisor? commandSupervisor = null, bool cuaGuest = false, string? cuaPolicyPath = null, bool cuaRelayOnly = false, string? cuaGuestApprovalPath = null)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         if((cuaGuest||cuaRelayOnly)&&(enableCommands||enableGitPush||enableCodexHistory||additionalWorkspaces?.Count>0||oauth is not null||publicHost is not null||commandSupervisor is not null||(cuaGuest&&cuaRelayOnly)))
             throw new FileMcpException("Isolated guest gateway is CUA-only and loopback-only");
-        _cuaGuest=cuaGuest;_cuaRelayOnly=cuaRelayOnly;_cua=new CuaService(policyPath:cuaPolicyPath,guestMode:cuaGuest,relayOnly:cuaRelayOnly);
+        _cuaGuest=cuaGuest;_cuaRelayOnly=cuaRelayOnly;_cua=new CuaService(policyPath:cuaPolicyPath,guestMode:cuaGuest,relayOnly:cuaRelayOnly,guestApprovalPath:cuaGuestApprovalPath);
         _port = port; _localAuthToken = localAuthToken; _log = log;
         _oauth = oauth;
         _activityAudit = activityAudit;

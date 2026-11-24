@@ -37,8 +37,8 @@ function privateFile(file,data){
     assert.equal(r.status,0,r.stderr);
   }
 }
-async function spawnServer(port,policy,auth,mode){
-  const proc=cp.spawn(executable,['cua-test-server',String(port),policy,auth,mode],{stdio:['pipe','pipe','pipe']});
+async function spawnServer(port,policy,auth,mode,approval=path.join(path.dirname(policy),'guest-approval')){
+  const proc=cp.spawn(executable,['cua-test-server',String(port),policy,auth,mode,approval],{stdio:['pipe','pipe','pipe']});
   hosts.push(proc);
   let error='';proc.stderr.on('data',d=>error+=d.toString().slice(0,2000));
   await new Promise((resolve,reject)=>{
@@ -87,6 +87,7 @@ try{
   const node=fs.realpathSync(process.execPath),worker=path.join(runtime,'worker.mjs');
   const base={enabled:true,driver:node,driverSHA256:'0'.repeat(64),grants:[]};
   const guestPolicy=path.join(guestDir,'policy.json'),hostPolicy=path.join(hostDir,'policy.json'),guestCredential=path.join(hostDir,'fixture-token');
+  const hostApproval=path.join(hostDir,'guest-approval'),guestApproval=path.join(guestDir,'guest-approval');
   privateFile(guestCredential,guestAuth+'\n');
   privateFile(guestPolicy,JSON.stringify({...base,grants:[{application:process.platform==='darwin'?'com.example.CuaFixture':path.join(guestDir,'fixture.exe'),clients:['shared-connection']}]}));
   privateFile(hostPolicy,JSON.stringify({...base,extensionRuntime:{node,nodeSHA256:hash(node),worker,workerSHA256:hash(worker)},profiles:[
@@ -122,6 +123,7 @@ try{
       return {content:reply.content,structuredContent:{result:reply.structuredContent}};
     };
   }else{
+    privateFile(guestApproval,token()+'\n');
     await spawnServer(guestPort,guestPolicy,guestAuth,'guest');
     await spawnServer(hostPort,hostPolicy,hostAuth,'host');
     const guestList=await rpc(guestPort,guestAuth,'tools/list',{});
@@ -130,7 +132,14 @@ try{
     await tool(guestPort,'invalid','cua_capabilities',{},true);
     call=(name,args,refusal=false)=>tool(hostPort,hostAuth,name,args,refusal);
     const profiles=(await call('cua_extension_list',{})).structuredContent.profiles;
-    assert.deepEqual(profiles.map(p=>p.id).sort(),['guest','web']);
+    assert.deepEqual(profiles.map(p=>p.id).sort(),['web']);
+    const disabled=(await call('cua_capabilities',{})).structuredContent;
+    assert.equal(disabled.guest_enabled,false);
+    assert.equal(disabled.preferred_execution,'native_background');
+    assert.equal(disabled.enabled,true); // browser grant remains available
+    await call('cua_extension_open',{profile_id:'guest',request_id:requestID()},true);
+    await call('cua_capabilities',{guest_enabled:true},true);
+    console.log('PASS saved guest configuration is inert without explicit local approval');
     const opened=await call('cua_extension_open',{profile_id:'web',request_id:requestID()});
     browser=opened.structuredContent.session_id;
     assert(opened.structuredContent.result.headless);assert(opened.content[0].text.includes(browser));
@@ -188,6 +197,22 @@ try{
   await step('tab_close',{tab_id:newTab});
   assert.equal((await step('tab_list')).structuredContent.result.tabs.length,1);
   console.log('PASS browser tabs, cross-frame refs, dialog, bounded file artifacts, drag and wait-for');
+  if(!workerOnly){
+    privateFile(hostApproval,token()+'\n');
+    assert.equal((await call('cua_capabilities',{})).structuredContent.guest_enabled,true);
+    const live=(await call('cua_extension_open',{profile_id:'guest',request_id:requestID()})).structuredContent.session_id;
+    await call('cua_extension_call',{session_id:live,operation:'cua_list_apps',parameters:{},request_id:requestID()});
+    fs.unlinkSync(hostApproval);
+    assert.equal((await call('cua_capabilities',{})).structuredContent.guest_enabled,false);
+    await call('cua_extension_call',{session_id:live,operation:'cua_list_apps',parameters:{},request_id:requestID()},true);
+    await call('cua_extension_open',{profile_id:'guest',request_id:requestID()},true);
+    assert.deepEqual((await call('cua_extension_list',{})).structuredContent.profiles.map(p=>p.id),['web']);
+    // The browser lease survives guest-only revocation.
+    assert.equal((await step('verify',{text_contains:'Hello MCP'})).structuredContent.result.verified,true);
+    privateFile(hostApproval,token()+'\n');
+    await call('cua_extension_call',{session_id:live,operation:'cua_list_apps',parameters:{},request_id:requestID()},true);
+    console.log('PASS guest disable/re-enable retires the old epoch without disturbing browser lease');
+  }
   await step('navigate',{url:'http://127.0.0.1:'+forbidden+'/'},true);
   await step('observe',{include_screenshot:false});
   // Test a redirect to an unapproved origin. Browser may show its error page;
@@ -230,6 +255,7 @@ try{
   const guestPolicyB=path.join(guestDirB,'policy.json'),guestCredentialB=path.join(guestDirB,'fixture-token');
   privateFile(guestCredentialB,guestAuthB+'\n');
   privateFile(guestPolicyB,JSON.stringify({...base,grants:[{application:process.platform==='darwin'?'com.example.CuaFixture':path.join(guestDirB,'fixture.exe'),clients:['shared-connection']}]}));
+  privateFile(path.join(guestDirB,'guest-approval'),token()+'\n');
   await spawnServer(guestPortB,guestPolicyB,guestAuthB,'guest');
   for(let i=0;i<2;i++){
     const dir=path.join(tmp,'relay-'+i);fs.mkdirSync(dir);
@@ -237,7 +263,7 @@ try{
     privateFile(policy,JSON.stringify({...base,extensionRuntime:{node,nodeSHA256:hash(node),worker,workerSHA256:hash(worker)},profiles:[
       {id:'domain-'+i,kind:'guest',clients:['shared-connection'],port:i===0?guestPort:guestPortB,tokenFile:fs.realpathSync(i===0?guestCredential:guestCredentialB)}
     ]}));
-    await spawnServer(relayPorts[i],policy,relayAuths[i],'relay');
+    await spawnServer(relayPorts[i],policy,relayAuths[i],'relay',hostApproval);
   }
   const relay=(i,name,args={},refusal=false)=>tool(relayPorts[i],relayAuths[i],name,args,refusal);
   const listed=(await rpc(relayPorts[0],relayAuths[0],'tools/list',{})).result.tools.map(t=>t.name).sort();
@@ -266,6 +292,21 @@ try{
   await relay(0,'cua_extension_open',{profile_id:'extra',request_id:requestID()},true);
   await relay(0,'run_command',{command:'echo denied'},true);
   console.log('PASS two dedicated relay credentials, cross-domain lease rejection, host-tool denial and fail-closed policy widening');
+  fs.unlinkSync(hostApproval);
+  assert.equal((await relay(1,'cua_capabilities')).structuredContent.guest_enabled,false);
+  await relay(1,'cua_extension_list',{},true);
+  await relay(1,'cua_extension_open',{profile_id:'domain-1',request_id:requestID()},true);
+  privateFile(hostApproval,token()+'\n');
+  assert.equal((await relay(1,'cua_capabilities')).structuredContent.guest_enabled,false);
+  await relay(1,'cua_extension_open',{profile_id:'domain-1',request_id:requestID()},true);
+  // Guest-only server also fails closed when its own local approval is revoked.
+  fs.unlinkSync(guestApproval);
+  assert.equal((await tool(guestPort,guestAuth,'cua_capabilities',{})).structuredContent.enabled,false);
+  await tool(guestPort,guestAuth,'cua_list_apps',{},true);
+  privateFile(guestApproval,token()+'\n');
+  await tool(guestPort,guestAuth,'cua_list_apps',{},true);
+  console.log('PASS dedicated relay and guest listener require restart after approval epoch is revoked');
+
 
   }else console.log('PASS direct real Chromium worker regression (native HTTP and receipt tests excluded in worker-only mode)');
 }finally{

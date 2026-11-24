@@ -6,6 +6,7 @@ import os from 'node:os';
 import url from 'node:url';
 import cp from 'node:child_process';
 import {cuaCommand} from './cua-support.mjs';
+import {requireGuestEnabled} from './cua-extension-support.mjs';
 import {validVersion,compareVersions,registry,packageName,
   installedVersion,policyFile,readPolicy,writePolicy,activateMacRelease,
   assertMacSigningTeamCompatible,parseRegistryLatest,selectMacSigningIdentity
@@ -489,6 +490,9 @@ function main() {
       }
     case 'status':return status();
     case 'cua':
+      if(subcommand==='relay-serve'||subcommand==='guest-serve'){
+        requireGuestEnabled(platform==='darwin'?path.join(home,'Library','Application Support',name):dataHome);
+      }
       if(subcommand==='relay-serve'){
         if(rest.length!==2||rest[0]!=='--domain'||!/^[A-Za-z0-9_-]{1,48}$/.test(rest[1]))throw Error('cua relay-serve --domain <id>');
         const native=selectedApp();

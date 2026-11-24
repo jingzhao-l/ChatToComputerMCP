@@ -6,7 +6,7 @@ trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 let args=CommandLine.arguments
-let server=try LocalMCPServer(port:UInt16(args[2])!,allowedDirectory:URL(fileURLWithPath:args[3]).deletingLastPathComponent().path,gitUserName:"",gitUserEmail:"",enableCommands:false,localAuthToken:args[4],cuaGuest:args[5]=="guest",cuaRelayOnly:args[5]=="relay",cuaPolicyURL:URL(fileURLWithPath:args[3]),log:{_ in})
+let server=try LocalMCPServer(port:UInt16(args[2])!,allowedDirectory:URL(fileURLWithPath:args[3]).deletingLastPathComponent().path,gitUserName:"",gitUserEmail:"",enableCommands:false,localAuthToken:args[4],cuaGuest:args[5]=="guest",cuaRelayOnly:args[5]=="relay",cuaPolicyURL:URL(fileURLWithPath:args[3]),cuaGuestApprovalURL:URL(fileURLWithPath:args[6]),log:{_ in})
 try server.start()
 print("READY");fflush(stdout)
 _ = readLine()

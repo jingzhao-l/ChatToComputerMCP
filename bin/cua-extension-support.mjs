@@ -2,11 +2,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import cp from 'node:child_process';
+import readline from 'node:readline';
 import {fileURLToPath} from 'node:url';
 
 export const extensionHelp=[
   'cua extension-install              Install pinned Playwright and headless Chromium',
   'cua browser-grant --profile <id> --origin <origin> --client <id> (repeat --origin; optional --allow-files)',
+  'cua guest-enable                   Manually enable optional independent Guest (interactive local confirmation)',
+  'cua guest-disable                  Disable Guest access and revoke all Guest leases',
+  'cua guest-status                   Report the local Guest master switch',
   'cua guest-init --port <port> --confirm-isolated-desktop (inside a dedicated guest)',
   'cua guest-serve                    Run CUA-only guest listener inside that guest',
   'cua relay-init --domain <id> --port <listener-port> --guest-port <forwarded-port> --token-file <private-guest-token> --confirm-dedicated-guest',
@@ -19,6 +24,47 @@ export const extensionHelp=[
   'cua vm provision --provider hyper-v --template <prepared.vhdx> --name <new-name> --destination <existing-dir> --switch <existing-switch>',
   'cua guest-connect --profile <id> --host <host> --user <user> --guest-port <port> --known-hosts <file> --identity <file> (foreground SSH)'
 ];
+export function guestApprovalFile(root){return path.join(root,'cua-guest-approval')}
+export function guestEpoch(root){
+  try{
+    const file=guestApprovalFile(root),st=fs.lstatSync(file);
+    if(!st.isFile()||st.isSymbolicLink()||st.size!==65||process.platform!=='win32'&&(st.uid!==process.getuid()||(st.mode&0o077)!==0))return null;
+    const value=fs.readFileSync(file,'utf8');
+    return /^[a-f0-9]{64}\n$/.test(value)?value.slice(0,64):null;
+  }catch{return null}
+}
+export function requireGuestEnabled(root){
+  const epoch=guestEpoch(root);
+  if(!epoch)throw Error('Independent Guest is disabled. The user must run cua guest-enable in a local interactive terminal first.');
+  return epoch;
+}
+function guestEnable(args,h){
+  if(args.length)throw Error('guest-enable takes no arguments');
+  if(!process.stdin.isTTY||!process.stdout.isTTY)throw Error('Guest activation requires an interactive local terminal; non-interactive commands are refused.');
+  if(guestEpoch(h.root())){console.log('Independent Guest is already enabled.');return}
+  const terminal=readline.createInterface({input:process.stdin,output:process.stdout,terminal:false});
+  let answered=false;
+  terminal.once('close',()=>{process.stdin.pause();if(!answered){console.error('Guest activation cancelled.');process.exitCode=1}});
+  terminal.once('SIGINT',()=>terminal.close());
+  terminal.question('Enable independent Guest on this computer? Native background CUA remains preferred. Type ENABLE to confirm: ',answer=>{
+    answered=true;
+    try{
+      if(answer.trim()!=='ENABLE')throw Error('Guest activation cancelled.');
+      h.writePrivate(guestApprovalFile(h.root()),crypto.randomBytes(32).toString('hex')+'\n');
+      console.log('Independent Guest enabled by local confirmation. Existing grants still apply; no VM or listener was started.');
+    }catch(e){console.error('ChatToComputerMCP: '+e.message);process.exitCode=1}
+    finally{terminal.close()}
+  });
+}
+function guestDisable(args,h){
+  if(args.length)throw Error('guest-disable takes no arguments');
+  fs.rmSync(guestApprovalFile(h.root()),{force:true});
+  console.log('Independent Guest disabled. Guest leases are revoked; managed guest listeners and forwards close. Native CUA is unaffected. External VMs are not powered off.');
+}
+function guestStatus(args,h){
+  if(args.length)throw Error('guest-status takes no arguments');
+  console.log(JSON.stringify({enabled:guestEpoch(h.root())!==null,defaultEnabled:false,preferredExecution:'native_background'},null,2));
+}
 const source=path.join(path.dirname(fileURLToPath(import.meta.url)),'..','cua-runtime');
 function dir(h){return path.join(h.root(),'cua-extension','1.0.0-'+h.hashFile(path.join(source,'worker.mjs')).slice(0,16))}
 function runtime(h){
@@ -85,6 +131,7 @@ function browserGrant(args,h){
   saveProfile({id:id(o['--profile']),kind:'browser',origins,allowFiles,clients:[client(o['--client'])]},h);
 }
 function guestGrant(args,h){
+  requireGuestEnabled(h.root());
   const o=options(args,['--profile','--client','--port','--token-file','--vm-provider','--vm-name']);
   const profile=id(o['--profile']),p=port(o['--port']);
   // Explicitly supplied credential file, created inside the dedicated guest.
@@ -108,6 +155,7 @@ function guestGrant(args,h){
   saveProfile(grant,h);
 }
 function guestInit(args,h){
+  requireGuestEnabled(h.root());
   if(!args.includes('--confirm-isolated-desktop'))throw Error('Explicit confirmation of an isolated guest desktop is required');
   const o=options(args.filter(x=>x!=='--confirm-isolated-desktop'),['--port']);
   const p=port(o['--port']??'18765'),configuration=path.join(h.root(),'cua-guest.json'),credential=path.join(h.root(),'cua-guest-token');
@@ -143,6 +191,7 @@ function relayDirectory(h,domain){
   return path.join(h.root(),'cua-relays',id(domain));
 }
 function relayInit(args,h){
+  requireGuestEnabled(h.root());
   if(!args.includes('--confirm-dedicated-guest'))throw Error('Confirm a dedicated guest not shared with other execution domains');
   const o=options(args.filter(x=>x!=='--confirm-dedicated-guest'),['--domain','--port','--guest-port','--token-file']);
   const domain=id(o['--domain']),listener=port(o['--port']),guestPort=port(o['--guest-port']);
@@ -182,7 +231,7 @@ function relayInit(args,h){
 function relayStatus(args,h){
   const o=options(args,['--domain']),domain=id(o['--domain']);
   const config=JSON.parse(fs.readFileSync(path.join(relayDirectory(h,domain),'relay.json'),'utf8'));
-  console.log(JSON.stringify({domain,port:config.port,guestPort:config.guestPort,credential:'private_file',relayOnly:true,conversationAuthenticated:false},null,2));
+  console.log(JSON.stringify({domain,port:config.port,guestPort:config.guestPort,credential:'private_file',relayOnly:true,guestEnabled:guestEpoch(h.root())!==null,conversationAuthenticated:false},null,2));
 }
 function revoke(args,h){
   const o=options(args,['--profile','--client']),p=h.readPolicy();
@@ -208,11 +257,22 @@ export function guestConnectPlan(args,profile,platform=process.platform){
   return {exe:platform==='win32'?'ssh.exe':'/usr/bin/ssh',args:['-F','none','-N','-T','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','IdentityAgent=none','-o','ForwardAgent=no','-o','ForwardX11=no','-o','StrictHostKeyChecking=yes','-o','UpdateHostKeys=no','-o','GlobalKnownHostsFile=none','-o','UserKnownHostsFile="'+known+'"','-o','ExitOnForwardFailure=yes','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3','-i',identity,'-L','127.0.0.1:'+port(String(profile.port))+':127.0.0.1:'+port(o['--guest-port']),'-l',user,host]};
 }
 function guestConnect(args,h){
+  const epoch=requireGuestEnabled(h.root());
   const o=options(args,['--profile','--host','--user','--guest-port','--known-hosts','--identity']);
   const p=h.readPolicy()?.profiles?.find(x=>x.id===id(o['--profile']));
   const plan=guestConnectPlan(args,p);
   console.log('Starting pinned-host SSH forwarding on loopback. Keep this terminal open; interrupt to close.');
-  h.run(plan.exe,plan.args,{timeout:0});
+  // Own only this SSH process. Revocation stops this forward, not other
+  // SSH sessions, and re-enabling never restarts it automatically.
+  const child=cp.spawn(plan.exe,plan.args,{stdio:'inherit',windowsHide:true});
+  let stopping=false,killTimer;
+  const stop=()=>{if(stopping)return;stopping=true;child.kill();killTimer=setTimeout(()=>child.kill('SIGKILL'),2000);killTimer.unref()};
+  const monitor=setInterval(()=>{if(guestEpoch(h.root())!==epoch)stop()},250);
+  const cleanup=()=>{clearInterval(monitor);clearTimeout(killTimer);process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop)};
+  process.once('SIGINT',stop);process.once('SIGTERM',stop);
+  child.on('error',err=>{cleanup();console.error('Guest forward failed: '+err.message);process.exitCode=1});
+  child.on('exit',code=>{cleanup();if(!stopping&&code!==0)process.exitCode=1});
+
 }
 export function vmProvisionPlan(args,platform=process.platform){
   const o=options(args,['--provider','--template','--name','--destination','--switch']);
@@ -251,11 +311,13 @@ export function vmProvisionPlan(args,platform=process.platform){
 function vm(args,h){
   const [action,...rest]=args;
   if(action==='provision'){
+    requireGuestEnabled(h.root());
     for(const plan of vmProvisionPlan(rest))h.run(plan.exe,plan.args,{timeout:1800000,...(plan.env?{env:{...process.env,...plan.env}}:{})});
     console.log('VM provisioned from local template. Set up unique guest identity and guest CUA service before registering it.');
     return;
   }
   if(!['status','start','stop'].includes(action))throw Error('Use cua vm status|start|stop --profile <id>');
+  if(action==='start')requireGuestEnabled(h.root());
   const o=options(rest,['--profile']),profile=id(o['--profile']);
   const p=h.readPolicy()?.profiles?.find(x=>x.id===profile&&x.kind==='guest');
   if(!p||!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,79}$/.test(p.vmName??''))throw Error('No registered VM');
@@ -271,7 +333,7 @@ function vm(args,h){
   }else throw Error('VM provider not supported on this host');
 }
 export function extensionCommand(action,args,h){
-  const handler={'extension-install':install,'browser-grant':browserGrant,'guest-grant':guestGrant,'guest-init':guestInit,'guest-connect':guestConnect,'relay-init':relayInit,'relay-status':relayStatus,'profile-revoke':revoke,'vm':vm}[action];
+  const handler={'guest-enable':guestEnable,'guest-disable':guestDisable,'guest-status':guestStatus,'extension-install':install,'browser-grant':browserGrant,'guest-grant':guestGrant,'guest-init':guestInit,'guest-connect':guestConnect,'relay-init':relayInit,'relay-status':relayStatus,'profile-revoke':revoke,'vm':vm}[action];
   if(!handler)return false;
   handler(args,h);return true;
 }

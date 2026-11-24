@@ -11,6 +11,36 @@ using System.Text.Json.Nodes;
 
 namespace FileMCP.Core;
 
+/// Independent local opt-in, never inferred from saved guest profiles.
+internal static class CuaGuestApproval
+{
+    internal static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "ChatToComputerMCP", "cua-guest-approval");
+    internal static string? Epoch(string? path = null)
+    {
+        try
+        {
+            var file = new FileInfo(path ?? DefaultPath);
+            if (!file.Exists || file.Length != 65 || (file.Attributes & FileAttributes.ReparsePoint) != 0) return null;
+            using var identity = WindowsIdentity.GetCurrent();
+            var owner = identity.User;
+            var acl = file.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access);
+            if (owner is null || !owner.Equals(acl.GetOwner(typeof(SecurityIdentifier)))) return null;
+            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            foreach (FileSystemAccessRule rule in acl.GetAccessRules(true,true,typeof(SecurityIdentifier)))
+                if (rule.AccessControlType == AccessControlType.Allow && !owner.Equals(rule.IdentityReference) &&
+                    !system.Equals(rule.IdentityReference) && !admins.Equals(rule.IdentityReference)) return null;
+            using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            var bytes = new byte[65]; stream.ReadExactly(bytes);
+            if (stream.ReadByte() != -1 || bytes[64] != 10 ||
+                bytes.Take(64).Any(b => !(b >= 48 && b <= 57 || b >= 97 && b <= 102))) return null;
+            return Encoding.ASCII.GetString(bytes,0,64);
+        }
+        catch { return null; }
+    }
+}
+
 /// Host-level capability. A workspace grant is never a desktop grant.
 /// No remote tool can create or widen the local policy.
 internal sealed class CuaService : IDisposable
@@ -87,7 +117,7 @@ internal sealed class CuaService : IDisposable
             }
         }
     }
-    private sealed class ExtensionSession(string owner, ExtensionProfile profile, byte[] policy, Worker worker)
+    private sealed class ExtensionSession(string owner, ExtensionProfile profile, byte[] policy, Worker worker, string? guestEpoch)
     {
         internal readonly string Id=Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         internal readonly string Owner=owner;
@@ -96,10 +126,13 @@ internal sealed class CuaService : IDisposable
         internal readonly Worker Worker=worker;
         internal long Last=Environment.TickCount64;
         internal bool Busy=true;
+        internal readonly string? GuestEpoch=guestEpoch;
     }
     private readonly Dictionary<string,ExtensionSession> _extensions=new(StringComparer.Ordinal);
     private readonly bool _guestMode;
     private readonly bool _relayOnly;
+    private readonly string _guestApprovalPath;
+    private readonly string? _startupGuestEpoch;
     private readonly object _gate = new();
     private readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
     private readonly HashSet<string> _revoked = new(StringComparer.Ordinal);
@@ -122,9 +155,11 @@ internal sealed class CuaService : IDisposable
         ["set_window_frame"] = ["x","y","width","height"]
     };
 
-    internal CuaService(string? policyPath = null,bool guestMode=false,bool relayOnly=false)
+    internal CuaService(string? policyPath = null,bool guestMode=false,bool relayOnly=false,string? guestApprovalPath=null)
     {
         _guestMode=guestMode;_relayOnly=relayOnly;
+        _guestApprovalPath=guestApprovalPath??CuaGuestApproval.DefaultPath;
+        _startupGuestEpoch=(guestMode||relayOnly)?CuaGuestApproval.Epoch(_guestApprovalPath):null;
         _policyPath = policyPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ChatToComputerMCP", "cua-policy.json");
         _timer = new Timer(_ => { try { Sweep(); } catch { /* fail closed at next admission */ } }, null, 1000, 1000);
@@ -150,11 +185,11 @@ internal sealed class CuaService : IDisposable
             ["annotations"] = new JsonObject { ["readOnlyHint"] = read, ["destructiveHint"] = !read, ["openWorldHint"] = true }
         };
         return new JsonArray(
-            Def("cua_extension_list","List locally approved isolated browser and guest profiles.",new(),[],true),
-            Def("cua_extension_open","Open a new isolated browser or a locally registered guest execution lease.",new(){["profile_id"]=String(),["request_id"]=String()},["profile_id","request_id"],false),
+            Def("cua_extension_list","List locally approved isolated browser profiles and, only after manual local enablement, Guest profiles. Prefer native background control for desktop tasks.",new(),[],true),
+            Def("cua_extension_open","Open an isolated browser for web work or an explicitly requested, locally enabled Guest lease. Never use Guest as automatic fallback for native background control.",new(){["profile_id"]=String(),["request_id"]=String()},["profile_id","request_id"],false),
             Def("cua_extension_call","Operate the leased browser or guest using its typed operations. No arbitrary code.",new(){["session_id"]=String(),["operation"]=String(),["parameters"]=new JsonObject{["type"]="object",["additionalProperties"]=true},["request_id"]=String()},["session_id","operation","parameters","request_id"],false),
             Def("cua_extension_close","Release the isolated browser or guest lease.",new(){["session_id"]=String()},["session_id"],false),
-            Def("cua_capabilities", "Report local opt-in and background-only CUA capabilities.", new(), [], true),
+            Def("cua_capabilities", "Report local opt-in and background-only CUA capabilities. Prefer native background window control. Guest is optional and disabled unless locally enabled.", new(), [], true),
             Def("cua_launch_app","Launch an application with a separate locally granted launch permission; no arbitrary arguments.",
                 new() { ["application"]=String(), ["request_id"]=String() }, ["application","request_id"],false),
             Def("cua_receipt_status","Read an action dispatch receipt using its unique request ID. Dispatch is not verification.",
@@ -179,8 +214,15 @@ internal sealed class CuaService : IDisposable
         );
     }
     private static FileMcpException Fail(string message) => new(message);
+    private string? GuestEpoch()
+    {
+        var epoch=CuaGuestApproval.Epoch(_guestApprovalPath);
+        return (_guestMode||_relayOnly)&&epoch!=_startupGuestEpoch?null:epoch;
+    }
     private (Policy, byte[]) LoadPolicy()
     {
+        if((_guestMode||_relayOnly)&&GuestEpoch() is null)throw Fail("cua_guest_disabled_by_local_user");
+
         using var process = Process.GetCurrentProcess();
         if (!OperatingSystem.IsWindowsVersionAtLeast(10) || process.SessionId == 0) throw Fail("cua_requires_interactive_windows_session");
         var file = new FileInfo(_policyPath);
@@ -449,7 +491,7 @@ internal sealed class CuaService : IDisposable
     private bool ExtensionAllowed(ExtensionSession e)
     {
         lock(_gate)if(_stopped||_revoked.Contains(e.Owner)||!_extensions.TryGetValue(e.Id,out var live)||!ReferenceEquals(live,e))return false;
-        try{return LoadPolicy().Item2.AsSpan().SequenceEqual(e.PolicyBytes);}catch{return false;}
+        try{return (e.Profile.kind!="guest"||(e.GuestEpoch is not null&&GuestEpoch()==e.GuestEpoch))&&LoadPolicy().Item2.AsSpan().SequenceEqual(e.PolicyBytes);}catch{return false;}
     }
     private void RetireExtension(string id)
     {
@@ -500,7 +542,7 @@ internal sealed class CuaService : IDisposable
         }
         var (policy,bytes)=LoadPolicy();
         if(!_guestMode&&policy.requireVerifiedClient==true&&owner==SharedOwner)throw Fail("cua_verified_client_required");
-        var profiles=(policy.profiles??[]).Where(p=>p.clients.Contains(owner,StringComparer.Ordinal)).ToArray();
+        var profiles=(policy.profiles??[]).Where(p=>p.clients.Contains(owner,StringComparer.Ordinal)&&(p.kind!="guest"||GuestEpoch() is not null)).ToArray();
         if(name=="cua_extension_list")
             return Output(new JsonObject{["profiles"]=new JsonArray(profiles.Select(p=>(JsonNode?)new JsonObject{["id"]=p.id,["kind"]=p.kind,
                 ["origins"]=new JsonArray((p.origins??[]).Select(o=>(JsonNode?)JsonValue.Create(o)).ToArray())}).ToArray())});
@@ -509,8 +551,10 @@ internal sealed class CuaService : IDisposable
             var profile=profiles.FirstOrDefault(p=>p.id==args["profile_id"]?.GetValue<string>());
             var runtime=policy.extensionRuntime;
             if(profile is null||profile.kind is not ("browser" or "guest")||runtime is null)throw Fail("extension_profile_not_approved");
+            var approval=profile.kind=="guest"?GuestEpoch():null;
             if(profile.kind=="guest")
             {
+                if(approval is null)throw Fail("cua_guest_disabled_by_local_user");
                 var file=new FileInfo(profile.tokenFile??throw Fail("guest_private_credential_required"));
                 if(!file.Exists||file.Length!=65||(file.Attributes&FileAttributes.ReparsePoint)!=0)
                     throw Fail("guest_private_credential_required");
@@ -533,9 +577,10 @@ internal sealed class CuaService : IDisposable
                 if(_stopped||_revoked.Contains(owner)||_sessions.Count+_extensions.Count+_launching.Count>=8||
                     profile.kind=="guest"&&_extensions.Values.Any(e=>e.Profile.kind=="guest"&&e.Profile.port==profile.port))
                     throw Fail("extension_capacity_or_guest_busy");
+                if(profile.kind=="guest"&&(approval is null||GuestEpoch()!=approval))throw Fail("cua_guest_disabled_by_local_user");
                 ReserveReceipt(receipt,request,owner);
                 var worker=new Worker(runtime.node,"",false,runtime,profile);
-                created=new ExtensionSession(owner,profile,bytes,worker);
+                created=new ExtensionSession(owner,profile,bytes,worker,approval);
                 _extensions.Add(created.Id,created);
             }
             try
@@ -597,14 +642,15 @@ internal sealed class CuaService : IDisposable
         if (name == "cua_capabilities")
         {
             bool enabled = false;
-            bool extEnabled=false,requiresVerified=false;
-            try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal));
+            bool extEnabled=false,requiresVerified=false;var guestEnabled=GuestEpoch() is not null;
+            try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal)&&(p.kind!="guest"||guestEnabled));
                 enabled=(!requiresVerified||owner!=SharedOwner)&&(extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal))); } catch { }
             return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",
                 ["identity"] = _relayOnly?"dedicated_relay_credential":_guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["relay_only"]=_relayOnly,["host_tools_allowed"]=!_guestMode&&!_relayOnly,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
-                ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["extension_profiles_enabled"]=extEnabled });
+                ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["guest_enabled"]=guestEnabled,["preferred_execution"]=(_guestMode||_relayOnly)?"explicit_guest":"native_background",["extension_profiles_enabled"]=extEnabled });
         }
+        if((_guestMode||_relayOnly)&&GuestEpoch() is null)throw Fail("cua_guest_disabled_by_local_user");
         if(!_guestMode&&owner==SharedOwner)
         {
             bool strict=false;try{strict=LoadPolicy().Item1.requireVerifiedClient==true;}catch{}

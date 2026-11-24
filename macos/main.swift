@@ -9,6 +9,7 @@ if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--command-work
 let relayDomain: String? = CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--cua-relay-server" ? CommandLine.arguments[2] : nil
 if CommandLine.arguments.dropFirst() == ["--cua-guest-server"] || relayDomain != nil {
     do {
+        guard let approvalEpoch = CUAGuestApproval.epoch() else { throw CUAFailure("Guest is disabled; enable it locally first") }
         var base = CUAPolicy.defaultURL.deletingLastPathComponent()
         if let domain=relayDomain {
             guard domain.range(of:"^[A-Za-z0-9_-]{1,48}$",options:.regularExpression) != nil else {throw CUAFailure("Invalid relay domain")}
@@ -32,13 +33,20 @@ if CommandLine.arguments.dropFirst() == ["--cua-guest-server"] || relayDomain !=
         let sandbox=base.appendingPathComponent("guest-empty-workspace")
         try FileManager.default.createDirectory(at:sandbox,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         let server=try LocalMCPServer(port:port,allowedDirectory:sandbox.path,gitUserName:"",gitUserEmail:"",enableCommands:false,localAuthToken:token,cuaGuest:relayDomain == nil,cuaRelayOnly:relayDomain != nil,cuaPolicyURL:base.appendingPathComponent("cua-policy.json"),log:{message in fputs(message,stderr)})
+        guard CUAGuestApproval.epoch() == approvalEpoch else { throw CUAFailure("Guest approval changed") }
         try server.start()
         // Keep a local interactive session alive without the native GUI.
         signal(SIGINT,SIG_IGN);signal(SIGTERM,SIG_IGN)
         let interrupt=DispatchSource.makeSignalSource(signal:SIGINT,queue:.main)
         let terminate=DispatchSource.makeSignalSource(signal:SIGTERM,queue:.main)
         for source in [interrupt,terminate] {source.setEventHandler{server.stop();exit(0)};source.resume()}
-        withExtendedLifetime((server,interrupt,terminate)){
+        let approvalWatch=DispatchSource.makeTimerSource(queue:.main)
+        approvalWatch.schedule(deadline:.now(),repeating:.milliseconds(250))
+        approvalWatch.setEventHandler {
+            if CUAGuestApproval.epoch() != approvalEpoch { server.stop(); exit(0) }
+        }
+        approvalWatch.resume()
+        withExtendedLifetime((server,interrupt,terminate,approvalWatch)){
             RunLoop.main.run()
         }
     } catch {

@@ -14,6 +14,24 @@ struct CUAFailure: LocalizedError {
     init(_ message: String) { self.message = message }
 }
 
+/// Separate, local-only opt-in. Old configuration is never an approval.
+enum CUAGuestApproval {
+    static var defaultURL: URL { CUAPolicy.defaultURL.deletingLastPathComponent().appendingPathComponent("cua-guest-approval") }
+    static func epoch(_ url: URL = defaultURL) -> String? {
+        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0, info.st_size == 65 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: 66)
+        let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!, $0.count) }
+        guard count == 65, bytes[64] == 10,
+              bytes.prefix(64).allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return String(decoding: bytes.prefix(64), as: UTF8.self)
+    }
+}
+
 struct CUAPolicy: Decodable {
     struct Grant: Decodable {
         let application: String
@@ -285,8 +303,9 @@ final class CUAService {
         let worker: CUAWorker
         var last = ProcessInfo.processInfo.systemUptime
         var busy = true
-        init(owner: String, profile: CUAPolicy.ExtensionProfile, policyBytes: Data, worker: CUAWorker) {
-            self.owner=owner; self.profile=profile; self.policyBytes=policyBytes; self.worker=worker
+        let guestEpoch: String?
+        init(owner: String, profile: CUAPolicy.ExtensionProfile, policyBytes: Data, worker: CUAWorker, guestEpoch: String?) {
+            self.owner=owner; self.profile=profile; self.policyBytes=policyBytes; self.worker=worker; self.guestEpoch=guestEpoch
         }
     }
     private let gate = NSRecursiveLock()
@@ -294,6 +313,8 @@ final class CUAService {
     private var extensions: [String:ExtensionSession] = [:]
     private let guestMode: Bool
     private let relayOnly: Bool
+    private let guestApprovalURL: URL
+    private let startupGuestEpoch: String?
     private var sessions: [String: Session] = [:]
     private var revoked = Set<String>()
     private var stopped = false
@@ -312,10 +333,12 @@ final class CUAService {
         "invoke_menu":["path"],
         "set_window_frame":["x","y","width","height"]
     ]
-    init(policyURL: URL = CUAPolicy.defaultURL, guestMode: Bool = false, relayOnly: Bool = false) {
+    init(policyURL: URL = CUAPolicy.defaultURL, guestMode: Bool = false, relayOnly: Bool = false, guestApprovalURL: URL = CUAGuestApproval.defaultURL) {
         self.policyURL = policyURL
         self.guestMode = guestMode
         self.relayOnly = relayOnly
+        self.guestApprovalURL = guestApprovalURL
+        self.startupGuestEpoch = (guestMode || relayOnly) ? CUAGuestApproval.epoch(guestApprovalURL) : nil
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos:.utility))
         timer.schedule(deadline:.now() + 1, repeating:1)
         timer.setEventHandler { [weak self] in self?.sweep() }
@@ -334,11 +357,11 @@ final class CUAService {
         let integer: [String:Any] = ["type":"integer","minimum":1]
         let boolean: [String:Any] = ["type":"boolean"]
         let items: [(String,String,[String:Any],[String],Bool)] = [
-            ("cua_extension_list","List locally approved isolated browser and guest profiles.",[:],[],true),
-            ("cua_extension_open","Open a new isolated browser or a locally registered guest execution lease.",["profile_id":string,"request_id":string],["profile_id","request_id"],false),
+            ("cua_extension_list","List locally approved isolated browser profiles and, only after manual local enablement, Guest profiles. Prefer native background control for desktop tasks.",[:],[],true),
+            ("cua_extension_open","Open an isolated browser for web work or an explicitly requested, locally enabled Guest lease. Never use Guest as automatic fallback for native background control.",["profile_id":string,"request_id":string],["profile_id","request_id"],false),
             ("cua_extension_call","Operate the leased browser or guest using its typed operations. No arbitrary code.",["session_id":string,"operation":string,"parameters":["type":"object","additionalProperties":true],"request_id":string],["session_id","operation","parameters","request_id"],false),
             ("cua_extension_close","Release the isolated browser or guest lease.",["session_id":string],["session_id"],false),
-            ("cua_capabilities","Report local opt-in and background-only CUA capabilities.",[:],[],true),
+            ("cua_capabilities","Report local opt-in and background-only CUA capabilities. Prefer native background window control. Guest is optional and disabled unless locally enabled.",[:],[],true),
             ("cua_launch_app","Launch an application with a separate locally granted launch permission; no arbitrary arguments.",["application":string,"request_id":string],["application","request_id"],false),
             ("cua_receipt_status","Read an action dispatch receipt using its unique request ID. Dispatch is not verification.",["request_id":string],["request_id"],true),
             ("cua_list_apps","List running applications explicitly granted to this connection.",[:],[],true),
@@ -357,7 +380,14 @@ final class CUAService {
              "annotations":["readOnlyHint":read,"destructiveHint":!read,"openWorldHint":true]]
         }
     }
+    private func guestEpoch() -> String? {
+        guard let epoch = CUAGuestApproval.epoch(guestApprovalURL) else { return nil }
+        if guestMode || relayOnly { return startupGuestEpoch == epoch ? epoch : nil }
+        return epoch
+    }
     private func loadPolicy() throws -> (CUAPolicy,Data) {
+        if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
+
         // No remote policy setters. Reject symlinks and files readable/writable
         // by other local users. Same-user shell is not a security sandbox.
         guard #available(macOS 14.0, *) else { throw CUAFailure("cua_unsupported_os: macOS 14 or later required") }
@@ -577,7 +607,7 @@ final class CUAService {
     }
     private func extensionAllowed(_ e: ExtensionSession) -> Bool {
         gate.lock(); let live = !stopped && !revoked.contains(e.owner) && extensions[e.id] === e; gate.unlock()
-        return live && (try? loadPolicy().1) == e.policyBytes
+        return live && (e.profile.kind != "guest" || (e.guestEpoch != nil && guestEpoch() == e.guestEpoch)) && (try? loadPolicy().1) == e.policyBytes
     }
     private func retireExtension(_ id: String) {
         gate.lock(); let e = extensions[id]; gate.unlock()
@@ -621,14 +651,16 @@ final class CUAService {
         }
         let (policy,bytes) = try loadPolicy()
         guard guestMode || policy.requireVerifiedClient != true || owner != CUAPolicy.sharedOwner else {throw CUAFailure("cua_verified_client_required")}
-        let profiles = (policy.profiles ?? []).filter { $0.clients.contains(owner) }
+        let profiles = (policy.profiles ?? []).filter { $0.clients.contains(owner) && ($0.kind != "guest" || guestEpoch() != nil) }
         if name == "cua_extension_list" {
             return try output(["profiles":profiles.map { ["id":$0.id,"kind":$0.kind,"origins":$0.origins ?? []] as [String:Any] }])
         }
         if name == "cua_extension_open" {
             guard let profileID = args["profile_id"] as? String, let p = profiles.first(where:{$0.id == profileID}),
                   ["browser","guest"].contains(p.kind), let runtime = policy.extensionRuntime else { throw CUAFailure("extension_profile_not_approved") }
+            let approval = p.kind == "guest" ? guestEpoch() : nil
             if p.kind == "guest" {
+                guard approval != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") }
                 var info = stat()
                 guard let file = p.tokenFile, canonicalRegularFile(file), lstat(file,&info) == 0,
                       info.st_uid == getuid(), info.st_mode & 0o077 == 0, info.st_size == 65 else {
@@ -646,10 +678,11 @@ final class CUAService {
             }
             let worker: CUAWorker
             do {
+                guard p.kind != "guest" || (approval != nil && guestEpoch() == approval) else { throw CUAFailure("cua_guest_disabled_by_local_user") }
                 try reserveReceipt(receipt,request:request,owner:owner)
                 worker = try CUAWorker(driver:runtime.node,application:"",extensionRuntime:runtime,extensionProfile:p)
             } catch { gate.unlock(); throw error }
-            let e=ExtensionSession(owner:owner,profile:p,policyBytes:bytes,worker:worker)
+            let e=ExtensionSession(owner:owner,profile:p,policyBytes:bytes,worker:worker,guestEpoch:approval)
             extensions[e.id]=e; gate.unlock()
             do {
                 let reply=try worker.call("extension_open",[:],allowed:{requestAlive() && self.extensionAllowed(e)})
@@ -699,10 +732,13 @@ final class CUAService {
         if name == "cua_capabilities" {
             let policy = try? loadPolicy().0
             let requiresVerified = !guestMode && policy?.requireVerifiedClient == true
-            let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || (!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true))
+            let guestEnabled = guestEpoch() != nil
+            let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
+            let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
             return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
-                "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"extension_profiles_enabled":enabled && !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true])
+                "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
+        if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
         if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {
             throw CUAFailure("cua_verified_client_required")
         }

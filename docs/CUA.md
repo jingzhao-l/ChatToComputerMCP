@@ -2,6 +2,44 @@
 
 ChatToComputerMCP integrates the pinned upstream [Cua Driver](https://github.com/trycua/cua) 0.61.0 using private bounded MCP stdio workers on macOS and Windows. It also supports an optional pinned Playwright 1.65.1 headless browser and a dedicated guest CUA relay. These tools can be composed with ordinary workspace, shell and coding tools in the same chat. They do not implement a separate autonomous agent or require GUI changes.
 
+## Execution priority and independent Guest opt-in
+
+Direct native background window control is the primary computer-use path.
+An independently authorized headless browser is appropriate for web-only work.
+There is no automatic foreground fallback and no automatic Guest/VM fallback.
+
+Independent Guest is **disabled by default**, including on upgrades with saved
+guest profiles, credentials, VM registrations or dedicated relay definitions.
+The local user must explicitly enable it in an interactive terminal:
+
+    chat-to-computer-mcp cua guest-enable
+    chat-to-computer-mcp cua guest-status
+    chat-to-computer-mcp cua guest-disable
+
+Type ENABLE at the local interactive prompt to confirm activation. Noninteractive
+CLI activation is refused and there is no remote MCP activation tool. Enabling
+does not create/start a VM, listener or forward and does not grant application
+permissions. The independent private approval persists until the user disables
+it. Enable separately on the host and on a dedicated Guest that runs the
+guest-only listener. Until then, Guest provisioning/start, initialization,
+registration, connection and serving commands refuse execution; saved Guest
+profiles are omitted from remote extension discovery.
+
+Disabling removes the approval, revokes Guest leases, and stops managed Guest
+and relay listeners/SSH forwards on that computer. Re-enabling uses a fresh
+approval epoch and cannot revive an old lease or restart a listener. Native
+window CUA and headless browser leases are unaffected. Existing VM disks and
+configuration remain intact, and separately running VMs are not powered off.
+Status, stop and revocation operations remain available for cleanup. In-flight
+actions already dispatched to another machine cannot be undone by revocation.
+
+The capability response reports guest_enabled and preferred_execution; this
+does not create a conversation identity. The interactive local switch and
+private state file are safeguards against normal MCP/CLI use, not a security
+boundary against arbitrary host code running as the same OS user. For
+adversarial shell access, enforce a separate OS security boundary as described
+in the verified-client and workspace security documentation.
+
 ## Native setup
 
     chat-to-computer-mcp cua install
@@ -56,7 +94,7 @@ Each lease owns a fresh headless browser context. It does not attach to the user
 
 ## Dedicated guest execution
 
-Use a separately provisioned macOS or Windows VM or other independently managed desktop. The local-only provisioning command can create a VM from an existing Lume template or a detached standalone Hyper-V Gen2 VHDX:
+Only when the user explicitly requests independent Guest, first use the local guest-enable command on the host and the guest itself. Use a separately provisioned macOS or Windows VM or other independently managed desktop. The local-only provisioning command can create a VM from an existing Lume template or a detached standalone Hyper-V Gen2 VHDX:
 
     chat-to-computer-mcp cua vm provision --provider lume --template clean-template --name cua-guest
     chat-to-computer-mcp cua vm provision --provider hyper-v --template C:\VMs\clean.vhdx --name cua-guest --destination C:\VMs --switch Private
@@ -150,6 +188,6 @@ to an untrusted caller at the same time. A trusted local operator must verify
 that the guests and network forwarding targets really are distinct and
 isolated; the relay cannot remotely attest a VM's hypervisor. Existing
 same-OS-user processes with unrestricted host privileges are outside this
-boundary. The dual-relay HTTP regression verifies cross-credential denial,
+boundary. The dual-relay HTTP regression verifies default-off admission, opt-in revocation, epoch rotation, browser lease continuity, cross-credential denial,
 foreign lease rejection, host-tool/wrapper refusal and policy-widening denial
 using two independent guest listeners, not two physical VMs.
