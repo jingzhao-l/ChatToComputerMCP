@@ -247,12 +247,12 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             _cloudflareTokenFile = start.TokenFile;
             var registered = new TaskCompletionSource<bool>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
+            var registrationMonitor = new CloudflareConnectionMonitor();
             _tunnelProcess = ProcessRunner.StartManaged(start.Executable,start.Args,
                 null,start.Environment,
                 output =>
                 {
-                    if (output.Contains("Registered tunnel connection",
-                        StringComparison.OrdinalIgnoreCase))
+                    if (registrationMonitor.Consume(output))
                         registered.TrySetResult(true);
                     EmitLog(Redact(output, [
                         configuration.CloudflareToken,configuration.CloudflarePairingCode]));
@@ -262,7 +262,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     registered.TrySetException(new FileMcpException(
                         "Cloudflare tunnel exited before registration: " + code));
                     _ = Task.Run(() => TunnelDidExitAsync(code, attempt));
-                });
+                }, sensitiveValues: [configuration.CloudflareToken, configuration.CloudflarePairingCode]);
             EmitLog("Waiting for Cloudflare Tunnel to register a secure connection…\n");
             await registered.Task.WaitAsync(TimeSpan.FromSeconds(40),
                 cancellationToken).ConfigureAwait(false);
@@ -315,7 +315,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             ["run", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress, "--health.url-file", locator],
             null, environment,
             text => EmitLog(Redact(text, sensitive)),
-            exitCode => _ = Task.Run(() => TunnelDidExitAsync(exitCode, attempt)));
+            exitCode => _ = Task.Run(() => TunnelDidExitAsync(exitCode, attempt)), sensitiveValues: sensitive);
         _transportStarted = true;
         SetState(LocalMcpRuntimeState.Running);
         EmitLog($"OpenAI Secure MCP Tunnel process started; verifying cloud polling. Command execution: {(configuration.EnableCommands ? "enabled" : "disabled")}.\n");
@@ -607,6 +607,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in pass) if (inherited.TryGetValue(key, out var value) && value.Length > 0) result[key] = value;
         foreach (var pair in inherited.Where(pair => pair.Key.StartsWith("MCP_TEST_", StringComparison.OrdinalIgnoreCase))) result[pair.Key] = pair.Value;
+        WindowsTunnelProxy.ApplyFallback(result, WindowsTunnelProxy.Discover);
         var noProxy = (inherited.GetValueOrDefault("NO_PROXY") ?? inherited.GetValueOrDefault("no_proxy") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         foreach (var loopback in new[] { "127.0.0.1", "localhost", "::1" }) if (!noProxy.Contains(loopback, StringComparer.OrdinalIgnoreCase)) noProxy.Add(loopback);
         result["NO_PROXY"] = result["no_proxy"] = string.Join(',', noProxy); result["CONTROL_PLANE_API_KEY"] = apiKey; result["FILEMCP_LOCAL_AUTH_TOKEN"] = localAuthToken;

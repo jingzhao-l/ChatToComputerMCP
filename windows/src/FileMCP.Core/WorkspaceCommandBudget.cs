@@ -141,10 +141,7 @@ internal sealed class WorkspaceCommandBudget
 
     public bool HasActivityUnderRoot(string root)
     {
-        lock (_gate) return ActivePaths().Concat(_pending.Where(item => item.Session.Active).Select(item => item.Session.Cwd)).Any(path =>
-            string.Equals(path, root, StringComparison.OrdinalIgnoreCase) ||
-            path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase));
+        return HasConflictingActivity([root]);
     }
 
     public System.Text.Json.Nodes.JsonObject Status()
