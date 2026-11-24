@@ -71,7 +71,7 @@
     "contracts/desktop-areas.json"
   ],
   "scripts": {
-    "test": "node --test npm/installer.test.mjs",
+    "test": "node --test npm/installer.test.mjs npm/release-order.test.mjs",
     "pack:check": "npm pack --dry-run --json"
   },
   "publishConfig": {

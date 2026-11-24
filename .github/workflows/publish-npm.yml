@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ github.ref }}
+  group: npm-publish-stable
   cancel-in-progress: false
 
 jobs:
@@ -228,6 +228,12 @@ jobs:
           package-manager-cache: false
       - name: Use OIDC-capable npm
         run: npm install --global npm@11
+      - name: Refuse stale stable tag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm view chat-to-computer-mcp dist-tags.latest --json --prefer-online --fetch-retries=0 > "$RUNNER_TEMP/latest.json"
+          node tests/check_release_order.mjs "$RUNNER_TEMP/latest.json"
       - name: Refuse immutable version reuse
         shell: bash
         run: |
@@ -276,6 +282,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
       - name: Publish verified source release
         shell: bash
         env:
@@ -283,6 +293,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           version="${GITHUB_REF_NAME#v}"
+          latest="$(npm view chat-to-computer-mcp dist-tags.latest --prefer-online --fetch-retries=0)"
+          test "$latest" = "$version" || { echo "::error::npm latest changed; refusing to mark an older GitHub release latest"; exit 1; }
           python3 - "$version" <<'PY'
           import sys
           from pathlib import Path
@@ -301,3 +313,5 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --latest --title "ChatToComputerMCP $GITHUB_REF_NAME" --notes-file release-notes.md
           fi
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          test "$actual" = "$GITHUB_REF_NAME" || { echo "::error::GitHub latest release read-back mismatch"; exit 1; }

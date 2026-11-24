@@ -75,13 +75,13 @@ The job verifies that:
 6. Native Mac/Windows quality gates include base schema and permission checks, native HTTP/runtime and installer regressions, Intel Mac vendor integrity and base gateway tests, plus the separately maintained CUA security, Chromium and Guest transport regression.
 7. The same registry version has not already been published.
 
-It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, followed by a registry read-back. The tag alone does not produce a Mac/Windows installer binary: recipients compile natively from the npm package.
+Stable publish workflows share one concurrency group and must advance the current registry latest; stale and equal versions fail closed. It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, followed by a registry read-back. The tag alone does not produce a Mac/Windows installer binary: recipients compile natively from the npm package.
 
 **Do not reuse a published npm version.** If a verification or publishing attempt fails after npm accepted the tarball, inspect registry state before retrying. A new publication requires a new version number.
 
 After the registry confirms the exact version and latest dist-tag, a separate
 least-privilege GitHub Release job publishes the immutable tag with the matching
-CHANGELOG section. A failed native or npm gate cannot publish that release.
+CHANGELOG section. A failed native or npm gate cannot publish that release. The release job rechecks npm latest before marking GitHub latest and reads back the resulting GitHub release tag.
 
 ## Optional GitHub release asset
 
