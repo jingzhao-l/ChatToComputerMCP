@@ -69,6 +69,37 @@ internal static partial class Program
         var response = await SendHttpAsync(port, "POST", "/mcp", AuthHeaders(token), "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}");
         Assert(response.StartsWith("HTTP/1.1 200", StringComparison.Ordinal), "released slots accept valid requests");
         await WaitCount(0);
+        // An unauthenticated request must get its complete 401 before a
+        // fragmented body is supplied. The server may only discard raw tail
+        // bytes, never parse them as MCP or wait for the advertised length.
+        using (var rejected = await Connect())
+        {
+            var stream = rejected.GetStream();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(
+                "POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n"),
+                timeout.Token);
+            using var reply = new MemoryStream();
+            var bytes = new byte[4096];
+            while (true)
+            {
+                var read = await stream.ReadAsync(bytes, timeout.Token);
+                if (read == 0) break;
+                reply.Write(bytes, 0, read);
+                if (Encoding.UTF8.GetString(reply.ToArray()).EndsWith("\r\n\r\nUnauthorized", StringComparison.Ordinal))
+                    break;
+            }
+            var denied = Encoding.UTF8.GetString(reply.ToArray());
+            Assert(denied.StartsWith("HTTP/1.1 401 ", StringComparison.Ordinal) &&
+                denied.EndsWith("\r\n\r\nUnauthorized", StringComparison.Ordinal),
+                "split unauthenticated request receives complete 401 without body");
+            // A compliant peer may close immediately after the rejection;
+            // a concurrently-sent trailing fragment must not erase the reply.
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("{}"), timeout.Token);
+            rejected.Client.Shutdown(SocketShutdown.Send);
+            Assert(await stream.ReadAsync(bytes, timeout.Token) == 0, "rejected connection finishes and releases capacity");
+        }
+        await WaitCount(0);
         // A partial authenticated body must also expire.
         using (var body = await Connect())
         {

@@ -461,6 +461,30 @@ public sealed class LocalMcpServer : IAsyncDisposable
         await stream.WriteAsync(response, deadline.Token).ConfigureAwait(false);
     }
 
+    private async Task WriteRejectionAsync(TcpClient client, NetworkStream stream, byte[] response,
+        CancellationToken cancellationToken, CancellationToken requestDeadline)
+    {
+        await WriteResponseAsync(stream, response, cancellationToken).ConfigureAwait(false);
+        // Send the rejection before accepting/processing the unauthorized body.
+        // A full TCP close while the peer is still sending can reset the
+        // connection and discard the already-written response on Windows.
+        // Half-close the response, then discard a small bounded amount of raw
+        // input; neither the request deadline nor admission cap is extended.
+        try { client.Client.Shutdown(SocketShutdown.Send); }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException) { return; }
+        using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, requestDeadline);
+        drain.CancelAfter(TimeSpan.FromMilliseconds(250));
+        var scratch = new byte[4096];
+        int remaining = 65_536;
+        while (remaining > 0 && !drain.IsCancellationRequested)
+        {
+            int read = await stream.ReadAsync(scratch.AsMemory(0, Math.Min(scratch.Length, remaining)),
+                drain.Token).ConfigureAwait(false);
+            if (read == 0) break;
+            remaining -= read;
+        }
+    }
+
     private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken, CancellationTokenSource deadline)
     {
         using (client)
@@ -505,14 +529,14 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 }
                 if (parsed.Status == HttpParseStatus.Failure)
                 {
-                    var response = HttpResponse(parsed.FailureStatus, Encoding.UTF8.GetBytes(parsed.FailureMessage ?? "Error"), "text/plain");
-                    await WriteResponseAsync(stream, response, cancellationToken).ConfigureAwait(false);
+                    var response = HttpErrorResponse(parsed.FailureStatus, parsed.FailureMessage ?? "Error");
+                    await WriteRejectionAsync(client, stream, response, cancellationToken, deadline.Token).ConfigureAwait(false);
                     return;
                 }
                 if (buffer.Length > FileMcpConstants.MaxHttpRequestHeaderBytes + FileMcpConstants.MaxHttpRequestBodyBytes)
                 {
                     var response = HttpResponse(413, Encoding.UTF8.GetBytes("Payload too large"), "text/plain");
-                    await WriteResponseAsync(stream, response, cancellationToken).ConfigureAwait(false);
+                    await WriteRejectionAsync(client, stream, response, cancellationToken, deadline.Token).ConfigureAwait(false);
                     return;
                 }
                 int read;
@@ -605,7 +629,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (request.Path == "/mcp" &&
                 !HasValidLocalAdmin(request.Headers) &&
                 _oauth.VerifyBearer(request.Headers.GetValueOrDefault("authorization")) is null)
-                return HttpResponse(401, Encoding.UTF8.GetBytes("Unauthorized"), "text/plain");
+                return HttpErrorResponse(401, "Unauthorized");
         }
         if (request.Method == "OPTIONS") return HttpResponse(204, [], "text/plain");
         if (request.Path != "/mcp") return HttpResponse(404, Encoding.UTF8.GetBytes("Not found"), "text/plain");
@@ -624,7 +648,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             request.Headers.GetValueOrDefault("authorization"));
         if (_oauth is not null && verified is null &&
             (!HasValidLocalAdmin(request.Headers) || (IsCuaRequest(request) && request.Headers.ContainsKey("authorization"))))
-            return HttpResponse(401, Encoding.UTF8.GetBytes("Unauthorized"), "text/plain");
+            return HttpErrorResponse(401, "Unauthorized");
         var headerVersion = request.Headers.GetValueOrDefault("mcp-protocol-version");
         var headerModern = headerVersion is not null && !FileMcpConstants.LegacySupportedVersions.Contains(headerVersion);
         JsonObject parameters;
@@ -940,18 +964,31 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private static byte[] JsonRpcError(JsonNode? id, int code, string message, JsonNode? data = null, int status = 200) { var error = new JsonObject { ["code"] = code, ["message"] = message }; if (data is not null) error["data"] = data; return JsonResponse(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id?.DeepClone(), ["error"] = error }, status); }
     private static byte[] JsonResponse(JsonNode node, int status = 200) => HttpResponse(status, Encoding.UTF8.GetBytes(node.ToJsonString()), "application/json");
 
+    private byte[] HttpErrorResponse(int status, string message)
+    {
+        IReadOnlyDictionary<string, string>? headers = status == 401 && _oauth is not null
+            ? new Dictionary<string, string>
+            {
+                ["WWW-Authenticate"] = $"Bearer resource_metadata=\"{_oauth.Issuer}/.well-known/oauth-protected-resource/mcp\", scope=\"mcp\""
+            }
+            : null;
+        return HttpResponse(status, Encoding.UTF8.GetBytes(message), "text/plain", headers);
+    }
+
     private static byte[] HttpResponse(int status, byte[] body, string contentType,
         IReadOnlyDictionary<string, string>? extraHeaders = null)
     {
         var reason = status switch { 200 => "OK", 202 => "Accepted", 204 => "No Content", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed",
             302 => "Found", 429 => "Too Many Requests", 413 => "Payload Too Large", 415 => "Unsupported Media Type", 431 => "Request Header Fields Too Large", 500 => "Internal Server Error", _ => "Error" };
-        var optional = new StringBuilder();
+        var optional = new StringBuilder("Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n");
+        if (extraHeaders?.ContainsKey("Referrer-Policy") != true)
+            optional.Append("Referrer-Policy: no-referrer\r\n");
         if (extraHeaders is not null)
         {
             foreach (var item in extraHeaders)
             {
                 if (item.Key is not ("Location" or "Content-Security-Policy" or
-                    "Referrer-Policy" or "X-Frame-Options") ||
+                    "Referrer-Policy" or "X-Frame-Options" or "WWW-Authenticate") ||
                     item.Value.Contains('\r') || item.Value.Contains('\n') ||
                     item.Value.Length > 4096)
                     throw new FileMcpException("Unsafe OAuth response header");

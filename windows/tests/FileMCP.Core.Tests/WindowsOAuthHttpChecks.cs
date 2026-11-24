@@ -25,6 +25,12 @@ internal static partial class Program
             "{}",host:"example.test");
         Assert(denied.StartsWith("HTTP/1.1 401",StringComparison.Ordinal),
             "Cloudflare OAuth mode refuses unauthenticated tool access");
+        Assert(denied.Contains("WWW-Authenticate: Bearer resource_metadata=\"https://example.test/.well-known/oauth-protected-resource/mcp\", scope=\"mcp\"\r\n", StringComparison.Ordinal),
+            "OAuth 401 exposes the protected-resource discovery challenge");
+        Assert(denied.Contains("Cache-Control: no-store\r\n", StringComparison.Ordinal) &&
+            denied.Contains("X-Content-Type-Options: nosniff\r\n", StringComparison.Ordinal) &&
+            denied.Contains("Referrer-Policy: no-referrer\r\n", StringComparison.Ordinal),
+            "OAuth responses use no-store, nosniff and safe referrer defaults");
 
         async Task<JsonObject> Call(string access,string tool,JsonObject? args=null)
         {
