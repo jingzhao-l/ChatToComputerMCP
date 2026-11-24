@@ -125,6 +125,10 @@ internal static partial class Program
         CuaService.ValidateAction("type_text",J("""{"element_token":"s00000003:1","text":"a\n多行😀","delay_ms":10}"""));
         Refuse("paced input budget",()=>CuaService.ValidateAction("type_text",J("""{"element_token":"s00000003:1","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","delay_ms":100}""")));
         Refuse("NUL input",()=>CuaService.ValidateAction("type_text",J("""{"element_token":"s00000003:1","text":"a\u0000b"}""")));
+        var evidence=CuaService.NativeActionEvidence(J("""{"effect":"unverifiable","verified":false,"path":"key_events","escalation":{"recommended":"foreground"},"reason":"retry foreground","image":"abc","code":"bad code with spaces","cell_value":"fixture value"}"""));
+        Assert(evidence["effect"]?.GetValue<string>()=="unverifiable"&&evidence["verified"]?.GetValue<bool>()==false,"normalized action evidence");
+        Assert(!evidence.ContainsKey("escalation")&&!evidence.ContainsKey("reason")&&!evidence.ContainsKey("image")&&!evidence.ContainsKey("code"),"no escalation advice");
+        Assert(evidence["cell_value"]?.GetValue<string>()=="fixture value","bounded value evidence");
         long? foreground=101;
         var continuity=new CuaForegroundContinuity(()=>foreground);
         Assert(continuity.Permits(),"initial foreground continuity");
@@ -139,6 +143,9 @@ internal static partial class Program
         {
             var result = await worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default);
             Assert(result["structuredContent"]?["echo"]?["window_id"]?.GetValue<int>() == 2, "CUA bounded stdio handshake");
+            Assert(worker.LastCallMs>=worker.LastHandshakeMs,"CUA timing");
+            await worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default);
+            Assert(worker.LastHandshakeMs==0&&worker.AgeSeconds>=0,"warm driver reuses negotiation");
             await RefuseAsync("before-dispatch geometry guard",()=>worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default,()=>throw new FileMcpException("stale geometry")));
             await RefuseAsync("unadvertised driver tool",()=>worker.CallAsync("bring_to_front",new(),()=>true,default));
         }
@@ -147,6 +154,10 @@ internal static partial class Program
             var watch=Stopwatch.StartNew();
             await RefuseAsync("in-flight revoked call", () => worker.CallAsync("hang",new(),()=>watch.ElapsedMilliseconds<800,default));
             Assert(watch.ElapsedMilliseconds<4000,"CUA revocation latency");
+        }
+        using(var worker=new CuaService.Worker(exe,exe)){
+            await Task.WhenAll(Task.Run(worker.Dispose),Task.Run(worker.Dispose));
+            Assert(!worker.IsAlive,"concurrent close waits for worker retirement");
         }
         service.Revoke("oauth-test");
         await RefuseAsync("revoked owner",()=>service.CallAsync("cua_capabilities",new(),"oauth-test",default));

@@ -138,6 +138,9 @@ final class CUAWorker {
     private var pending = Data()
     private var nextID = 0
     private var initialized = false
+    private(set) var lastCallTiming:[String:Int]=[:]
+    private let startedAt=ProcessInfo.processInfo.systemUptime
+    var ageSeconds:Int {Int(ProcessInfo.processInfo.systemUptime-startedAt)}
     private var toolSchemas: [String:[String:Any]] = [:]
     private let manifestURL: URL
     private let isExtension: Bool
@@ -270,7 +273,10 @@ final class CUAWorker {
         return args
     }
     func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool, beforeDispatch: () throws -> Void = {}) throws -> [String: Any] {
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        let started=ProcessInfo.processInfo.systemUptime
+        let deadline = started + 10
+        var handshakeMs=0
+        defer {lastCallTiming=["worker_call_ms":Int((ProcessInfo.processInfo.systemUptime-started)*1000),"handshake_ms":handshakeMs]}
         if !initialized {
             let initResult = try rpc("initialize", ["protocolVersion":"2025-06-18", "capabilities":[:],
                 "clientInfo":["name":"ChatToComputerMCP", "version":"1"]], deadline:deadline, allowed:allowed)
@@ -287,6 +293,7 @@ final class CUAWorker {
                 }
             }
             initialized = true
+            handshakeMs=Int((ProcessInfo.processInfo.systemUptime-started)*1000)
         }
         let checked:[String:Any]
         if isExtension{checked=args}
@@ -617,26 +624,33 @@ final class CUAService {
             return ["window_id":id,"title":row[kCGWindowName as String] as? String ?? "", "bounds":row[kCGWindowBounds as String] as? [String:Any] ?? [:],"on_screen":row[kCGWindowIsOnscreen as String] as? Bool ?? false]
         }
     }
+    private func exactWindow(_ pid:Int32,_ window:Int64)->[String:Any]? {
+        guard window>0,window<=Int64(UInt32.max),
+              let rows=CGWindowListCreateDescriptionFromArray([NSNumber(value:window)] as CFArray) as? [[String:Any]],
+              let row=rows.first(where:{($0[kCGWindowNumber as String] as? Int64)==window &&
+                ($0[kCGWindowOwnerPID as String] as? Int32)==pid && ($0[kCGWindowLayer as String] as? Int)==0}) else{return nil}
+        return row
+    }
     private func windowGeometry(_ target:CUATarget)->CUAWindowGeometry? {
-        guard let row=windows(target.pid).first(where:{$0["window_id"] as? Int64 == target.window}),
-              let bounds=row["bounds"] as? [String:Any],
+        guard let row=exactWindow(target.pid,target.window),
+              let bounds=row[kCGWindowBounds as String] as? [String:Any],
               let x=bounds["X"] as? Double,let y=bounds["Y"] as? Double,
               let w=bounds["Width"] as? Double,let h=bounds["Height"] as? Double else{return nil}
-        return CUAWindowGeometry(x:x,y:y,width:w,height:h,onScreen:row["on_screen"] as? Bool ?? false)
+        return CUAWindowGeometry(x:x,y:y,width:w,height:h,onScreen:row[kCGWindowIsOnscreen as String] as? Bool ?? false)
     }
     private func target(_ pid: Int32, _ window: Int64, policy: CUAPolicy, owner: String) throws -> CUATarget {
         let (app,launch) = try approvedApp(pid,policy:policy,owner:owner)
-        guard windows(pid).contains(where: { $0["window_id"] as? Int64 == window }) else {
+        guard exactWindow(pid,window) != nil else {
             throw CUAFailure("cua_window_not_owned_or_unavailable")
         }
         return CUATarget(pid:pid,window:window,application:app,launched:launch)
     }
     private func stillAllowed(_ s: Session, mutation: Bool, requireWindow:Bool=true) -> Bool {
         gate.lock(); let live = !stopped && !s.retiring && !revoked.contains(s.owner) && sessions[s.id] === s; gate.unlock()
-        guard live, s.worker.isAlive, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
+        guard live, s.worker.isAlive, s.worker.ageSeconds<6900, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
               let (app,launch)=try? approvedApp(s.target.pid,policy:policy,owner:s.owner),
               app==s.target.application,launch==s.target.launched else {return false}
-        if requireWindow && !windows(s.target.pid).contains(where:{$0["window_id"] as? Int64==s.target.window}) {return false}
+        if requireWindow && exactWindow(s.target.pid,s.target.window)==nil {return false}
         if mutation && !guestMode {
             guard let foreground = NSWorkspace.shared.frontmostApplication, foreground.processIdentifier != s.target.pid else { return false }
         }
@@ -768,6 +782,18 @@ final class CUAService {
     }
     private static func validModifiers(_ values:[String]) -> Bool {
         values.count<=4 && Set(values).count==values.count && values.allSatisfy{["cmd","shift","option","alt","ctrl"].contains($0)}
+    }
+    static func nativeActionEvidence(_ structured:[String:Any])->[String:Any] {
+        // Only factual scalar driver evidence, not escalation instructions,
+        // file paths or raw action records. A bounded cell_value is retained as evidence.
+        let keys=Set(["effect","verified","path","verify","code","characters","cell_value"])
+        return structured.filter { key,value in
+            guard keys.contains(key) else{return false}
+            if let text=value as? String {
+                return text.utf8.count<=1024 && (key=="cell_value" || text.range(of:"\\A[A-Za-z0-9_.-]{1,128}\\z",options:.regularExpression) != nil)
+            }
+            return value is NSNumber
+        }
     }
     static func recoverableNativeRefusal(_ structured:[String:Any])->String? {
         guard structured["foreground_step"]==nil,
@@ -971,7 +997,7 @@ final class CUAService {
             let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
             return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"same_process_window_transfer":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
-                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
+                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"native_worker_max_age_seconds":6900,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
         if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
         if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {
@@ -1069,7 +1095,7 @@ final class CUAService {
                   (try? target(pid,window,policy:policy,owner:owner))==t else {throw CUAFailure("cua_target_unavailable_or_revoked")}
             if let raw=args["previous_session_id"] {
                 guard let prior=raw as? String,let old=sessions[prior],old.owner==owner,
-                      !old.busy,!old.retiring,old.worker.isAlive,old.policyBytes==bytes,
+                      !old.busy,!old.retiring,old.worker.isAlive,old.worker.ageSeconds<6900,old.policyBytes==bytes,
                       ProcessInfo.processInfo.systemUptime-old.last<=300,old.target.sameProcess(as:t),
                       old.target.window != window else{throw CUAFailure("cua_window_transfer_not_allowed")}
                 // Keep the PID reserved continuously. A fresh bearer and no
@@ -1165,7 +1191,7 @@ final class CUAService {
                 let failure=reply["structuredContent"] as? [String:Any] ?? [:]
                 if mutation,let code=Self.recoverableNativeRefusal(failure),let (receipt,request)=actionReceipt {
                     try finishReceipt(receipt,request:request,state:"launch_failed")
-                    var out:[String:Any]=["session_id":id,"operation":driverTool,"action_outcome":"refused","action_dispatched":false,"verified":false,"code":code,
+                    var out:[String:Any]=["session_id":id,"operation":driverTool,"action_outcome":"refused","action_dispatched":false,"verified":false,"code":code,"timing_ms":s.worker.lastCallTiming,
                         "observation_required":true,"background_only":true,"foreground_fallback":false,"verification_required":false]
                     if code=="select_menu_would_raise_window" {out["suggested_operation"]="set_value"}
                     if code=="option_not_found",let options=failure["options"] as? [String] {
@@ -1180,14 +1206,14 @@ final class CUAService {
             for block in blocks {
                 if block["type"] as? String == "text", let text = block["text"] as? String {
                     guard text.utf8.count <= 2_000_000 else { throw CUAFailure("cua_driver_text_too_large") }
-                    safe.append(["type":"text","text":text])
+                    if !mutation {safe.append(["type":"text","text":text])}
                 } else if !mutation, block["type"] as? String == "image", let mime = block["mimeType"] as? String,
                           ["image/png","image/jpeg"].contains(mime), let data = block["data"] as? String,
                           data.utf8.count <= 8_000_000, Data(base64Encoded:data) != nil {
                     safe.append(["type":"image","mimeType":mime,"data":data])
                 }
             }
-            guard !safe.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
+            guard mutation || !safe.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
             let structured = reply["structuredContent"] as? [String:Any] ?? [:]
             if structured["foreground_step"] != nil { throw CUAFailure("cua_driver_reported_foreground_step") }
             if name == "cua_observe" {
@@ -1196,16 +1222,20 @@ final class CUAService {
                 s.snapshot=observation.actionable ? observation : nil
             }
             // Images are only returned as MCP image blocks, not duplicated in JSON.
-            let metadata = structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path"].contains($0.key) }
+            let metadata = mutation ? Self.nativeActionEvidence(structured) : structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path","escalation"].contains($0.key) }
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
             if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited") }
-            var header:[String:Any] = ["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation]
+            var header:[String:Any] = ["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation,
+                "timing_ms":s.worker.lastCallTiming,"worker_age_seconds":s.worker.ageSeconds]
             if mutation {
                 let now=Set(windows(s.target.pid).compactMap{$0["window_id"] as? Int64})
                 header["new_window_ids"]=Array(now.subtracting(priorWindows)).sorted()
                 header["closed_window_ids"]=Array(priorWindows.subtracting(now)).sorted()
                 header["action_outcome"]="dispatched_unverified"
                 header["verified"]=false
+                header["foreground_fallback"]=false
+                header["observation_required"]=true
+                header["driver_evidence"]=metadata
             }
             if name=="cua_observe" {
                 header["pixel_actions_available"]=s.snapshot?.pixelGrounded ?? false

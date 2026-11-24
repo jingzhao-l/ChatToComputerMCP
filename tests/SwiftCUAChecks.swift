@@ -145,6 +145,12 @@ import Foundation
         expectFailure("NUL text refused") {try CUAService.validateAction("type_text",["element_token":"s00000003:1","text":"a\0b"])}
         precondition(CUAService.recoverableNativeRefusal(["code":"select_menu_would_raise_window","effect":"refused"])=="select_menu_would_raise_window")
         print("PASS observed custom control actions, disabled/duplicate elements, text pacing and safe dropdown refusal")
+        let evidence=CUAService.nativeActionEvidence(["effect":"unverifiable","verified":false,"path":"key_events",
+            "escalation":["recommended":"foreground"],"reason":"retry with foreground","image":"abc","code":"bad code with spaces",
+            "cell_value":"fixture value"])
+        precondition(evidence["effect"] as? String=="unverifiable" && evidence["verified"] as? Bool==false)
+        precondition(evidence["escalation"]==nil && evidence["reason"]==nil && evidence["image"]==nil && evidence["code"]==nil)
+        precondition(evidence["cell_value"] as? String=="fixture value")
         var front:Int64?=101
         let continuity=CUAForegroundContinuity(read:{front})
         precondition(continuity.permits())
@@ -159,6 +165,10 @@ import Foundation
         let structured = result["structuredContent"] as! [String:Any]
         let echo = structured["echo"] as! [String:Any]
         precondition(echo["window_id"] as? Int == 2)
+        precondition(worker.lastCallTiming["worker_call_ms"]! >= worker.lastCallTiming["handshake_ms"]!)
+        _ = try worker.call("get_window_state",["pid":1,"window_id":2],allowed:{true})
+        precondition(worker.lastCallTiming["handshake_ms"]==0 && worker.ageSeconds>=0)
+        print("PASS driver timing, warm session reuse and normalized action evidence")
         expectFailure("before-dispatch geometry guard refuses transport") { _ = try worker.call("get_window_state",["pid":1,"window_id":2],allowed:{true},beforeDispatch:{throw CUAFailure("stale geometry")}) }
         expectFailure("unadvertised driver tool") {_ = try worker.call("bring_to_front",[:],allowed:{true})}
         worker.close()

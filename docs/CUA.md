@@ -162,6 +162,24 @@ because the pinned direct driver can invoke AppleEvents and request an OS
 Automation consent prompt; use the independently approved file tools for
 file renames. No automatic OS permission request is introduced.
 
+### Native performance and reliability
+
+The gateway now checks the exact native window identity during input polling
+instead of enumerating the entire desktop on each check. Full window discovery
+still occurs when explicitly requested or when detecting new/closed windows
+after an action. Policy, process identity and foreground checks remain active.
+The worker negotiates its schema only once per lease; responses include
+timing_ms.worker_call_ms, timing_ms.handshake_ms (zero for warm calls), and
+worker_age_seconds. These are measurements of the gateway transport call,
+not UI effect latency. No application contents are written to timing logs.
+A native worker retires before its two-hour capability manifest expires
+(maximum age 6900 seconds); acquire a fresh session and observe before input.
+On Windows, overlapping watchdog callbacks are skipped and concurrent
+worker disposal waits for cleanup. Action responses include bounded factual
+driver_evidence, not the upstream suggestion to retry in foreground mode.
+Inspect the window and verify the intended state; driver evidence is not
+an independent verification result.
+
 Both native workers explicitly start the pinned driver with `mcp --direct` and never attach to an existing daemon. Host mutations and launches latch foreground continuity: changed or unknown foreground aborts the current dispatch and never restores user focus. macOS additionally watches workspace activation notifications; Windows checks the exact foreground HWND. Sampling/notification delivery can miss short transitions and cannot prevent all app-internal activation, so this is detection and refusal, not a universal no-interference guarantee.
 
 Each native worker verifies the driver's version and advertised tools/list

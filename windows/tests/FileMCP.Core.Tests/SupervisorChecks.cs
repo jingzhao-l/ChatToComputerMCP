@@ -16,7 +16,11 @@ internal static partial class Program
         var tools = new LocalTools(workspace, "", "", true, receiptLedger: ledger, commandHistory: history, commandSupervisor: supervisor);
         var result = tools.CallAsync("start_command", Obj(("request_id", "crash-recovery"),
             ("command", SupervisedFixtureCommand), ("timeout_seconds", 60))).GetAwaiter().GetResult().StructuredContent;
-        File.WriteAllText(Path.Combine(root, "session-id"), result["session_id"]!.GetValue<string>());
+        var ready=Path.Combine(root,"session-id");
+        // Publish readiness only after the writer has closed its handle.
+        var temporary=ready+".tmp";
+        File.WriteAllText(temporary,result["session_id"]!.GetValue<string>());
+        File.Move(temporary,ready);
         Thread.Sleep(Timeout.Infinite);
     }
 
