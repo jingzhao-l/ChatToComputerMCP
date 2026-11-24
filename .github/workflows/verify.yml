@@ -193,7 +193,11 @@ jobs:
           codesign --verify --deep --strict dist/ChatToComputerMCP.app
           file dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP | grep -q x86_64
           cmp vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt
-          cmp vendor/ripgrep/darwin-amd64/rg dist/ChatToComputerMCP.app/Contents/MacOS/rg
+          # Intel vendor binaries may need local signing in the bundle; the
+          # checked-in source hashes must remain unchanged.
+          bash tests/check_intel_vendor.sh
+          dist/ChatToComputerMCP.app/Contents/MacOS/rg --version | grep -q '^ripgrep 15.2.0 '
+          dist/ChatToComputerMCP.app/Contents/MacOS/tunnel-client --version | grep -q '^0.0.12+881c9a8fed7cccbe6607cd419863bbca506b8215 '
 
   verify-windows:
     runs-on: windows-2025

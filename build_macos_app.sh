@@ -96,6 +96,15 @@ if [ -z "$SIGNING_IDENTITY" ]; then
     echo 'ERROR: CHAT_TO_COMPUTER_CODESIGN_IDENTITY cannot be empty.' >&2
     exit 1
 fi
+# Intel upstream executables may be unsigned (Apple Silicon binaries are
+# linker-signed). Seal nested executable copies before sealing the outer
+# bundle. Never alter the upstream vendor files or their pinned hashes.
+for nested in "$APP/Contents/MacOS/tunnel-client" "$APP/Contents/MacOS/rg"; do
+    if ! /usr/bin/codesign --verify --strict "$nested" >/dev/null 2>&1; then
+        /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$nested"
+    fi
+    /usr/bin/codesign --verify --strict "$nested"
+done
 /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
 
