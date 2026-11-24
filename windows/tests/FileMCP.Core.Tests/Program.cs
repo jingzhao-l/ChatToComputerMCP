@@ -55,6 +55,7 @@ internal static partial class Program
             await TestWorkspaceScopeAsync(root);
             await TestWindowsOAuthAsync(root);
             CheckTunnelHealthPolicy();
+            await CheckProfileLockAcrossThreadsAsync();
             await TestRuntimeAsync(root);
             await TestWindowsCloudflareRuntimeAsync(root);
             await TestWindowsNamedCloudflareAsync(root);

@@ -28,6 +28,37 @@ Native test results and unverified external steps are kept distinct.
 | Windows ARM64 native execution | N/A | NOT tested | ARM64 package cross-compile alone cannot verify runtime |
 | Signed/native notarized public installers | NOT completed | NOT completed | Source-only npm distribution is not signed native distribution |
 
+## Windows parity completion — 2026-11-24
+
+The Windows runtime now probes the bundled tunnel client's
+`control_plane_poll` metric using the per-run private health locator and
+does not equate a spawned process with a connected cloud service. The
+managed login auto-connect mode checks on resume and recovers a stale
+transport after a grace period and cooldown while preserving the local
+gateway. Automatic idle restart does not interrupt active or queued jobs.
+Explicit proxy overrides take precedence over a Windows manual system
+proxy. Registration and secret redaction handle split output chunks.
+
+Windows scoped mutation checks now distinguish sibling working
+directories from overlapping targets, including mixed-path patches,
+copy/move endpoints and directory deletion. The named profile mutex is
+acquired and released on its owning thread across async runtime transitions.
+
+Windows desktop controls now include startup cancellation, copied scope
+instructions, light/dark preference, saved window placement, compact
+navigation, log follow/copy/clear, configuration locking and cancellable
+Cloudflare account switching with certificate backup/rollback.
+
+Evidence: Windows-targeting Release solution builds with warnings as
+errors; the portable C# policy regression executes on the development Mac
+and checks poll freshness/invalid metrics, proxy precedence, fragmented
+secret redaction and Cloudflare registration parsing. The native Windows
+suite additionally contains actual process/reconnect, scoped mutation,
+profile mutex and Cloudflare login rollback fixtures. Those native
+fixtures and interactive WPF acceptance require a Windows host; compilation
+does not establish their runtime results. This section excludes CUA work
+on its separate development branch.
+
 ## Acceptance gates
 
 Before describing Mac/Windows as fully equivalent, finish native transport

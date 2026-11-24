@@ -6,27 +6,61 @@ namespace FileMCP.Core;
 
 internal sealed class ProfileLock : IDisposable
 {
-    private readonly Mutex _mutex;
-    private bool _held;
+    private readonly string _name;
+    private readonly object _gate = new();
+    private Thread? _owner;
+    private ManualResetEventSlim? _release;
 
     public ProfileLock(string profile)
     {
         var hash = Fnv1A64(Encoding.UTF8.GetBytes(profile));
-        _mutex = new Mutex(false, $@"Local\ChatToComputerMCP-profile-{hash:x16}");
+        // Keep the deployed mutex namespace. A Windows mutex is owned by a
+        // thread, not a process: async runtime continuations cannot release it.
+        _name = $@"Local\ChatToComputerMCP-profile-{hash:x16}";
     }
 
     public void Acquire()
     {
-        if (_held) return;
-        try { _held = _mutex.WaitOne(0); }
-        catch (AbandonedMutexException) { _held = true; }
-        if (!_held) throw new FileMcpException("This tunnel profile is already in use by another ChatToComputerMCP instance.");
+        lock (_gate)
+        {
+            if (_owner is not null) return;
+            var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new ManualResetEventSlim(false);
+            var thread = new Thread(() => {
+                try
+                {
+                    using var mutex = new Mutex(false, _name);
+                    bool held;
+                    try { held = mutex.WaitOne(0); }
+                    catch (AbandonedMutexException) { held = true; }
+                    ready.TrySetResult(held);
+                    if (held)
+                    {
+                        try { release.Wait(); }
+                        finally { mutex.ReleaseMutex(); }
+                    }
+                }
+                catch (Exception error) { ready.TrySetException(error); }
+            }) { IsBackground = true, Name = "CTCMCP profile lease" };
+            thread.Start();
+            try
+            {
+                if (!ready.Task.GetAwaiter().GetResult())
+                    throw new FileMcpException("This tunnel profile is already in use by another ChatToComputerMCP instance.");
+                _owner = thread; _release = release;
+            }
+            catch { release.Set(); thread.Join(); release.Dispose(); throw; }
+        }
     }
 
     public void Dispose()
     {
-        if (_held) { try { _mutex.ReleaseMutex(); } catch { } _held = false; }
-        _mutex.Dispose();
+        lock (_gate)
+        {
+            if (_owner is null) return;
+            _release!.Set(); _owner.Join();
+            _release.Dispose(); _release = null; _owner = null;
+        }
     }
 
     private static ulong Fnv1A64(IEnumerable<byte> bytes)

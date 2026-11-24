@@ -1,7 +1,7 @@
 # Native GUI capabilities and design guide
 
 Both native apps now use seven functional areas. macOS adapts between a
-wide sidebar and compact navigation; Windows uses a resizable sidebar layout.
+wide sidebar and compact navigation; Windows uses the same wide/compact navigation pattern. Both support explicit light/dark selection, remembered window geometry, startup cancellation, and diagnostic log follow/copy/clear.
 
 | Area | Controls |
 |---|---|
@@ -83,3 +83,15 @@ LaunchAgent's user-facing behaviors. Windows uses HKCU Run plus a
 non-privileged in-app supervisor; macOS uses native launchd. Both are
 user-login services, not pre-login system daemons, and do not independently
 reattach subprocesses after a reboot.
+
+## Windows connection and desktop parity
+
+Managed automatic connection on Windows checks OpenAI control-plane poll
+health on system resume and distinguishes a ready local gateway from a
+verified cloud connection. A stalled transport is eligible for idle recovery
+without restarting the local MCP server. Both desktop apps support copying
+workspace invocation instructions and configuration locking during connection
+or account changes. Windows Cloudflare login can be cancelled; switching
+accounts retains a backup of the previous certificate and restores it when
+a failed login leaves no replacement. These operations still require actual
+native Windows and provider acceptance.

@@ -45,6 +45,20 @@ internal static partial class Program
         Console.WriteLine("PASS: Windows cloud health, system proxy precedence, split secret and registration parsing");
     }
 
+    private static async Task CheckProfileLockAcrossThreadsAsync()
+    {
+        var profile = "parity-lock-" + Guid.NewGuid().ToString("N");
+        using var first = new ProfileLock(profile);
+        await Task.Run(first.Acquire);
+        using var contender = new ProfileLock(profile);
+        try { await Task.Run(contender.Acquire); throw new Exception("Second lease admitted"); }
+        catch (FileMcpException) {}
+        await Task.Run(first.Dispose);
+        await Task.Run(contender.Acquire);
+        await Task.Run(contender.Dispose);
+        Console.WriteLine("PASS: named profile mutex releases on its owning thread across async continuations");
+    }
+
     private static async Task WaitHealthAsync(LocalMcpRuntime runtime, TunnelCloudHealth health)
     {
         var elapsed = Stopwatch.StartNew();
