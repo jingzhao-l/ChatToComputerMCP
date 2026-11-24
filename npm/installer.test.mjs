@@ -380,3 +380,31 @@ test('CUA is explicit, defaults disabled and rejects unpinned archives', async()
     }
   }finally{fs.rmSync(home,{recursive:true,force:true});}
 });
+
+test('CUA guest transport pins the host and provisions only explicit local templates', async()=>{
+  const {guestConnectPlan,vmProvisionPlan}=await import('../bin/cua-extension-support.mjs');
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-cua-plans-'));
+  try{
+    const known=path.join(tmp,'known hosts'),key=path.join(tmp,'test identity'),disk=path.join(tmp,'prepared.vhdx');
+    for(const file of [known,key,disk])fs.writeFileSync(file,'fixture',{mode:0o600});
+    const profile={id:'vm',kind:'guest',port:18766};
+    const opts=['--profile','vm','--host','guest.example','--user','guest','--guest-port','18765','--known-hosts',known,'--identity',key];
+    const plan=guestConnectPlan(opts,profile,'darwin');
+    assert.equal(plan.exe,'/usr/bin/ssh');
+    assert.ok(plan.args.includes('StrictHostKeyChecking=yes'));
+    assert.ok(plan.args.includes('127.0.0.1:18766:127.0.0.1:18765'));
+    assert.ok(plan.args.includes('IdentityAgent=none'));
+    assert.throws(()=>guestConnectPlan(opts,{...profile,id:'other'},'darwin'));
+    assert.throws(()=>guestConnectPlan(opts.map(v=>v==='guest.example'?'-oProxyCommand=x':v),profile,'darwin'));
+    const mac=vmProvisionPlan(['--provider','lume','--template','clean','--name','new-guest'],'darwin');
+    assert.deepEqual(mac.map(x=>x.args),[['get','clean'],['clone','clean','new-guest']]);
+    assert.throws(()=>vmProvisionPlan(['--provider','lume','--template','clean','--name','clean'],'darwin'));
+    const winArgs=['--provider','hyper-v','--template',disk,'--name','new-guest','--destination',tmp,'--switch','Private'];
+    const [win]=vmProvisionPlan(winArgs,'win32');
+    assert.ok(win.args.at(-1).includes('[IO.File]::Copy($source,$disk,$false)'));
+    assert.match(win.args.at(-1),/ParentPath/);
+    assert.equal(win.env.CTCMCP_VM_NAME,'new-guest');
+    fs.mkdirSync(path.join(tmp,'new-guest'));
+    assert.throws(()=>vmProvisionPlan(winArgs,'win32'));
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+});

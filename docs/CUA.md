@@ -56,7 +56,12 @@ Each lease owns a fresh headless browser context. It does not attach to the user
 
 ## Dedicated guest execution
 
-Use a separately provisioned macOS or Windows VM or other independently managed desktop. The project does not create VM images, install guest operating systems or attest that the supplied endpoint is hardware-isolated.
+Use a separately provisioned macOS or Windows VM or other independently managed desktop. The local-only provisioning command can create a VM from an existing Lume template or a detached standalone Hyper-V Gen2 VHDX:
+
+    chat-to-computer-mcp cua vm provision --provider lume --template clean-template --name cua-guest
+    chat-to-computer-mcp cua vm provision --provider hyper-v --template C:\VMs\clean.vhdx --name cua-guest --destination C:\VMs --switch Private
+
+The Hyper-V path copies the disk into a new destination rather than attaching the source. It refuses existing names/destinations and differencing or attached source disks. Provisioning failure may leave a new partial VM or disk for local operator inspection; it never deletes existing resources. Templates must be trusted and prepared for the target hypervisor, without reusable CUA tokens, cloned SSH host identity or shared personal login credentials. Install/configure a unique guest OS identity, credentials, desktop and SSH server before registering the guest. The project does not install an OS from scratch, bypass OS setup/consent or attest that the supplied endpoint is hardware-isolated.
 
 Inside the dedicated guest, install the native gateway and CUA driver, grant only the desired apps, then configure and run the CUA-only listener:
 
@@ -73,6 +78,12 @@ On the host:
 
     chat-to-computer-mcp cua extension-install
     chat-to-computer-mcp cua guest-grant --profile vm --port 18766 --token-file /private/path/guest-token --client shared-connection
+
+For an already registered guest profile, the local-only helper can establish the forward using a pre-verified known_hosts file and an explicit SSH identity:
+
+    chat-to-computer-mcp cua guest-connect --profile vm --host guest.example --user guest --guest-port 18765 --known-hosts /absolute/known_hosts --identity /absolute/ssh_identity
+
+It uses strict host-key checking, batch authentication, no agent/X11 forwarding, and binds exclusively to loopback. Run it in a dedicated foreground terminal; it does not install keys or auto-accept host identities. The native relay separately checks the guest token. Lume headless mode suppresses the local viewer, not necessarily the provider VNC server; configure the hypervisor network separately.
 
 Open the guest profile with cua_extension_open. Call cua_extension_call using a native guest CUA tool name as operation and its arguments as parameters. Guest session IDs are bound to the outer lease and cannot be guessed or borrowed; actions and launch use unique inner request IDs in addition to outer mutation IDs. Only the bounded CUA allowlist is forwarded. One lease per guest endpoint; close on completion.
 

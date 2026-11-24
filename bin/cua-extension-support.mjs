@@ -11,7 +11,10 @@ export const extensionHelp=[
   'cua guest-serve                    Run CUA-only guest listener inside that guest',
   'cua guest-grant --profile <id> --port <forwarded-port> --token-file <file> --client <id>',
   'cua profile-revoke --profile <id> --client <id>',
-  'cua vm status|start|stop --profile <id> (registered Lume/Hyper-V VM)'
+  'cua vm status|start|stop --profile <id> (registered Lume/Hyper-V VM)',
+  'cua vm provision --provider lume --template <existing-template> --name <new-name>',
+  'cua vm provision --provider hyper-v --template <prepared.vhdx> --name <new-name> --destination <existing-dir> --switch <existing-switch>',
+  'cua guest-connect --profile <id> --host <host> --user <user> --guest-port <port> --known-hosts <file> --identity <file> (foreground SSH)'
 ];
 const source=path.join(path.dirname(fileURLToPath(import.meta.url)),'..','cua-runtime');
 function dir(h){return path.join(h.root(),'cua-extension','1.0.0-'+h.hashFile(path.join(source,'worker.mjs')).slice(0,16))}
@@ -118,8 +121,68 @@ function revoke(args,h){
   h.writePolicy(p);
   console.log('Profile grant revoked; current leases will be invalidated.');
 }
+function vmName(v){if(typeof v!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,79}$/.test(v))throw Error('Invalid exact VM name');return v}
+function regularFile(v){
+  if(!v||!path.isAbsolute(v)||!fs.lstatSync(v).isFile()||fs.lstatSync(v).isSymbolicLink())throw Error('Explicit absolute regular file required');
+  return fs.realpathSync(v);
+}
+export function guestConnectPlan(args,profile,platform=process.platform){
+  const o=options(args,['--profile','--host','--user','--guest-port','--known-hosts','--identity']);
+  if(!profile||profile.kind!=='guest'||profile.id!==id(o['--profile']))throw Error('Registered guest profile required');
+  const host=o['--host'],user=o['--user'];
+  if(!/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(host??'')||! /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(user??''))throw Error('Explicit DNS/IPv4 host and SSH username required');
+  const known=regularFile(o['--known-hosts']),identity=regularFile(o['--identity']);
+  if(/[\r\n"]/u.test(known)||/[\r\n"]/u.test(identity))throw Error('Unsupported SSH path characters');
+  return {exe:platform==='win32'?'ssh.exe':'/usr/bin/ssh',args:['-F','none','-N','-T','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','IdentityAgent=none','-o','ForwardAgent=no','-o','ForwardX11=no','-o','StrictHostKeyChecking=yes','-o','UpdateHostKeys=no','-o','GlobalKnownHostsFile=none','-o','UserKnownHostsFile="'+known+'"','-o','ExitOnForwardFailure=yes','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3','-i',identity,'-L','127.0.0.1:'+port(String(profile.port))+':127.0.0.1:'+port(o['--guest-port']),'-l',user,host]};
+}
+function guestConnect(args,h){
+  const o=options(args,['--profile','--host','--user','--guest-port','--known-hosts','--identity']);
+  const p=h.readPolicy()?.profiles?.find(x=>x.id===id(o['--profile']));
+  const plan=guestConnectPlan(args,p);
+  console.log('Starting pinned-host SSH forwarding on loopback. Keep this terminal open; interrupt to close.');
+  h.run(plan.exe,plan.args,{timeout:0});
+}
+export function vmProvisionPlan(args,platform=process.platform){
+  const o=options(args,['--provider','--template','--name','--destination','--switch']);
+  const name=vmName(o['--name']);
+  if(o['--provider']==='lume'&&platform==='darwin'){
+    const template=vmName(o['--template']);
+    if(template===name||o['--destination']||o['--switch'])throw Error('Lume requires a distinct local template and new VM name');
+    return [{exe:'lume',args:['get',template]},{exe:'lume',args:['clone',template,name]}];
+  }
+  if(o['--provider']==='hyper-v'&&platform==='win32'){
+    if(/[. ]$/.test(name)||/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name))throw Error('Invalid Windows VM destination name');
+    const template=regularFile(o['--template']);
+    if(!/\.vhdx$/i.test(template))throw Error('Prepared standalone VHDX required');
+    const root=o['--destination'];
+    if(!root||!path.isAbsolute(root)||!fs.lstatSync(root).isDirectory()||fs.lstatSync(root).isSymbolicLink())throw Error('Explicit existing VM destination directory required');
+    const destination=path.join(fs.realpathSync(root),name);
+    if(fs.existsSync(destination))throw Error('VM destination already exists');
+    const sw=vmName(o['--switch']);
+    const script=[
+      '$ErrorActionPreference="Stop"',
+      '$name=$env:CTCMCP_VM_NAME; $source=$env:CTCMCP_VM_TEMPLATE; $dest=$env:CTCMCP_VM_DEST; $switch=$env:CTCMCP_VM_SWITCH',
+      'if (@(Get-VM | Where-Object {$_.Name -ieq $name}).Count -ne 0) {throw "VM name already exists"}',
+      'if (@(Get-VMSwitch | Where-Object {$_.Name -ceq $switch}).Count -ne 1) {throw "Exact virtual switch required"}',
+      '$vhd=Get-VHD -Path $source; if ($vhd.Attached -or $vhd.ParentPath) {throw "Template must be detached and standalone"}',
+      'if (Test-Path -LiteralPath $dest) {throw "Destination already exists"}',
+      'New-Item -ItemType Directory -Path $dest | Out-Null',
+      '$disk=Join-Path $dest "guest.vhdx"; [IO.File]::Copy($source,$disk,$false)',
+      'New-VM -Name $name -Generation 2 -MemoryStartupBytes 4GB -VHDPath $disk -Path $dest -SwitchName $switch -ErrorAction Stop | Out-Null',
+      'Set-VMProcessor -VMName $name -Count 2 -ErrorAction Stop',
+      'Get-VM -Name $name | Select-Object Name,State,Id | ConvertTo-Json'
+    ].join('; ');
+    return [{exe:'powershell.exe',args:['-NoProfile','-NonInteractive','-Command',script],env:{CTCMCP_VM_NAME:name,CTCMCP_VM_TEMPLATE:template,CTCMCP_VM_DEST:destination,CTCMCP_VM_SWITCH:sw}}];
+  }
+  throw Error('VM provider not supported on this host');
+}
 function vm(args,h){
   const [action,...rest]=args;
+  if(action==='provision'){
+    for(const plan of vmProvisionPlan(rest))h.run(plan.exe,plan.args,{timeout:1800000,...(plan.env?{env:{...process.env,...plan.env}}:{})});
+    console.log('VM provisioned from local template. Set up unique guest identity and guest CUA service before registering it.');
+    return;
+  }
   if(!['status','start','stop'].includes(action))throw Error('Use cua vm status|start|stop --profile <id>');
   const o=options(rest,['--profile']),profile=id(o['--profile']);
   const p=h.readPolicy()?.profiles?.find(x=>x.id===profile&&x.kind==='guest');
@@ -127,8 +190,8 @@ function vm(args,h){
   if(p.vmProvider==='lume'&&process.platform==='darwin'){
     // Resolve an existing VM first, never pull an image from an arbitrary name.
     h.run('lume',['get',p.vmName]);
-    if(action==='start')h.run('lume',['run',p.vmName,'--detach','--display','none','--vnc','disabled']);
-    if(action==='stop')h.run('lume',['shutdown',p.vmName]);
+    if(action==='start')h.run('lume',['run',p.vmName,'--detach','--display','none']);
+    if(action==='stop')h.run('lume',['stop',p.vmName]);
   }else if(p.vmProvider==='hyper-v'&&process.platform==='win32'){
     const script='$ErrorActionPreference="Stop"; $vm=Get-VM | Where-Object {$_.Name -ceq $env:CTCMCP_VM_NAME}; if(@($vm).Count -ne 1){throw "VM not found"}; '+
       (action==='status'?'$vm | Select-Object Name,State,Id | ConvertTo-Json':action==='start'?'Start-VM -VM $vm -Confirm:$false':'Stop-VM -VM $vm -Confirm:$false');
@@ -136,7 +199,7 @@ function vm(args,h){
   }else throw Error('VM provider not supported on this host');
 }
 export function extensionCommand(action,args,h){
-  const handler={'extension-install':install,'browser-grant':browserGrant,'guest-grant':guestGrant,'guest-init':guestInit,'profile-revoke':revoke,'vm':vm}[action];
+  const handler={'extension-install':install,'browser-grant':browserGrant,'guest-grant':guestGrant,'guest-init':guestInit,'guest-connect':guestConnect,'profile-revoke':revoke,'vm':vm}[action];
   if(!handler)return false;
   handler(args,h);return true;
 }
