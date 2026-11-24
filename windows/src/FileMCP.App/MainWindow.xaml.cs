@@ -259,6 +259,11 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private void OpenActivityAudit_Click(object sender, RoutedEventArgs e)
+    {
+        new ActivityAuditWindow(ProfileBox.Text.Trim()) { Owner = this }.ShowDialog();
+    }
+
     private void OpenCommandHistory_Click(object sender, RoutedEventArgs e)
     {
         var history = new CommandHistoryWindow(ProfileBox.Text.Trim()) { Owner = this };

@@ -137,6 +137,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                 }
                 var history = configuration.EnableCommands ? new CommandHistoryStore(
                     CommandHistoryStore.DirectoryFor(configuration.Profile), configuration.CaptureCommandHistoryContent) : null;
+                var audit = new ActivityAuditStore(ActivityAuditStore.DirectoryFor(configuration.Profile));
                 _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
                     configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
@@ -144,7 +145,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     publicHost: isCloudflare ? configuration.CloudflareHostname : null,
                     enableGitPush: configuration.EnableGitPush,
                     enableCodexHistory: configuration.EnableCodexHistory, commandHistory: history,
-                    defaultWorkspacePermissions: configuration.DefaultWorkspacePermissions);
+                    defaultWorkspacePermissions: configuration.DefaultWorkspacePermissions, activityAudit: audit);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
 
                 if (isCloudflare)

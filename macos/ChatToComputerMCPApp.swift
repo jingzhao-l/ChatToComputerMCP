@@ -561,6 +561,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let enableCommandsCheckbox = NSButton(checkboxWithTitle: "Allow shell commands", target: nil, action: nil)
     private let captureCommandHistoryCheckbox = NSButton(checkboxWithTitle: "Keep command text and output in local history", target: nil, action: nil)
     private var commandHistoryWindow: NSWindow?
+    private var activityAuditWindow: NSWindow?
     private let logView = NSTextView()
     private let activityEmptyLabel = NSTextField(wrappingLabelWithString: "No activity yet\nConnect to see tunnel status and MCP requests.")
     private let copyLogsButton = NSButton(title: "Copy logs", target: nil, action: nil)
@@ -1294,7 +1295,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let clearLogsButton = NSButton(title: "Clear", target: self, action: #selector(clearLogs))
         clearLogsButton.bezelStyle = .rounded
         clearLogsButton.toolTip = "Clear displayed logs without stopping the connection"
-        let logToolbar = NSStackView(views: [followLogsCheckbox, NSView(), copyLogsButton, clearLogsButton])
+        let auditButton = NSButton(title: "Activity audit…", target: self, action: #selector(openActivityAudit))
+        auditButton.bezelStyle = .rounded
+        let logToolbar = NSStackView(views: [followLogsCheckbox, NSView(), auditButton, copyLogsButton, clearLogsButton])
         logToolbar.orientation = .horizontal
         logToolbar.translatesAutoresizingMaskIntoConstraints = false
         logPage.addSubview(logToolbar)
@@ -3433,6 +3436,19 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 self.updateWindowHeight()
             }
         }
+    }
+
+    @objc private func openActivityAudit() {
+        let controller = ActivityAuditViewController(profile: profileField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        let window = NSWindow(contentViewController: controller)
+        window.title = "Activity audit — ChatToComputerMCP"
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.setContentSize(NSSize(width: 900, height: 520))
+        window.contentMinSize = NSSize(width: 650, height: 400)
+        window.isReleasedWhenClosed = false
+        activityAuditWindow?.close()
+        activityAuditWindow = window
+        window.center(); window.makeKeyAndOrderFront(nil)
     }
 
     @objc private func showActivity() { tabs.selectTabViewItem(withIdentifier: "log") }

@@ -3236,6 +3236,7 @@ final class LocalMCPServer {
     private let tools: LocalTools
     private let commandBudget: WorkspaceCommandBudget
     private let receiptLedger: CommandReceiptLedger?
+    private let activityAudit: ActivityAuditStore?
     private let taskOwnershipLock = NSLock()
     private var ownerByScopedRequest: [String: String] = [:]
     private var ownerBySessionID: [String: String] = [:]
@@ -3267,6 +3268,7 @@ final class LocalMCPServer {
         maxConcurrentCommands: Int? = nil,
         receiptLedger: CommandReceiptLedger? = nil,
         commandHistory: CommandHistoryStore? = nil,
+        activityAudit: ActivityAuditStore? = nil,
         enableGitPush: Bool = false,
         enableCodexHistory: Bool = false,
         defaultWorkspacePermissions: WorkspacePermissions? = nil,
@@ -3307,6 +3309,7 @@ final class LocalMCPServer {
         self.oauth = oauth
         self.log = log
         self.receiptLedger = receiptLedger
+        self.activityAudit = activityAudit
         let resolver = try SafePathResolver(rootPath: allowedDirectory)
         let configuredLimit = maxConcurrentCommands ?? Int(
             ProcessInfo.processInfo.environment["FILEMCP_MAX_CONCURRENT_COMMANDS"] ?? "") ?? 8
@@ -4042,6 +4045,8 @@ final class LocalMCPServer {
             arguments = [:]
         }
         let startedAt = Date()
+        var auditScope: String?
+        var auditTool = toolName
         do {
             let output: LocalToolCallOutput
             if toolName == "list_workspaces" {
@@ -4070,6 +4075,8 @@ final class LocalMCPServer {
                       innerArgs["workspace_id"] == nil else {
                     throw MCPServerError.invalidArguments("Unknown workspace or tool")
                 }
+                auditScope = scopeID
+                auditTool = innerName
                 let inner = try authenticatedToolCall(
                     scoped: scoped, scopeID: scopeID, name: innerName,
                     arguments: innerArgs, client: verifiedClient)
@@ -4093,6 +4100,7 @@ final class LocalMCPServer {
                       scoped.hasTool(named: toolName) else {
                     throw MCPServerError.invalidArguments("Unknown workspace or tool")
                 }
+                auditScope = scopeID
                 output = try authenticatedToolCall(
                     scoped: scoped, scopeID: scopeID, name: toolName,
                     arguments: scopedArguments, client: verifiedClient)
@@ -4105,6 +4113,7 @@ final class LocalMCPServer {
             if modern { result = modernCompleteResult(result) }
             let response = jsonRPCResult(id: id, result: result)
             logToolCall(toolName, startedAt: startedAt, response: response, succeeded: true)
+            recordAudit(tool: auditTool, scope: auditScope, client: verifiedClient?.id, startedAt: startedAt, bytes: response.count, succeeded: true)
             return response
         } catch {
             var result: [String: Any] = [
@@ -4114,8 +4123,15 @@ final class LocalMCPServer {
             if modern { result = modernCompleteResult(result) }
             let response = jsonRPCResult(id: id, result: result)
             logToolCall(toolName, startedAt: startedAt, response: response, succeeded: false)
+            recordAudit(tool: auditTool, scope: auditScope, client: verifiedClient?.id, startedAt: startedAt, bytes: response.count, succeeded: false)
             return response
         }
+    }
+
+    private func recordAudit(tool: String, scope: String?, client: String?, startedAt: Date, bytes: Int, succeeded: Bool) {
+        do { try activityAudit?.record(tool: tool, workspace: scope, client: client,
+            result: succeeded ? "ok" : "error", durationMs: Int(Date().timeIntervalSince(startedAt) * 1000), responseBytes: bytes) }
+        catch { log("Activity audit write failed; inspect local storage permissions.\n") }
     }
 
     /// Logs timing and response size only; arguments and results may contain workspace content.

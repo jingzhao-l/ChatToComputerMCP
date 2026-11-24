@@ -26,6 +26,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private readonly ushort _port;
     private readonly string _localAuthToken;
     private readonly LocalTools _tools;
+    private readonly ActivityAuditStore? _activityAudit;
     private readonly WindowsOAuthServer? _oauth;
     private readonly string? _publicHost;
     private readonly object _ownerGate = new();
@@ -45,11 +46,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
         WindowsOAuthServer? oauth = null, string? publicHost = null,
         bool enableGitPush = false, bool enableCodexHistory = false,
         CommandHistoryStore? commandHistory = null,
-        WorkspacePermissions? defaultWorkspacePermissions = null)
+        WorkspacePermissions? defaultWorkspacePermissions = null,
+        ActivityAuditStore? activityAudit = null)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         _port = port; _localAuthToken = localAuthToken; _log = log;
         _oauth = oauth;
+        _activityAudit = activityAudit;
         _publicHost = publicHost;
         if (oauth is not null &&
             (string.IsNullOrWhiteSpace(publicHost) ||
@@ -452,6 +455,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
         else if (parameters["arguments"] is JsonObject obj) arguments = obj;
         else { var invalid = new JsonObject { ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "Invalid arguments: expected an object" }), ["isError"] = true }; if (modern) invalid = ModernComplete(invalid); return JsonRpcResult(id, invalid); }
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        string? auditScope = null;
+        var auditTool = name;
         try
         {
             ToolCallOutput output;
@@ -484,6 +489,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
                     innerTool is null || !selected.HasTool(innerTool) ||
                     arguments["arguments"] is not JsonObject innerArgs || innerArgs.ContainsKey("workspace_id"))
                     throw new FileMcpException("Unknown workspace or tool");
+                auditScope = scopeID;
+                auditTool = innerTool;
                 var inner = await AuthorizedCallAsync(
                     selected, scopeID, innerTool,
                     (JsonObject)innerArgs.DeepClone(), verified, cancellationToken)
@@ -508,6 +515,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                     _approved.TryGetValue(scopeID, out var scope) ? scope.Tools : null;
                 if (selected is null || !selected.HasTool(name))
                     throw new FileMcpException("Unknown workspace or tool");
+                auditScope = scopeID;
                 output = await AuthorizedCallAsync(
                     selected, scopeID, name, scopedArguments, verified, cancellationToken)
                     .ConfigureAwait(false);
@@ -516,6 +524,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (modern) result = ModernComplete(result);
             var response = JsonRpcResult(id, result);
             LogToolCall(name, stopwatch, response, succeeded: true);
+            RecordAudit(auditTool, auditScope, verified?.Id, stopwatch, response.Length, true);
             return response;
         }
         catch (Exception ex)
@@ -524,6 +533,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (modern) result = ModernComplete(result);
             var response = JsonRpcResult(id, result);
             LogToolCall(name, stopwatch, response, succeeded: false);
+            RecordAudit(auditTool, auditScope, verified?.Id, stopwatch, response.Length, false);
             return response;
         }
     }
@@ -570,6 +580,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
             }
         }
         return await scoped.CallAsync(tool, args, cancellation, verified?.Id).ConfigureAwait(false);
+    }
+
+    private void RecordAudit(string tool, string? scope, string? client, System.Diagnostics.Stopwatch stopwatch, int bytes, bool succeeded)
+    {
+        try { _activityAudit?.Record(tool, scope, client, succeeded ? "ok" : "error",
+            (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds), bytes); }
+        catch { _log("Activity audit write failed; inspect local storage permissions.\n"); }
     }
 
     /// <summary>Logs timing and response size only; arguments and results may contain workspace content.</summary>

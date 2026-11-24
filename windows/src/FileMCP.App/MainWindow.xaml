@@ -358,7 +358,12 @@
 
             <TabItem Header="Activity">
                 <Grid Margin="10">
-                    <TextBox x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Activity audit…" Click="OpenActivityAudit_Click" Margin="0,0,8,0"/>
+                        <TextBlock Text="Diagnostic logs (not the durable audit)" VerticalAlignment="Center" Foreground="Gray"/>
+                    </StackPanel>
+                    <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              FontFamily="Consolas" FontSize="11" Background="#191919" Foreground="White"/>
                 </Grid>

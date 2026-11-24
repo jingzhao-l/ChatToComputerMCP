@@ -235,11 +235,13 @@ extension LocalMCPServer {
         try Data("only-in-second".utf8).write(to: secondRoot.appendingPathComponent("only-second.txt"))
         let token = String(repeating: "a", count: 64)
         let scoped = WorkspaceDefinition(id: "second", name: "Second", path: secondRoot.path)
+        let auditRoot = temp.appendingPathComponent("audit/profile")
+        let audit = try ActivityAuditStore(directory: auditRoot)
 
         func setup(_ workspaces: [WorkspaceDefinition]) throws -> LocalMCPServer {
             try LocalMCPServer(port: 18962, allowedDirectory: defaultRoot.path,
                 gitUserName: "Test", gitUserEmail: "test@example.invalid",
-                enableCommands: true, additionalWorkspaces: workspaces,
+                enableCommands: true, additionalWorkspaces: workspaces, activityAudit: audit,
                 localAuthToken: token, log: { _ in })
         }
         let server = try setup([scoped])
@@ -306,6 +308,13 @@ extension LocalMCPServer {
         precondition(!(input["required"] as! [String]).contains("workspace_id"))
         let directScoped = try call("read_file", ["workspace_id": "second", "relative_path": "only-second.txt"])
         precondition(directScoped["isError"] as? Bool == false)
+        _ = try call("read_file", ["workspace_id": "second", "relative_path": "SECRET_FIXTURE"])
+        let audited = try ActivityAuditStore.read(directory: auditRoot)
+        precondition(audited.contains { $0.tool == "read_file" && $0.workspace == "second" && $0.result == "ok" })
+        precondition(audited.contains { $0.tool == "read_file" && $0.workspace == "second" && $0.result == "error" })
+        let auditText = try String(contentsOf: auditRoot.appendingPathComponent("current.jsonl"), encoding: .utf8)
+        precondition(!auditText.contains("SECRET_FIXTURE") && !auditText.contains("only-in-second"))
+        print("PASS: durable privacy-minimized audit of real routed tool calls")
         precondition(String(describing: directScoped["structuredContent"]).contains("only-in-second"))
         for invalid: Any in ["unknown", "", 1, NSNull()] {
             let denied = try call("read_file", ["workspace_id": invalid, "relative_path": "only-default.txt"])

@@ -402,6 +402,7 @@ final class LocalMCPRuntime {
             let history = configuration.enableCommands ? try CommandHistoryStore(
                 directory: CommandHistoryStore.directory(for: configuration.profile),
                 captureContent: configuration.captureCommandHistoryContent) : nil
+            let audit = try ActivityAuditStore(directory: ActivityAuditStore.directory(for: configuration.profile))
             let server = try LocalMCPServer(
                 port: configuration.port,
                 allowedDirectory: configuration.allowedDirectory,
@@ -412,6 +413,7 @@ final class LocalMCPRuntime {
                 maxConcurrentCommands: configuration.maxConcurrentCommands,
                 receiptLedger: commandReceiptLedger,
                 commandHistory: history,
+                activityAudit: audit,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
                 defaultWorkspacePermissions: configuration.defaultWorkspacePermissions,

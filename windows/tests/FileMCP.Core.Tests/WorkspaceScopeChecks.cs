@@ -17,10 +17,12 @@ internal static partial class Program
         var secondDefinition = new ApprovedWorkspace("second", "Second", second);
         var port = FreePort();
         var token = new string('a', 64);
+        var auditRoot = Path.Combine(root, "audit", "profile");
+        var audit = new ActivityAuditStore(auditRoot);
 
         await using var server = new LocalMcpServer((ushort)port, first, "Test",
             "test@example.invalid", true, token, _ => { },
-            [secondDefinition], maxConcurrentCommands: 4);
+            [secondDefinition], maxConcurrentCommands: 4, activityAudit: audit);
         await server.StartAsync();
         async Task<JsonObject> Rpc(string name, JsonObject? args = null)
         {
@@ -67,6 +69,12 @@ internal static partial class Program
         var directScope = await Rpc("read_file", Obj(("workspace_id", "second"), ("relative_path", "in-second.txt")));
         Assert(!directScope["isError"]!.GetValue<bool>() && directScope["structuredContent"]!.ToJsonString().Contains("second-only"),
             "direct workspace parameter selects second scope");
+        _ = await Rpc("read_file", Obj(("workspace_id", "second"), ("relative_path", "SECRET_FIXTURE")));
+        var audited = ActivityAuditStore.Read(auditRoot);
+        Assert(audited.Any(item => item.Tool == "read_file" && item.Workspace == "second" && item.Result == "ok"), "successful scoped audit");
+        Assert(audited.Any(item => item.Tool == "read_file" && item.Workspace == "second" && item.Result == "error"), "failed scoped audit");
+        var auditText = File.ReadAllText(Path.Combine(auditRoot, "current.jsonl"));
+        Assert(!auditText.Contains("SECRET_FIXTURE") && !auditText.Contains("second-only"), "audit omits arguments and result text");
         foreach (var invalid in new JsonNode?[] { JsonValue.Create("unknown"), JsonValue.Create(""), JsonValue.Create(1), null })
         {
             var args = Obj(("relative_path", "in-default.txt"));
