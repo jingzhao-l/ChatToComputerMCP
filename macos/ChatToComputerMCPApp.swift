@@ -585,6 +585,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let taskOutputView = NSTextView()
     private let taskOutputScroll = NSScrollView()
     private var desktopTaskList: [DesktopCommandSnapshot] = []
+    private var taskRefreshTimer: Timer?
+    private var taskRefreshInFlight = false
     private let themeButton = NSButton()
     private static let appearanceKey = "interfaceAppearance"
     private var usesDarkAppearance = false
@@ -624,6 +626,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     deinit {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         updateTimer?.invalidate()
+        taskRefreshTimer?.invalidate()
         shutdownForTermination()
     }
 
@@ -1314,10 +1317,10 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         logTab.label = "Activity"
         logTab.view = logPage
 
-        let taskTitle = NSTextField(labelWithString: "Tasks & command sessions")
+        let taskTitle = NSTextField(labelWithString: "Command center")
         taskTitle.font = .systemFont(ofSize: 22, weight: .semibold)
         let taskHelp = NSTextField(wrappingLabelWithString:
-            "Inspect background commands across approved workspaces. Cancelling affects only the selected command session. Short synchronous commands are counted in capacity but cannot be cancelled here.")
+            "Live command sessions across approved workspaces. Output updates automatically while this page is visible. Short synchronous commands count toward capacity but cannot be cancelled here.")
         taskHelp.font = .systemFont(ofSize: 12)
         taskHelp.textColor = .secondaryLabelColor
         taskHelp.preferredMaxLayoutWidth = Layout.contentWidth
@@ -1639,9 +1642,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     @objc private func navigate() {
         guard tabs.tabViewItems.indices.contains(navigation.selectedSegment) else { return }
         tabs.selectTabViewItem(at: navigation.selectedSegment)
-        if tabs.selectedTabViewItem?.identifier as? String == "tasks" {
-            refreshDesktopTasks()
-        } else if tabs.selectedTabViewItem?.identifier as? String == "config",
+        if tabs.selectedTabViewItem?.identifier as? String == "config",
                   selectedProvider == .cloudflare {
             refreshOAuthClientList()
         }
@@ -1843,6 +1844,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     }
 
     @objc private func refreshDesktopTasks() {
+        guard !taskRefreshInFlight else { return }
+        taskRefreshInFlight = true
         runtime.fetchDesktopReceiptSummary { [weak self] summary in
             guard let self else { return }
             guard let summary else {
@@ -1860,23 +1863,27 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         }
         runtime.fetchDesktopCommands { [weak self] entries in
             guard let self else { return }
+            self.taskRefreshInFlight = false
             let previousID = self.desktopTaskList.indices.contains(self.taskPicker.indexOfSelectedItem)
                 ? self.desktopTaskList[self.taskPicker.indexOfSelectedItem].sessionID : nil
+            let changed = self.desktopTaskList != entries
             self.desktopTaskList = entries
             let active = entries.filter(\.active).count
             self.tasksSummaryLabel.stringValue = active == 0
                 ? "No active command sessions. Configuration may still allow short synchronous commands."
                 : "\(active) active long-running command session\(active == 1 ? "" : "s") across your approved workspaces."
-            self.taskPicker.removeAllItems()
-            if entries.isEmpty {
-                self.taskPicker.addItem(withTitle: "No recorded command sessions")
-            } else {
-                for entry in entries {
-                    self.taskPicker.addItem(withTitle: "\(entry.workspaceName) · \(entry.requestID) · \(entry.state)")
+            if changed || self.taskPicker.numberOfItems == 0 {
+                self.taskPicker.removeAllItems()
+                if entries.isEmpty {
+                    self.taskPicker.addItem(withTitle: "No recorded command sessions")
+                } else {
+                    for entry in entries {
+                        self.taskPicker.addItem(withTitle: "\(entry.workspaceName) · \(entry.requestID) · \(entry.state)")
+                    }
                 }
+                let preferred = entries.firstIndex { $0.sessionID == previousID } ?? 0
+                self.taskPicker.selectItem(at: preferred)
             }
-            let preferred = entries.firstIndex { $0.sessionID == previousID } ?? 0
-            self.taskPicker.selectItem(at: preferred)
             self.selectedTaskChanged()
         }
     }
@@ -1897,7 +1904,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         cancelTaskButton.isEnabled = task.active && runtime.state == .running
         revealTaskFolderButton.isEnabled = FileManager.default.fileExists(atPath: task.cwd)
         copyTaskOutputButton.isEnabled = false
-        taskOutputView.string = "Loading bounded command output…"
+        if taskOutputView.string == "No selected command output." {
+            taskOutputView.string = "Loading bounded command output…"
+        }
         runtime.fetchDesktopCommandOutput(workspaceID: task.workspaceID,
                                           sessionID: task.sessionID) { [weak self] result, error in
             guard let self else { return }
@@ -1916,8 +1925,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             let exit = result?["exit_code"]
             let exitLabel = (exit as? Int).map(String.init) ?? "pending"
             self.taskDetailsLabel.stringValue = "Workspace: \(task.workspaceName)\nFolder: \(task.cwd)\nState: \(result?["state"] as? String ?? task.state) · Exit code: \(exitLabel)"
-            self.taskOutputView.string = (truncated ? "[Earlier output truncated]\n" : "")
+            let display = (truncated ? "[Earlier output truncated]\n" : "")
                 + (output.isEmpty ? "(No captured output)" : output)
+            if self.taskOutputView.string != display { self.taskOutputView.string = display }
             self.copyTaskOutputButton.isEnabled = !output.isEmpty
         }
     }
@@ -2871,6 +2881,18 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         if let item = tabViewItem, let index = tabView.tabViewItems.firstIndex(of: item) {
             navigation.selectedSegment = index
+        }
+        if tabViewItem?.identifier as? String == "tasks" {
+            if taskRefreshTimer == nil {
+                taskRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                    guard let self, self.view.window?.isVisible == true else { return }
+                    self.refreshDesktopTasks()
+                }
+            }
+            refreshDesktopTasks()
+        } else {
+            taskRefreshTimer?.invalidate()
+            taskRefreshTimer = nil
         }
         updateWindowHeight()
     }

@@ -177,15 +177,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
             StringComparer.Ordinal).ToArray();
     }
 
-    public async Task<JsonObject> DesktopCommandOutputAsync(string workspaceID, string sessionID)
+    public Task<JsonObject> DesktopCommandOutputAsync(string workspaceID, string sessionID)
     {
         LocalTools selected;
         if (workspaceID == "default") selected = _tools;
         else if (_approved.TryGetValue(workspaceID, out var scope)) selected = scope.Tools;
         else throw new FileMcpException("Unknown approved workspace");
-        var response = await selected.CallAsync("read_command_output",
-            new JsonObject { ["session_id"] = sessionID }).ConfigureAwait(false);
-        return response.StructuredContent;
+        return Task.FromResult(selected.DesktopCommandOutput(sessionID));
     }
 
     public void CancelDesktopCommand(string workspaceID, string sessionID)

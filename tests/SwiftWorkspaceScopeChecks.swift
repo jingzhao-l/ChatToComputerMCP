@@ -324,6 +324,12 @@ extension LocalMCPServer {
             ids.append((index % 2 == 0 ? "default" : "second",
                         started["session_id"] as! String))
         }
+        for scope in ["default", "second"] {
+            let status = try call("command_capacity_status", ["workspace_id": scope])
+            let values = status["structuredContent"] as! [String: Any]
+            precondition(values["active_total"] as? Int == limit)
+            precondition(values["available_slots"] as? Int == 0)
+        }
         try FileManager.default.createDirectory(
             at: secondRoot.appendingPathComponent("overlimit"), withIntermediateDirectories: true)
         let over = try call("workspace_call", ["workspace_id": "second",

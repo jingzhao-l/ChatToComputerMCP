@@ -388,9 +388,9 @@ internal sealed partial class LocalTools
                 throw;
             }
             _usedRequestIds.Add(key); _sessions.Add(session);
-            if (_sessions.Count > 8) {
-                var old = _sessions.FirstOrDefault(item => !item.Active);
-                if (old is not null) { old.Dispose(); _sessions.Remove(old); }
+            while (_sessions.Count(item => !item.Active) > 8) {
+                var old = _sessions.First(item => !item.Active);
+                old.Dispose(); _sessions.Remove(old);
             }
             return session.Snapshot(0);
         }
@@ -409,6 +409,9 @@ internal sealed partial class LocalTools
                 session.Active)).ToArray();
         }
     }
+
+    internal JsonObject DesktopCommandOutput(string sessionID) =>
+        FindSession(sessionID).Snapshot(0, 262_144);
 
     internal void CancelDesktopCommand(string sessionID)
     {
@@ -507,7 +510,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
         }
     }
 
-    public JsonObject Snapshot(int cursor)
+    public JsonObject Snapshot(int cursor, int maxBytes = 65_536)
     {
         lock (_gate)
         {
@@ -518,7 +521,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
             {
                 if (chunk.Cursor <= next) continue;
                 var size = Encoding.UTF8.GetByteCount(chunk.Text);
-                if (bytes + size > 65_536) break;
+                if (bytes + size > maxBytes) break;
                 output.Append(chunk.Text); bytes += size; next = chunk.Cursor;
             }
             return new JsonObject { ["session_id"] = Id, ["request_id"] = RequestId, ["state"] = _state,

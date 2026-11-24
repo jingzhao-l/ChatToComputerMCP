@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     private bool _quitting;
     private string _logBuffer = "";
     private readonly DispatcherTimer _updateTimer = new();
+    private readonly DispatcherTimer _taskRefreshTimer = new();
     private bool _updateBusy;
     private string? _availableUpdateVersion;
     private const int MaxLogCharacters = 500_000;
@@ -50,6 +51,15 @@ public partial class MainWindow : Window
         UpdateApiKeyStatus();
         UpdateCloudflareCredentialStatus();
         LoadUpdateSettings();
+        _taskRefreshTimer.Interval = TimeSpan.FromSeconds(2);
+        _taskRefreshTimer.Tick += (_, _) => {
+            if (IsVisible && WindowState != WindowState.Minimized && MainTabs.SelectedItem == TasksTab)
+                RefreshTasks();
+        };
+        MainTabs.SelectionChanged += (_, e) => {
+            if (e.Source == MainTabs && MainTabs.SelectedItem == TasksTab) RefreshTasks();
+        };
+        _taskRefreshTimer.Start();
         _updateTimer.Interval = TimeSpan.FromHours(12);
         _updateTimer.Tick += (_, _) => _ = CheckUpdatesAsync(automatic: true);
         Loaded += (_, _) =>
@@ -233,9 +243,13 @@ public partial class MainWindow : Window
             var tasks = _runtime.DesktopCommandSnapshots();
             var selectedID = (TaskListBox.SelectedItem as TaskRow)?.Task.SessionId;
             var entries = tasks.Select(task => new TaskRow(task)).ToArray();
-            TaskListBox.ItemsSource = entries;
-            TaskListBox.SelectedItem = entries.FirstOrDefault(entry =>
-                entry.Task.SessionId == selectedID);
+            if (TaskListBox.ItemsSource is not TaskRow[] current || !current.SequenceEqual(entries))
+            {
+                TaskListBox.ItemsSource = entries;
+                TaskListBox.SelectedItem = entries.FirstOrDefault(entry =>
+                    entry.Task.SessionId == selectedID) ?? entries.FirstOrDefault();
+            }
+            else _ = RefreshSelectedTaskAsync();
             TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
                 "Synchronous commands count toward total capacity but are not individually cancellable here.";
             var receipts = _runtime.DesktopReceiptSummary();
@@ -243,14 +257,16 @@ public partial class MainWindow : Window
             ReceiptStatusText.Text = interrupted > 0
                 ? interrupted + " prior command(s) interrupted or unconfirmed. Inspect actual effects before intentionally retrying; nothing was restarted automatically."
                 : "No unconfirmed prior command receipts. Completed IDs remain protected from accidental replay.";
-            TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
-            CancelTaskButton.IsEnabled = false;
-            RevealTaskButton.IsEnabled = TaskListBox.SelectedItem is TaskRow;
+            if (TaskListBox.SelectedItem is not TaskRow)
+                TaskDetailText.Text = tasks.Count == 0 ? "No recent command sessions." : "Select a session to inspect its workspace.";
         }
         catch (Exception ex) { TasksSummaryText.Text = ex.Message; }
     }
 
-    private async void TaskSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void TaskSelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        await RefreshSelectedTaskAsync();
+
+    private async Task RefreshSelectedTaskAsync()
     {
         if (TaskListBox.SelectedItem is not TaskRow row) {
             CancelTaskButton.IsEnabled = false;
@@ -264,7 +280,7 @@ public partial class MainWindow : Window
             _runtime.State.Status == LocalMcpRuntimeStatus.Running;
         RevealTaskButton.IsEnabled = Directory.Exists(row.Task.Cwd);
         CopyTaskOutputButton.IsEnabled = false;
-        TaskOutputBox.Text = "Loading bounded command output…";
+        if (TaskOutputBox.Text.Length == 0) TaskOutputBox.Text = "Loading bounded command output…";
         try
         {
             var result = await _runtime.DesktopCommandOutputAsync(
@@ -279,8 +295,9 @@ public partial class MainWindow : Window
             TaskDetailText.Text = row.Task.WorkspaceName + " · " + row.Task.Cwd +
                 " · " + (result["state"]?.GetValue<string>() ?? row.Task.State) +
                 " · exit " + code;
-            TaskOutputBox.Text = (truncated ? "[Earlier output truncated]\n" : "") +
+            var display = (truncated ? "[Earlier output truncated]\n" : "") +
                 (text.Length == 0 ? "(No captured output)" : text);
+            if (TaskOutputBox.Text != display) TaskOutputBox.Text = display;
             CopyTaskOutputButton.IsEnabled = text.Length > 0;
         }
         catch (Exception ex)
@@ -1207,6 +1224,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _quitting = true;
+        _taskRefreshTimer.Stop();
         try { _runtime.ShutdownAsync().GetAwaiter().GetResult(); } catch { }
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
@@ -1216,6 +1234,7 @@ public partial class MainWindow : Window
     {
         if (_quitting) return;
         _quitting = true;
+        _taskRefreshTimer.Stop();
         try { await _runtime.ShutdownAsync(); }
         finally
         {

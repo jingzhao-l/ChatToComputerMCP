@@ -187,6 +187,10 @@ internal static partial class Program
                 page = await Call(full, "read_command_output", Obj(("session_id", floodId), ("cursor", page["next_cursor"]!.GetValue<int>())));
             }
             Assert(total is > 0 and <= 262_144, "retained output bounded");
+            var desktop = full.DesktopCommandOutput(floodId);
+            Assert(!desktop["has_more"]!.GetValue<bool>() &&
+                Encoding.UTF8.GetByteCount(desktop["output"]!.GetValue<string>()) == total && total > 65_536,
+                "desktop sees entire retained output, not first remote page");
             for (var n = 0; n < 8; n++)
             {
                 var result = await Call(full, "start_command", Obj(("request_id", "retention-" + n), ("command", "exit 0")));

@@ -77,7 +77,7 @@ struct WorkspaceDefinition: Codable, Equatable {
 }
 
 // Information for local GUI task management; no shell command contents.
-struct DesktopCommandSnapshot {
+struct DesktopCommandSnapshot: Equatable {
     let workspaceID: String
     let workspaceName: String
     let sessionID: String
@@ -244,6 +244,17 @@ private final class WorkspaceCommandBudget {
     func hasActiveCommands() -> Bool {
         lock.lock(); defer { lock.unlock() }
         return !activePaths().isEmpty
+    }
+
+    func status(accepting: Bool) -> [String: Any] {
+        lock.lock(); defer { lock.unlock() }
+        let total = activePaths().count
+        return ["max_concurrent_commands": capacity,
+                "active_long_running": longJobs.count,
+                "active_synchronous": synchronous.count,
+                "active_total": total,
+                "available_slots": max(0, capacity - total),
+                "accepting_new_commands": accepting]
     }
 }
 
@@ -3360,9 +3371,9 @@ final class LocalMCPServer {
         } else {
             throw MCPServerError.invalidArguments("Unknown approved workspace")
         }
-        return try scoped.call(name: "read_command_output", arguments: [
-            "session_id": sessionID, "cursor": 0
-        ]).structuredContent
+        // This is a local GUI read of the full retained ring, not a remote
+        // cursor page. Keep the 64 KiB MCP response contract unchanged.
+        return try scoped.findSession(sessionID).snapshot(cursor: 0, maxBytes: 262_144)
     }
 
     func cancelDesktopCommand(workspaceID: String, sessionID: String) throws {
@@ -4403,7 +4414,7 @@ private final class CommandSession {
         if synchronously { child?.stopSynchronously() } else { child?.stop() }
     }
 
-    func snapshot(cursor: Int) throws -> [String: Any] {
+    func snapshot(cursor: Int, maxBytes: Int = 65_536) throws -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         guard cursor >= 0, cursor <= sequence else {
             throw MCPServerError.invalidArguments("cursor is outside this command session")
@@ -4414,7 +4425,7 @@ private final class CommandSession {
         var outputBytes = 0
         for (index, text) in chunks where index > next {
             let size = text.utf8.count
-            if outputBytes + size > 65_536 { break }
+            if outputBytes + size > maxBytes { break }
             output += text; outputBytes += size; next = index
         }
         return ["session_id": id, "request_id": requestID, "state": state,
@@ -4808,7 +4819,9 @@ private extension LocalTools {
         }
         usedRequestIDs.insert(key)
         sessions.append(session)
-        if sessions.count > 8, let oldestFinished = sessions.firstIndex(where: { !$0.active }) {
+        // Active jobs never consume the completed-history quota.
+        while sessions.filter({ !$0.active }).count > 8,
+              let oldestFinished = sessions.firstIndex(where: { !$0.active }) {
             sessions.remove(at: oldestFinished)
         }
         return try session.snapshot(cursor: 0)
@@ -4826,6 +4839,9 @@ private extension LocalTools {
     private func commandCapacityStatus() -> [String: Any] {
         sessionLock.lock()
         defer { sessionLock.unlock() }
+        if let globalBudget {
+            return globalBudget.status(accepting: !sessionsStopped)
+        }
         let longRunning = sessions.filter { $0.active }.count
         let synchronous = synchronousCommandPaths.count
         let total = longRunning + synchronous

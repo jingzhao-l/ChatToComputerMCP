@@ -288,6 +288,9 @@ func runAgentToolChecks(rootPath: String) throws {
         page = try call(full, "read_command_output", ["session_id": floodID, "cursor": page["next_cursor"]!])
     } while true
     check(total <= 262_144 && total > 0)
+    let desktop = try full.findSession(floodID).snapshot(cursor: 0, maxBytes: 262_144)
+    check(desktop["has_more"] as? Bool == false)
+    check((desktop["output"] as! String).utf8.count == total && total > 65_536)
     // Fill retention, then ensure retrying an evicted key cannot execute it again.
     for n in 0..<8 {
         let result = try call(full, "start_command", ["request_id": "retention-\(n)", "command": "true"])

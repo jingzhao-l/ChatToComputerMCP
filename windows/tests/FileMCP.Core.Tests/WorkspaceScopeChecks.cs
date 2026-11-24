@@ -108,6 +108,10 @@ internal static partial class Program
         var cap = await Rpc("command_capacity_status");
         Assert(cap["structuredContent"]!["active_total"]!.GetValue<int>() == 4,
             "global capacity counts both workspace roots");
+        var scopedCap = await Rpc("command_capacity_status", Obj(("workspace_id", "second")));
+        Assert(scopedCap["structuredContent"]!["active_total"]!.GetValue<int>() == 4 &&
+            scopedCap["structuredContent"]!["available_slots"]!.GetValue<int>() == 0,
+            "scoped capacity reports same global occupancy");
         Directory.CreateDirectory(Path.Combine(second, "overflow"));
         var over = await Rpc("workspace_call", Obj(("workspace_id", "second"),
             ("tool_name", "start_command"),

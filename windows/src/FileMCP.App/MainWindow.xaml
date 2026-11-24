@@ -312,7 +312,7 @@
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Tasks">
+            <TabItem Header="Tasks" x:Name="TasksTab">
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
@@ -345,7 +345,7 @@
                              IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              FontFamily="Consolas" FontSize="11"
-                             ToolTip="Captured, bounded stdout/stderr of the selected command session."/>
+                             ToolTip="Captured, bounded stdout/stderr of the selected command session; refreshes automatically while visible."/>
                 </Grid>
             </TabItem>
 
