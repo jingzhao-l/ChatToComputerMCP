@@ -444,6 +444,12 @@ extension LocalMCPServer {
             "command": "test \"$(cat order)\" = first && printf second >> order", "queue_if_busy": true])["structuredContent"] as! [String: Any]
         let status = try q("command_capacity_status", [:])["structuredContent"] as! [String: Any]
         precondition(status["queued_total"] as? Int == 3 && status["active_total"] as? Int == 1)
+        var scheduled = false
+        do {
+            try queueServer.freezeForIdleActivation { scheduled = true }
+            fatalError("Busy activation admitted")
+        } catch {}
+        precondition(!scheduled)
         let cancelled = try q("cancel_command", ["workspace_id": "queue", "session_id": cancelQueued["session_id"]!])["structuredContent"] as! [String: Any]
         precondition(cancelled["state"] as? String == "cancelled")
         let bypass = try q("start_command", ["request_id": "no-jump", "command": "true"])
@@ -464,6 +470,17 @@ extension LocalMCPServer {
         precondition(order == "firstsecond")
         precondition(!FileManager.default.fileExists(atPath: queueRoot.appendingPathComponent("should-not-exist").path))
         print("PASS: global FIFO queue, queued retry identity, cancellation and no bypass")
+        do {
+            try queueServer.freezeForIdleActivation { throw MCPServerError.operationFailed("fixture") }
+            fatalError("Failed scheduling ignored")
+        } catch {}
+        let stillOpen = try q("read_file", ["workspace_id": "queue", "relative_path": "order"])
+        precondition(stillOpen["isError"] as? Bool == false)
+        try queueServer.freezeForIdleActivation { scheduled = true }
+        precondition(scheduled)
+        let refusedAfterFreeze = try q("read_file", ["workspace_id": "queue", "relative_path": "order"])
+        precondition(refusedAfterFreeze["isError"] as? Bool == true)
+        print("PASS: activation gate refuses busy work, rolls back failed scheduling, closes admission atomically")
 
 
         // An explicitly approved root must never overlap the default even

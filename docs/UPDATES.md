@@ -87,3 +87,13 @@ verifying compatibility with existing local data.
 - Native builds can be slow and require Swift/Xcode or .NET SDK as appropriate.
 
 See [Installation](INSTALL_NPM.md) and [Troubleshooting](TROUBLESHOOTING.md).
+
+### Explicit idle activation
+
+After installation, the desktop **Activate update…** action validates the
+versioned release, then atomically closes new local tool admission only if
+all accepted requests and queued/running commands are finished. A busy
+runtime refuses activation; if scheduling the relaunch fails, admission is
+restored. The helper waits for the old app to exit before opening the selected
+release, and never kills a process. Automatic installation still does not
+restart the app. The new app may need an explicit tunnel connection.

@@ -1204,7 +1204,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let updateTitle = NSTextField(labelWithString: "Application updates")
         updateTitle.font = .systemFont(ofSize: 15, weight: .semibold)
         let updateHelp = NSTextField(wrappingLabelWithString:
-            "Official npm releases only. Download and compile into a new versioned directory; the running MCP session is never restarted. Updates become active after you quit and reopen the app.")
+            "Official npm releases only. Download and compile into a new versioned directory; the running MCP session is never restarted. Use Activate update to restart safely when idle, or quit and reopen manually.")
         updateHelp.font = .systemFont(ofSize: 11)
         updateHelp.textColor = .secondaryLabelColor
         updateHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
@@ -1836,7 +1836,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 if DesktopUpdater.alreadyInstalled(latest) {
                     self.updateActivateButton.isEnabled = true
                     self.updateStatusLabel.stringValue =
-                        "v\(latest) is installed. Quit and reopen the app to use it; " +
+                        "v\(latest) is installed. Choose Activate update when idle; " +
                         "the current connection is not interrupted."
                     return
                 }
@@ -1872,7 +1872,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             case .success:
                 self.updateActivateButton.isEnabled = true
                 self.updateStatusLabel.stringValue =
-                    "v\(version) installed successfully. Quit and reopen ChatToComputerMCP " +
+                    "v\(version) installed successfully. Choose Activate update when idle " +
                     "to use it. No active tasks, tunnel or LaunchAgent were restarted."
             case .failure(let error):
                 self.updateStatusLabel.stringValue =
@@ -1952,10 +1952,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 ? self.desktopTaskList[self.taskPicker.indexOfSelectedItem].sessionID : nil
             let changed = self.desktopTaskList != entries
             self.desktopTaskList = entries
-            let active = entries.filter(\.active).count
-            self.tasksSummaryLabel.stringValue = active == 0
-                ? "No active command sessions. Configuration may still allow short synchronous commands."
-                : "\(active) active long-running command session\(active == 1 ? "" : "s") across your approved workspaces."
+            let queued = entries.filter { $0.state == "queued" }.count
+            let active = entries.filter { $0.active && $0.state != "queued" }.count
+            self.tasksSummaryLabel.stringValue = "\(active) running or stopping · \(queued) queued across approved workspaces. Short commands are recorded separately in history."
             if changed || self.taskPicker.numberOfItems == 0 {
                 self.taskPicker.removeAllItems()
                 if entries.isEmpty {

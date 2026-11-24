@@ -372,8 +372,9 @@ public partial class MainWindow : Window
                     entry.Task.SessionId == selectedID) ?? entries.FirstOrDefault();
             }
             else _ = RefreshSelectedTaskAsync();
-            TasksSummaryText.Text = tasks.Count(task => task.Active) + " active long-running commands. " +
-                "Synchronous commands count toward total capacity but are not individually cancellable here.";
+            TasksSummaryText.Text = tasks.Count(task => task.Active && task.State != "queued") +
+                " running or stopping · " + tasks.Count(task => task.State == "queued") +
+                " queued. Short commands are recorded separately in history.";
             var receipts = _runtime.DesktopReceiptSummary();
             var interrupted = receipts.GetValueOrDefault("interrupted");
             ReceiptStatusText.Text = interrupted > 0
@@ -651,7 +652,7 @@ public partial class MainWindow : Window
             {
                 ActivateUpdateButton.IsEnabled = true;
                 UpdateStatusText.Text = "v" + latest +
-                    " is already installed. Quit and reopen ChatToComputerMCP to use it.";
+                    " is already installed. Choose Activate update when idle.";
                 return;
             }
             UpdateStatusText.Text = "Update available: v" + DesktopUpdates.CurrentVersion +
@@ -690,7 +691,7 @@ public partial class MainWindow : Window
             await DesktopUpdates.InstallAsync(target);
             ActivateUpdateButton.IsEnabled = true;
             UpdateStatusText.Text = "v" + target +
-                " installed. Quit and reopen the app to use it; active tasks and tunnel were not restarted.";
+                " installed. Choose Activate update when idle; active tasks and tunnel were not restarted.";
         }
         catch (Exception ex)
         {

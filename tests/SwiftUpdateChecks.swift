@@ -54,4 +54,17 @@ func runNativeUpdateChecks() throws {
     let after = try String(contentsOf: outside, encoding: .utf8)
     precondition(after == "untouched")
     print("PASS: native update policy is opt-in, atomic, 0600, reversible, no symlink overwrite")
+    for version in ["../escape", "99.99.99"] {
+        do {
+            _ = try DesktopUpdater.activationBundle(version: version, releases: home)
+            preconditionFailure("Missing/invalid release accepted")
+        } catch {}
+    }
+    let alias = home.appendingPathComponent("1.2.3")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: home)
+    do {
+        _ = try DesktopUpdater.activationBundle(version: "1.2.3", releases: home)
+        preconditionFailure("Linked release accepted")
+    } catch {}
+    print("PASS: update activation rejects invalid, missing and linked releases")
 }

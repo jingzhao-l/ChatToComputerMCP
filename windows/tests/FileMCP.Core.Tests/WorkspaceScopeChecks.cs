@@ -203,6 +203,10 @@ internal static partial class Program
             ("command", "if ((Get-Content order -Raw) -ne 'first') { exit 7 }; Add-Content -NoNewline order second"), ("queue_if_busy", true))))["structuredContent"]!;
         var queueStatus = (await Rpc("command_capacity_status"))["structuredContent"]!;
         Assert(queueStatus["queued_total"]!.GetValue<int>() == 3 && queueStatus["active_total"]!.GetValue<int>() == 1, "queue separate from capacity");
+        var scheduled = false;
+        try { server.FreezeForIdleActivation(() => scheduled = true); throw new Exception("Busy activation admitted"); }
+        catch (FileMcpException) {}
+        Assert(!scheduled, "busy activation refused");
         var cancelled = (await Rpc("cancel_command", Obj(("workspace_id", "queue"), ("session_id", cancelQueued["session_id"]!.GetValue<string>()))))["structuredContent"]!;
         Assert(cancelled["state"]!.GetValue<string>() == "cancelled", "cancel queued");
         Assert((await Rpc("start_command", Obj(("request_id", "no-jump"), ("command", "exit 0"))))["isError"]!.GetValue<bool>(), "no bypass");
@@ -217,6 +221,11 @@ internal static partial class Program
         }
         Assert(terminal && File.ReadAllText(Path.Combine(queueRoot, "order")) == "firstsecond" &&
             !File.Exists(Path.Combine(queueRoot, "should-not-exist")), "FIFO execution and queued cancellation");
+        try { server.FreezeForIdleActivation(() => throw new IOException("fixture")); throw new Exception("Expected activation failure"); }
+        catch (IOException) {}
+        Assert(!(await Rpc("read_file", Obj(("workspace_id", "queue"), ("relative_path", "order"))))["isError"]!.GetValue<bool>(), "failed activation restores admission");
+        server.FreezeForIdleActivation(() => scheduled = true);
+        Assert(scheduled && (await Rpc("read_file", Obj(("workspace_id", "queue"), ("relative_path", "order"))))["isError"]!.GetValue<bool>(), "successful idle gate closes admission");
         Console.WriteLine("windows-workspace-scope-and-global-concurrency: ok");
     }
 }
