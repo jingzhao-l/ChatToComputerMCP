@@ -226,3 +226,41 @@ jobs:
           done
           echo "::error::npm accepted the upload, but the version/latest dist-tag did not become public within the verification window. Check Registry and publish-time scanning; do NOT re-publish or reuse the immutable version."
           exit 1
+
+  github-release:
+    name: Publish GitHub release after registry verification
+    needs: publish
+    if: github.repository == 'jingzhao-l/ChatToComputerMCP'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish verified source release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          python3 - "$version" <<'PY'
+          import sys
+          from pathlib import Path
+          version = sys.argv[1]
+          lines = Path("CHANGELOG.md").read_text().splitlines()
+          start = next(i for i, line in enumerate(lines) if line.startswith("## [" + version + "]"))
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          notes = "\n".join(lines[start + 1:end]).strip()
+          if not notes:
+              raise SystemExit("Missing release notes")
+          Path("release-notes.md").write_text(notes + "\n\nInstall: `npx --yes chat-to-computer-mcp@" + version + " install`\n\nNative source builds; CUA permissions and Guest opt-in remain local.\n")
+          PY
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true || { echo "Release already published; refusing replacement"; exit 1; }
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest --title "ChatToComputerMCP $GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --latest --title "ChatToComputerMCP $GITHUB_REF_NAME" --notes-file release-notes.md
+          fi

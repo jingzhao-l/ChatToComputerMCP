@@ -79,6 +79,10 @@ It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, follow
 
 **Do not reuse a published npm version.** If a verification or publishing attempt fails after npm accepted the tarball, inspect registry state before retrying. A new publication requires a new version number.
 
+After the registry confirms the exact version and latest dist-tag, a separate
+least-privilege GitHub Release job publishes the immutable tag with the matching
+CHANGELOG section. A failed native or npm gate cannot publish that release.
+
 ## Optional GitHub release asset
 
 For a versioned tarball attach `chat-to-computer-mcp-VERSION.tgz` and a SHA-256 checksum to a GitHub release. A GitHub release is **not** equivalent to an npm registry publication.
