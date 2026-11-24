@@ -12,6 +12,7 @@ This directory contains official OpenAI `tunnel-client` binaries bundled with Fi
 | Target | Official release archive SHA-256 | Bundled executable SHA-256 |
 | --- | --- | --- |
 | `darwin-arm64` | `42fb3138dc9c081d5777cb7e8bd1e041cc48b67c4978dbab3c5167ca1aabca02` | `b1757220cf4722cec9085ee4a908cf0ee4c1a499a33bd99979b9a9c7669e29b1` |
+| `darwin-amd64` | `33de53aec680faafedc795f8f8268d6861577bddb871cb2d49529c91f88c2009` | `4133dab2575223252732a998210c34b7ed96a51765cf5ea835a8e24cf2be1272` |
 | `windows-amd64` | `2a2804933924e38a502d62b61f0266cb80d56d65744f4c29876b2bf9c1544356` | `6649169733686805ca16cccd91774594d0c017fd729c37ad4ce1cd18323d9ae8` |
 | `windows-arm64` | `65ab54221554481bb1c23b6015b99abe0b7f79b08593f4fb17a9e2e25532281d` | `480684ec1031fc2985c7e87f9d669e7dfda4012a8ecdab21eabe1b5deafdd656` |
 

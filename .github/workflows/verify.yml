@@ -2,7 +2,7 @@ name: Verify
 
 # Do not run duplicate full suites for both branch pushes and pull requests.
 # Keep direct main pushes covered; PRs from feature/dependabot branches
-# still receive all three jobs. Manual branch checks remain possible.
+# receive the platform and security jobs. Manual branch checks remain possible.
 on:
   push:
     branches: [main]
@@ -62,11 +62,19 @@ jobs:
           test -s vendor/ripgrep/LICENSE-MIT
           test -s vendor/ripgrep/UNLICENSE
 
+      - name: Verify Intel vendor integrity
+        run: bash tests/check_intel_vendor.sh
+
       - name: Guard GitHub Actions Node.js runtimes
         run: python3 tests/check_github_actions_node_runtime.py
 
-      - name: Verify cross-platform MCP tool contracts
+      - name: Verify cross-platform MCP tool names
         run: python3 tests/check_platform_tool_contracts.py
+      - name: Verify macOS base MCP schema and permission contract
+        run: |
+          bash tests/dump_swift_tool_contract.sh > "$RUNNER_TEMP/mac-contract.json"
+          python3 tests/check_base_tool_contract.py "$RUNNER_TEMP/mac-contract.json"
+          python3 tests/check_base_tool_docs.py
 
       - name: Static verification
         shell: bash
@@ -160,6 +168,37 @@ jobs:
           cmp assets/branding/chat-to-computer-mcp/app-icon-128.png dist/ChatToComputerMCP.app/Contents/Resources/ChatToComputerMCP-login.png
           test -s dist/ChatToComputerMCP.app/Contents/Resources/AppIcon.icns
 
+  verify-macos-intel:
+    name: macOS Intel base gateway and installer
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Intel vendor, source installer and native coding tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = x86_64
+          bash tests/check_intel_vendor.sh
+          npm test
+          bash tests/test_swift_agent_tools.sh
+          MCP_HTTP_FUZZ_ITERATIONS=20 bash tests/test_swift_runtime.sh
+          bash build_macos_app.sh
+          codesign --verify --deep --strict dist/ChatToComputerMCP.app
+          file dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP | grep -q x86_64
+          cmp vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt
+          # Intel vendor binaries may need local signing in the bundle; the
+          # checked-in source hashes must remain unchanged.
+          bash tests/check_intel_vendor.sh
+          dist/ChatToComputerMCP.app/Contents/MacOS/rg --version | grep -q '^ripgrep 15.2.0 '
+          dist/ChatToComputerMCP.app/Contents/MacOS/tunnel-client --version | grep -q '^0.0.12+881c9a8fed7cccbe6607cd419863bbca506b8215 '
+
   verify-windows:
     runs-on: windows-2025
     timeout-minutes: 20
@@ -212,6 +251,14 @@ jobs:
       - name: Windows updater CLI regression
         shell: pwsh
         run: npm test
+
+      - name: Verify Windows base MCP schema and permission contract
+        shell: pwsh
+        run: |
+          dotnet run --no-build -c Release --project windows/tests/FileMCP.Core.Tests -- --dump-base-tool-contract | Out-File -Encoding utf8 "$env:RUNNER_TEMP/win-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows contract export failed" }
+          python tests/check_base_tool_contract.py "$env:RUNNER_TEMP/win-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows contract drift" }
 
       - name: Windows integration tests
         shell: pwsh
@@ -284,3 +331,52 @@ jobs:
           name: ChatToComputerMCP-windows-arm64
           path: dist/ChatToComputerMCP-v*-windows-arm64.zip
           if-no-files-found: error
+
+
+  verify-windows-arm64:
+    name: Windows ARM64 native base runtime and installer
+    runs-on: windows-11-arm
+    timeout-minutes: 25
+    env:
+      MCP_HTTP_FUZZ_ITERATIONS: "20"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          architecture: arm64
+          package-manager-cache: false
+      - name: Require native architecture and pinned vendors
+        shell: pwsh
+        run: |
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne "Arm64") { throw "ARM64 OS required" }
+          if ((node -p "process.arch").Trim() -ne "arm64") { throw "Native ARM64 Node required" }
+          $info = dotnet --info | Out-String
+          if ($info -notmatch '(?im)^\s*Architecture:\s*arm64\s*$') { throw "Native ARM64 .NET required" }
+          if ((Get-FileHash vendor/tunnel-client/windows-arm64/tunnel-client.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne "480684ec1031fc2985c7e87f9d669e7dfda4012a8ecdab21eabe1b5deafdd656") { throw "ARM64 tunnel-client checksum mismatch" }
+          if ((Get-FileHash vendor/ripgrep/windows-arm64/rg.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne "d33a29a9ef03c9f4c03be9e8d88498e6e2d2e566d64cdbdef97f9afc8f13120c") { throw "ARM64 ripgrep checksum mismatch" }
+          if ((& vendor/tunnel-client/windows-arm64/tunnel-client.exe --version) -notmatch '^0\.0\.12\+881c9a8fed7cccbe6607cd419863bbca506b8215 ') { throw "Unexpected ARM64 tunnel-client version" }
+          if ((& vendor/ripgrep/windows-arm64/rg.exe --version | Select-Object -First 1) -notmatch '^ripgrep 15\.2\.0 ') { throw "Unexpected ARM64 ripgrep version" }
+      - name: Build and test base gateway
+        shell: pwsh
+        run: |
+          dotnet build windows/FileMCP.Windows.sln -c Release -warnaserror
+          if ($LASTEXITCODE -ne 0) { throw "ARM64 build failed" }
+          ./tests/test_windows_runtime.ps1 -BaseOnly
+          dotnet run --no-build -c Release --project windows/tests/FileMCP.Core.Tests -- --dump-base-tool-contract | Out-File -Encoding utf8 "$env:RUNNER_TEMP/win-arm64-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "ARM64 contract export failed" }
+          python tests/check_base_tool_contract.py "$env:RUNNER_TEMP/win-arm64-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "ARM64 contract drift" }
+      - name: Native app and source package installer
+        shell: pwsh
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw "ARM64 npm tests failed" }
+          ./build_windows_app.ps1 -Architecture arm64
+          ./tests/test_windows_app.ps1
+          ./tests/test_windows_npm_install.ps1

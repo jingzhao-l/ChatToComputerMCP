@@ -143,7 +143,7 @@ npx --yes chat-to-computer-mcp@latest open
 
 **注意：**使用 Secure MCP Tunnel 时，不要把 `http://127.0.0.1:8008/mcp` 当作 ChatGPT 插件的公网地址，它只能在你自己的电脑上访问。ChatGPT 找不到 Tunnel 时，优先检查**目标 ChatGPT 工作区关联**和 **Tunnels Read + Use** 权限。
 
-**详细操作教程：**[简体中文版](docs/CONNECT_CHATGPT.zh-CN.md) · [English](docs/CONNECT_CHATGPT.md)，包含完整的权限、常见故障与 Mac Cloudflare + OAuth 备选方案。官方参考：[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) · [ChatGPT 自定义插件接入](https://developers.openai.com/plugins/deploy/connect-chatgpt)。
+**详细操作教程：**[简体中文版](docs/CONNECT_CHATGPT.zh-CN.md) · [English](docs/CONNECT_CHATGPT.md)，包含完整的权限、常见故障与 Mac 与 Windows 的 Cloudflare + OAuth 备选方案。官方参考：[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) · [ChatGPT 自定义插件接入](https://developers.openai.com/plugins/deploy/connect-chatgpt)。
 
 ## 📦 安装与命令
 
@@ -213,32 +213,36 @@ chat-to-computer-mcp startup disable
 
 ## 🗂 多工作区和界面
 
-1. 选定**默认工作区**，现有直接 MCP 工具依旧只作用于这个目录。
+1. 选定**默认工作区**，未指定 workspace_id 的工具调用使用该目录。
 2. 通过 **Add folders…** 增加工作区，赋予持久化名称和 ID。
 3. 对 Shell、Git push 等特权行为分别审批。
 4. 配置跨所有工作区共享的并发命令上限（4–16）。
-5. 保存后重新连接，授权变动才会对运行时生效。
-6. 在 **Tasks（任务）** 页面查看任务，明确选择后才能取消相应长任务。
+5. 空闲的额外工作区支持在线调整授权；默认目录或全局权限改变需要重新连接。OAuth 工作区授权变动后旧令牌失效，需要重新批准。
+6. 在 **Tasks（任务）** 页面查看任务，明确选择后才能取消相应运行中或排队任务。
 
 移除一个工作区的批准**不会删除它的文件**。父子目录重叠、通过符号链接形成的重复根目录会被拒绝。
 
-### Mac GUI 五个页面
+### 双平台七个功能区域
 
+<!-- BEGIN GENERATED DESKTOP AREAS -->
 | 页面 | 主要功能 |
 |---|---|
-| **Overview** | 当前连接状态、工作区与权限摘要 |
-| **Workspaces** | 工作区增删改、定位目录、权限、并发容量、可选自启 |
-| **Connection** | 连接服务商、密钥、端点、连接/断开与 OAuth |
-| **Tasks** | 命令任务、运行状态、刷新与定向取消 |
-| **Activity** | 脱敏日志、复制、清理与故障排查 |
+| **Overview** | 连接、工作区与权限摘要 |
+| **Workspaces** (Folders) | 已批准目录、权限、命令容量与工作区调用指引 |
+| **Connection** (Connect) | 服务商、凭据、连接以及 OAuth 客户端授权/撤销 |
+| **Command center** (Tasks) | 运行中/排队任务、定向取消、输出及本地历史 |
+| **Activity** | 脱敏日志及结构化审计 |
+| **Security** | 特权工具、历史内容及独立 Worker 授权 |
+| **Settings** | Profile、端口、登录保活、更新及偏好 |
+<!-- END GENERATED DESKTOP AREAS -->
 
-Windows 有自己的 WPF 控件。其编译检查已经通过，但**Windows 实机 GUI 的完整测试仍需进行**。
+两个原生客户端均有七个区域、宽窄布局以及浅色/深色偏好。详见 [GUI 功能](docs/GUI_CAPABILITIES.md)。Windows 托管原生冒烟测试不等于物理设备验收。
 
 ## 🧭 技术架构
 
 本机网关提供 loopback-only MCP 服务；出站隧道接收兼容客户端的调用。每个工作区拥有独立的路径解析与文件操作约束，跨工作区命令共享总容量门；同步和异步命令都计入额度。
 
-**明确的安全边界：**Mac Cloudflare OAuth 现在使用服务器签发的 Token 验证客户端，分别限制工作区及任务读取、取消权限，GUI 可撤销授权。**OpenAI Secure MCP Tunnel 仍使用共享连接凭据，不能据此识别每个独立的 ChatGPT 对话。**Shell 的 cwd 限制不是 OS 沙盒；Mac 持久化任务记录只能防止重启后误重复执行，不能重新附着原进程。参阅[OAuth 客户端权限边界](docs/VERIFIED_CLIENT_ACCESS.md)。
+**明确的安全边界：**Mac 和 Windows 的 Cloudflare OAuth 均使用服务器签发的 Token 验证客户端，分别限制工作区及任务读取、取消权限，GUI 可撤销授权。**OpenAI Secure MCP Tunnel 仍使用共享连接凭据，不能据此识别每个独立的 ChatGPT 对话。**Shell 的 cwd 限制不是 OS 沙盒；持久回执防止重复执行；双平台可主动开启独立 Worker，在网关重启后重新附着经验证仍存活的任务，但不自动恢复已退出 Worker 或操作系统重启前的任务。参阅[OAuth 客户端权限边界](docs/VERIFIED_CLIENT_ACCESS.md)。
 
 ## 🔧 MCP 使用示例
 
@@ -268,7 +272,7 @@ Windows 有自己的 WPF 控件。其编译检查已经通过，但**Windows 实
 - 普通文件和 Git 工具有目录范围控制，但 Shell 的绝对路径访问不受 cwd 守卫限制。
 - 凭据由 Mac Keychain / Windows Credential Manager 管理，不写入 npm 包。
 - 安装过程不会重置旧版 FileMCP 的钥匙串、代理、Profile 和 LaunchAgent。
-- 逐 AI 客户端真实身份隔离与持久任务恢复尚在路线图。
+- 已实现 OAuth 客户端授权及可选独立 Worker 恢复；共享 Tunnel 不提供逐 Chat 对话身份认证。
 - 本地编译不代表已经完成 Apple Developer ID 签名和公证。
 
 参阅 [安全政策](SECURITY.md) 与 [架构文档](docs/ARCHITECTURE.md)。
@@ -280,8 +284,8 @@ Windows 有自己的 WPF 控件。其编译检查已经通过，但**Windows 实
 | 源码构建 | **实机通过** | **GitHub Windows x64 runner 构建通过** |
 | 多工作区与边界 | **专项测试通过** | **Windows x64 集成测试通过** |
 | 8/12/16 并发与取消 | **Mac 测试通过** | **Windows x64 集成测试通过** |
-| GUI | **150 组布局状态检查通过** | **Windows x64 WPF 冒烟测试通过** |
-| npm tarball 本地安装 | **隔离 HOME 完整编译安装通过** | Windows 全新机器安装待测试 |
+| GUI | **210 组布局状态检查通过** | **Windows x64 WPF 冒烟测试通过** |
+| npm tarball 本地安装 | **隔离 HOME 完整编译安装通过** | **Windows x64 清洁用户安装回归通过** |
 
 Windows x64 的 CI 测试确实已在 GitHub 托管的 Windows runner 上运行并通过；ARM64 安装包虽然已成功构建，但仍未进行 ARM64 原生运行及升级/重启全场景测试，用户同意暂不作为当前发行门槛。
 
@@ -296,6 +300,8 @@ bash tests/test_swift_runtime.sh
 npm test
 npm pack --dry-run --json
 ```
+
+源码包包含 Apple Silicon、Intel Mac 与 Windows x64/ARM64 对应依赖；各架构的运行验收详见双平台审查。
 
 Windows 构建入口是 `windows/FileMCP.Windows.sln`；Windows 的运行与 GUI 回归必须在 Windows 系统上完成。
 
@@ -322,7 +328,7 @@ ChatToComputerMCP 解决的是**云端 AI 对话如何经授权操作本地电�
 
 **重启 Mac 还会运行吗？** 可以可选使用 LaunchAgent 在用户重新登录后启动；它不是开机前系统守护服务。
 
-**Windows 已全部通过了吗？** 源码的 Windows 目标编译通过，实机测试仍待完成。
+**Windows 已全部通过了吗？** Windows x64 原生 CI 已通过构建、运行、安装及 WPF 冒烟测试。物理设备、ARM64 原生及真实外部服务验收仍需分别验证。
 
 **会接管原来的 FileMCP 吗？** 不会。新安装目录和 LaunchAgent 均独立，且拒绝有冲突的自动连接。
 
@@ -337,6 +343,10 @@ ChatToComputerMCP 解决的是**云端 AI 对话如何经授权操作本地电�
 | [工作区安全](docs/MULTI_WORKSPACE_SECURITY.md) | 授权、路由与边界 |
 | [OAuth 客户端身份与权限](docs/VERIFIED_CLIENT_ACCESS.md) | 令牌验证、工作区授权、任务隔离和撤销 |
 | [GUI 功能](docs/GUI_CAPABILITIES.md) | 原生界面 |
+| [基础 MCP 契约](docs/BASE_TOOL_CONTRACT.md) | 自动生成的工具清单、参数与授权配置 |
+| [双平台对齐](docs/PLATFORM_PARITY.md) | 验证证据与未完成验收 |
+| [独立任务恢复](docs/INDEPENDENT_TASKS.md) | Worker 与回执 |
+| [后台电脑操控](docs/CUA.md) | 可选 CUA、浏览器与 Guest |
 | [自动发布](docs/PUBLISHING.md) | OIDC 与版本管理 |
 | [故障排查](docs/TROUBLESHOOTING.md) | 构建、连接、权限 |
 | [路线图](docs/ROADMAP.md) | 已验证与未完成 |

@@ -1,3 +1,5 @@
+param([switch]$BaseOnly)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -12,11 +14,14 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
 }
 
 
-$TunnelClient = Join-Path $Root "vendor/tunnel-client/windows-amd64/tunnel-client.exe"
+$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+if ($Architecture -notin @("x64", "arm64")) { throw "Unsupported native architecture: $Architecture" }
+$VendorTag = if ($Architecture -eq "arm64") { "windows-arm64" } else { "windows-amd64" }
+$TunnelClient = Join-Path $Root "vendor/tunnel-client/$VendorTag/tunnel-client.exe"
 if (-not (Test-Path -LiteralPath $TunnelClient -PathType Leaf)) {
     throw "Missing vendored Windows tunnel-client: $TunnelClient"
 }
-$Ripgrep = Join-Path $Root "vendor/ripgrep/windows-amd64/rg.exe"
+$Ripgrep = Join-Path $Root "vendor/ripgrep/$VendorTag/rg.exe"
 if (-not (Test-Path -LiteralPath $Ripgrep -PathType Leaf)) {
     throw "Missing vendored Windows ripgrep: $Ripgrep"
 }
@@ -61,5 +66,9 @@ finally {
 }
 
 $env:FILEMCP_RG = $Ripgrep
-dotnet run --project "windows/tests/FileMCP.Core.Tests/FileMCP.Core.Tests.csproj" -c Release
+if ($BaseOnly) {
+    dotnet run --project "windows/tests/FileMCP.Core.Tests/FileMCP.Core.Tests.csproj" -c Release -- --base-only
+} else {
+    dotnet run --project "windows/tests/FileMCP.Core.Tests/FileMCP.Core.Tests.csproj" -c Release
+}
 if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed." }

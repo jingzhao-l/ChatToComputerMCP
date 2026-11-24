@@ -67,11 +67,11 @@ For multiple approved workspaces, ask it to call `list_workspaces`, then `read_f
 
 Confirm that ChatGPT actually calls the tools and that the app's **Activity** page records the call. **Connected alone does not mean end-to-end verification passed.** Keep the app running for future calls.
 
-## Optional alternative: Cloudflare Tunnel (macOS)
+## Optional alternative: Cloudflare Tunnel (macOS and Windows)
 
-The Mac app also supports Cloudflare if you prefer a public HTTPS hostname rather than OpenAI's private Tunnel:
+Both native apps support Cloudflare if you prefer a public HTTPS hostname rather than OpenAI's private Tunnel:
 
-1. Install `cloudflared` (e.g. `brew install cloudflared`); it is not bundled.
+1. Install the official `cloudflared` for your OS (for example, `brew install cloudflared` on Mac or the official Windows executable on PATH); it is not bundled.
 2. Configure a Cloudflare tunnel and public hostname to route to the local MCP server (usually `http://127.0.0.1:8008`). Route the **whole hostname**, including `/mcp`, `/oauth/*` and `/.well-known/*`.
 3. In the native **Connection** page select a Cloudflare provider. Enter your named tunnel or dashboard token and the public hostname.
 4. Connect, then copy the app's HTTPS MCP URL: `https://your-hostname.example/mcp`.
@@ -82,7 +82,7 @@ The Cloudflare route does **not** use an OpenAI Tunnel ID or OpenAI Platform run
 
 **Per-client scopes:** the local Cloudflare OAuth approval page now asks the
 user which approved workspaces the verified client may access; the default
-workspace is selected by default. macOS Connection can inspect and revoke
+workspace is selected by default. the Connection page on both platforms can inspect and revoke
 approved client tokens. The shared Secure MCP Tunnel header does not provide
 equivalent per-conversation identity isolation.
 
@@ -100,7 +100,7 @@ See [Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudfla
 | App Connected but tools fail | Confirm matching Plugin Tunnel ID, local permissions and an actual ChatGPT tool call |
 | Port is in use | Select another local MCP port; avoid running old FileMCP/new ChatToComputerMCP on the same profile/port |
 | Commands conflict | Use separate working directories or Git worktrees; capacity is 4–16 (default 8) |
-| Need automatic start | Enable the **separate optional** macOS LaunchAgent; automatic tunnel connection is off by default |
+| Need automatic start | Enable the optional macOS LaunchAgent or Windows login supervisor in Settings; automatic connection is off by default |
 
 **Network:** Secure MCP Tunnel needs **outbound HTTPS** to `api.openai.com:443` (or `mtls.api.openai.com:443` with mTLS) and local MCP reachability, **not inbound port forwarding**.
 

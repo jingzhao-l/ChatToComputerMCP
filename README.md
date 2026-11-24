@@ -151,7 +151,7 @@ For example: *“Show my approved workspaces, open the second repository and inv
 
 **Important:** Do not paste `http://127.0.0.1:8008/mcp` into ChatGPT for the Tunnel route—it is only the local server address. If your Tunnel is missing from ChatGPT, check its **ChatGPT workspace association** and your **Tunnels Read + Use** role.
 
-**Full illustrated-by-steps guides:** [English connection guide](docs/CONNECT_CHATGPT.md) · [中文连接教程](docs/CONNECT_CHATGPT.zh-CN.md). The full guides cover permissions, Platform vs ChatGPT accounts, Cloudflare Tunnel (macOS), OAuth and troubleshooting. Official references: [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [Connect an MCP Plugin in ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt).
+**Full illustrated-by-steps guides:** [English connection guide](docs/CONNECT_CHATGPT.md) · [中文连接教程](docs/CONNECT_CHATGPT.zh-CN.md). The full guides cover permissions, Platform vs ChatGPT accounts, Cloudflare Tunnel on macOS and Windows, OAuth and troubleshooting. Official references: [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [Connect an MCP Plugin in ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt).
 
 ## 📦 Installation and CLI
 
@@ -225,26 +225,30 @@ restarting the current app or its AI tasks.
 
 ## 🗂 Workspace workflow
 
-1. Select the default workspace (direct MCP tools remain scoped to it).
+1. Select a default workspace (used when no workspace_id is supplied).
 2. Use **Add folders…** to approve extra existing directories; names and IDs persist.
 3. Review shell, Git push and other privileged permissions before saving.
 4. Set a global 4–16 concurrent-command limit shared by all workspaces.
-5. Save changes and reconnect before newly granted/revoked permissions take effect.
-6. Inspect jobs and cancel only the selected long-running session under **Tasks**.
+5. Additional idle workspace approvals can be changed live; global/default-root changes require reconnect. OAuth grant changes invalidate prior tokens and require renewed approval.
+6. Inspect jobs and cancel only the selected running or queued task under **Tasks**.
 
 Removing a workspace does **not** delete its files. Parent/child workspace overlaps and canonical symlink aliases are refused. See [Multi-workspace permissions](docs/MULTI_WORKSPACE_SECURITY.md).
 
 ## 🖥 Desktop experience
 
+<!-- BEGIN GENERATED DESKTOP AREAS -->
 | Page | Key controls |
 |---|---|
-| **Overview** | Connection summary, active workspace and permissions |
-| **Workspaces** | Add, rename, remove and reveal folders; command capacity; privileged tools; optional login agent |
-| **Connection** | Tunnel provider, endpoint and credentials, connect/disconnect and OAuth actions |
-| **Tasks** | Running command sessions, workspace context, refresh and targeted cancellation |
-| **Activity** | Redacted logs, copy, clear and connection diagnostics |
+| **Overview** | Connection, workspace and permission summary |
+| **Workspaces** (Folders) | Approved roots, permissions, command capacity and scope instructions |
+| **Connection** (Connect) | Providers, credentials, connection and OAuth client grants/revocation |
+| **Command center** (Tasks) | Running/queued jobs, targeted cancellation, output and local history |
+| **Activity** | Redacted logs and structured audit |
+| **Security** | Privileged tools, history content and independent worker opt-ins |
+| **Settings** | Profile, ports, login supervision, updates and preferences |
+<!-- END GENERATED DESKTOP AREAS -->
 
-The Windows client provides its own native WPF settings and task controls; its actual Windows GUI execution remains a separate release test, not a result inferred from Mac compilation.
+Both native clients have seven areas, responsive navigation and light/dark preferences. See [GUI capabilities](docs/GUI_CAPABILITIES.md). Hosted Windows native smoke does not replace physical-device acceptance.
 
 ## 🧭 Architecture
 
@@ -255,7 +259,7 @@ The Windows client provides its own native WPF settings and task controls; its a
 - Commands run with the **user's OS privileges**; cwd collision checks do **not** confine absolute paths.
 - Sessions expose IDs, bounded output and target-specific cancellation.
 
-**Current boundary:** Mac Cloudflare OAuth can verify server-issued client tokens, enforce individually approved scopes and task ownership, and revoke clients through the native GUI. **OpenAI Secure MCP Tunnel continues to use shared local credentials; it does not prove the identity of an individual ChatGPT conversation.** Mac durable receipts prevent accidental command replay but do not reattach orphaned processes after restart. See [Verified client access](docs/VERIFIED_CLIENT_ACCESS.md).
+**Current boundary:** Cloudflare OAuth on both platforms verifies server-issued client tokens, enforce individually approved scopes and task ownership, and revoke clients through the native GUI. **OpenAI Secure MCP Tunnel continues to use shared local credentials; it does not prove the identity of an individual ChatGPT conversation.** Durable receipts prevent accidental replay; explicitly enabled independent workers on both platforms can reattach a demonstrably live job after gateway restart, but not after OS reboot or worker loss. See [Verified client access](docs/VERIFIED_CLIENT_ACCESS.md).
 
 ## 🔧 MCP tool examples
 
@@ -285,7 +289,7 @@ Omitting `workspace_id` selects the default workspace. The legacy `workspace_cal
 - Folder containment covers normal tool operations, not arbitrary shell commands.
 - API keys belong in macOS Keychain or Windows Credential Manager, not npm or the repo.
 - Installing does not touch the old `local.filemcp` service, credentials, proxy or tunnel.
-- Per-client authenticated identities and durable task recovery remain **future work**.
+- Verified OAuth-client identities and opt-in live worker recovery are implemented. Shared Tunnel credentials are not authenticated per-conversation identities.
 - Locally compiled Mac apps are not automatically Apple Developer ID signed or notarized.
 
 Read [SECURITY.md](SECURITY.md) and [Architecture](docs/ARCHITECTURE.md) before enabling commands for less-trusted clients.
@@ -297,8 +301,8 @@ Read [SECURITY.md](SECURITY.md) and [Architecture](docs/ARCHITECTURE.md) before 
 | Native source build | **Passed** | **Windows x64 runner build passed** |
 | Multiple workspaces | **Scoped tests passed** | **Windows x64 integration passed** |
 | Command capacity/cancel | **8/12/16 and MCP regressions passed** | **Windows x64 integration passed** |
-| Native GUI | **150 layout-state checks passed** | **Windows x64 WPF smoke passed** |
-| npm tarball → installed app | **Clean-HOME local Swift build passed** | Clean Windows install pending |
+| Native GUI | **210 layout-state checks passed** | **Windows x64 WPF smoke passed** |
+| npm tarball → installed app | **Clean-HOME local Swift build passed** | **Windows x64 clean-user install regression passed** |
 
 The Windows x64 CI actually ran on a GitHub-hosted Windows runner. ARM64 packages were built but not run on native ARM64 hardware; device-specific upgrade and restart acceptance remains unverified at the owner's direction. The current [roadmap](docs/ROADMAP.md) lists the remaining release gates.
 
@@ -316,6 +320,8 @@ bash tests/test_swift_runtime.sh
 npm test
 npm pack --dry-run --json
 ```
+
+The source package includes Apple Silicon and Intel Mac dependencies and Windows x64/ARM64 dependencies. Architecture-specific native acceptance is tracked in the platform audit.
 
 Windows: build `windows/FileMCP.Windows.sln` with .NET 8, then execute the native Windows runtime and GUI tests **on Windows**.
 
@@ -342,7 +348,7 @@ ChatToComputerMCP gives compatible AI conversations an approved local execution 
 
 **Can I use it after restarting my Mac?** Optionally, a macOS LaunchAgent starts it at user login. It is not a pre-login system daemon.
 
-**Is the Windows version fully verified?** Windows projects compile with a Windows-targeting SDK; real-device tests are still pending.
+**Is the Windows version fully verified?** Windows x64 native CI has passed builds, runtime, installer and WPF smoke. Physical-device, native ARM64 and external provider acceptance are separate. See the platform audit.
 
 **Does installation change my existing FileMCP?** No. The new app is independent, and conflicting auto-connect is blocked.
 
@@ -357,6 +363,10 @@ ChatToComputerMCP gives compatible AI conversations an approved local execution 
 | [Multi-workspace security](docs/MULTI_WORKSPACE_SECURITY.md) | Permission and path guarantees |
 | [Verified OAuth clients](docs/VERIFIED_CLIENT_ACCESS.md) | Client scopes, command ownership, token revocation and tunnel limits |
 | [GUI capabilities](docs/GUI_CAPABILITIES.md) | Native controls |
+| [Base MCP contract](docs/BASE_TOOL_CONTRACT.md) | Generated tool inventory, schema and permission profiles |
+| [Platform parity](docs/PLATFORM_PARITY.md) | Verified evidence and outstanding acceptance |
+| [Independent tasks](docs/INDEPENDENT_TASKS.md) | Worker recovery and receipts |
+| [Computer use](docs/CUA.md) | Optional locally granted native CUA, browser and Guest |
 | [Publishing](docs/PUBLISHING.md) | npm OIDC, version tags and release procedure |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Build, connection and permissions |
 | [Roadmap](docs/ROADMAP.md) | Verified vs outstanding |

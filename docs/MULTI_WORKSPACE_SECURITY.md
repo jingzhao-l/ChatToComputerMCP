@@ -47,7 +47,7 @@ with the same workspace_id (or matching legacy wrapper context).
   authorization page defaults to the default workspace and requires an
   explicit user choice for one additional workspace or all approved scopes.
   Verified clients cannot access unapproved workspaces or read/cancel
-  sessions owned by another verified OAuth client. The Mac GUI can revoke
+  sessions owned by another verified OAuth client. Both native GUIs can revoke
   the client's access/refresh token family. Permission changes require consent.
 - OpenAI Secure MCP Tunnel still forwards a shared local authentication header,
   not a unique verified ChatGPT conversation identity. Do not claim these two
@@ -55,8 +55,7 @@ with the same workspace_id (or matching legacy wrapper context).
 - A working-directory guard is NOT an OS sandbox: shell commands may still
   access other folders with absolute paths.
 - Windows now supports explicit scoped routing and a shared 4–16 command
-  budget. A real Windows regression/GUI acceptance remains mandatory before
-  claiming cross-platform release readiness.
+  budget. Windows native CI exercises these behaviors; physical-device and external-client acceptance remains separate.
 
 ## Optional FIFO command queue
 

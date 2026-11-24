@@ -1,76 +1,43 @@
 # ChatToComputerMCP roadmap
 
-## R0: Source independence
-- [x] Copy original tracked code and preserve local Git history
-- [x] Create private GitHub repository
-- [x] Prepare focused upstream macOS concurrency PR
-- [ ] Publish the independent source snapshot and verify remote bytes
-- [ ] Complete an explicitly tested future binary and credentials rename
+Current source is publicly maintained at
+[GitHub](https://github.com/jingzhao-l/ChatToComputerMCP); stable source
+packages are published to [npm](https://www.npmjs.com/package/chat-to-computer-mcp).
+The [releases](https://github.com/jingzhao-l/ChatToComputerMCP/releases)
+and npm registry report distribution status; a Git tag is not publication.
+The [changelog](../CHANGELOG.md) preserves historical milestones.
 
-## R1: Reliable shared access
-- [x] macOS multi-workspace approval and explicit scoped MCP routing
-- [x] Canonical containment, shared command limit and OAuth policy binding
-- [x] Native Tasks page with targeted cancellation
-- [x] ChatToComputerMCP brand name, icons and independent app output
-- [x] Windows multi-workspace and command task implementation; GitHub-hosted Windows x64 integration and GUI smoke verified
-- [x] Mac concurrent command slots configurable 4..16 (default 8)
-- [x] Cross-cwd parallel requests and overlap admission checks
-- [x] Independent cancellation and bounded command output
-- [x] Read-only live capacity/active-job diagnostics (no cross-client paths or commands)
-- [x] macOS Cloudflare OAuth: verified token-bound client scopes, task ownership, request-ID collision protection and GUI revocation
-- [ ] Authenticated per-conversation identity in the shared OpenAI Secure MCP Tunnel (no verified chat principal supplied)
-- [x] Persist salted OAuth-client ownership of command receipts and support owner-verified status after full app restart\n- [x] Opt-in independent worker recovery and cancellation after gateway restart; Mac crash test passed, Windows native test added
-- [x] FIFO scheduling, durable receipt reconciliation, opt-in live worker recovery and cancellation
-- [x] Mac command receipt journal: durable ID tombstones, interrupted state and protected 0600/0700 audit metadata
-- [x] Windows command receipt journal: durable hashed request IDs, private per-user ACL, interrupted-state and replay protection; x64 execution verification pending CI
-- [x] Windows default settings, runtime credential target and tunnel-profile storage isolated from the historical FileMCP directories
-- [x] Independent worker reattachment after gateway crash (not OS reboot or worker death)
+## R0 — Source and distribution independence
+- [x] Preserve original tracked code, ancestry and attribution locally; publish independent source snapshot and upstream contribution.
+- [x] Public repository and npm OIDC Trusted Publishing; immutable tags; native quality gates and registry read-back before GitHub release.
+- [x] Versioned native source builds, optional user-login supervision, idle update activation and rollback-safe retained releases.
+- [ ] Complete explicit macOS application/credential/profile namespace migration without replacing the working legacy identity or credentials.
+- [ ] Developer ID notarization and signed Windows installer distribution (separate from local source builds).
 
-## R2: Cross-platform and release readiness
-- [x] Windows 4–16 shared command admission implementation; x64 GitHub Windows integration tests passed
-- [ ] ChatGPT, Claude and other MCP client interoperability matrix
-- [x] Optional restricted Linux container execution; actual Docker engine validation remains an acceptance gate
-- [ ] Mac Developer ID/notarized release and Windows signed installer
-- [x] Native task-output and exit-code viewers with folder reveal on macOS and Windows
-- [x] macOS Cloudflare OAuth client inspection, explicit scope approval and revocation UI
-- [ ] Per-client verified scope parity across transport modes and Windows; extended accessibility and manual interaction tests
+## R1 — Reliable shared access
+- [x] Dual-platform multi-workspace direct routing, live idle catalog edits, canonical containment and per-workspace permissions.
+- [x] Shared 4–16 command capacity, bounded FIFO queue, conflict protection, targeted cancellation, output cursors and durable receipts.
+- [x] Dual-platform local command history and structured activity audit, content capture opt-in.
+- [x] Verified Cloudflare OAuth client scopes, ownership, request-ID collision protection, revocation and restart-safe receipt status.
+- [x] Opt-in live independent worker reattachment after gateway restart; no replay after worker loss or OS reboot.
+- [x] Restricted Linux execution with explicit immutable local Docker image and no host fallback.
+- [ ] Platform-verified per-conversation identity in shared OpenAI Secure MCP Tunnel (requires trusted client/platform claims).
+- [ ] Real Docker engine isolation and actual client/provider interoperability acceptance.
 
+## R2 — Cross-platform and quality governance
+- [x] Seven native GUI areas, responsive navigation, preference persistence, login supervision and safe updater controls.
+- [x] Cloudflare named/token tunnel, OAuth, control-plane freshness checks, resume and idle recovery on both platforms.
+- [x] Windows loopback HTTP accepted-socket cap and absolute read/write deadlines matching macOS.
+- [x] Apple Silicon / Intel Mac and Windows x64 / ARM64 vendored base gateway dependencies; pinned hashes and Intel native CI gate.
+- [x] Shared base MCP input/output schemas, annotations and permission profiles enforced in both native CI and release gates; generated inventory.
+- [ ] Complete native Intel and Windows ARM64 acceptance and cross-version physical-device, accessibility and provider matrix; track individual evidence in [platform parity](PLATFORM_PARITY.md).
+- [ ] Independent always-on updater daemon (intentionally not installed; current checks run only while the desktop app is open).
 
-## Packaging and optional macOS service (2026-11-22)
+## R3 — Direct background computer use (0.6 series)
+- [x] Optional native driver integration, app grants, observations and durable dispatch receipts on both platforms.
+- [x] Independent browser and Guest relay; local Guest opt-in, default-off; no automatic foreground or Guest fallback.
+- [ ] Expand native application compatibility and measure actual user-desktop non-interference; physical VM, browser and real cloud client acceptance.
+- See the separately maintained [CUA guide](CUA.md) for detailed implementation and constraints.
 
-- [x] Source-only npm package manifest and CLI; local compilation on macOS
-- [x] npm tarball extraction and clean-HOME macOS build smoke test
-- [x] Optional macOS LaunchAgent commands for explicit opt-in/disable
-- [x] Native macOS GUI controls for next-login startup, reconnect, always-on
-- [x] Windows per-user login supervisor, optional auto-connect and always-on, GUI/CLI controls (real Windows runtime gate pending CI)
-- [x] Mac AppKit UI regression and .NET Windows-targeting compilation
-- [x] GitHub-hosted Windows x64 integration, native WPF GUI smoke and x64/ARM64 packaging at commit 79a1abb (run 45028574644)
-- [ ] Windows ARM64 native execution and upgrade/restart matrix: unverified, owner waived as current release gate due to unavailable device
-- [ ] npm Registry public publication (npm account authentication required)
-- [ ] Cryptographically signed/notarized public macOS distribution
-- [ ] Authenticated per-client scopes beyond shared tunnel credentials
-- [x] Independent worker and cross-gateway-restart reattachment (explicit opt-in)
-
-
-## Native update channel (0.3.0)
-
-- [x] CLI update check/install/status/enable/disable with shared preferences
-- [x] Official npm stable SemVer validation and installer success verification
-- [x] Versioned builds with atomic macOS active-release pointer
-- [x] macOS and Windows GUI update buttons, optional automatic checks/installation while open
-- [x] No forced app, tunnel or AI task restart during update
-- [ ] Independent always-on updater daemon (intentionally not installed)
-- [ ] Signed public installer (independent from the implemented worker recovery)
-
-
-## Cross-platform parity evidence
-
-See [Platform parity audit](PLATFORM_PARITY.md). Shared MCP tool names do not prove semantic equivalence or persistent task supervision. Live account verification, Windows ARM64 hardware and signed distribution remain separate acceptance gates.
-
-## R3: Direct background computer use (0.6.0)
-
-- [x] Native bounded Cua Driver integration, explicit app grants, observation/verification and durable action receipts on both platforms
-- [x] Optional independent browser and Guest relay, Guest disabled by default
-- [x] Reject foreground/Guest fallback, integrate CUA into idle update admission
-- [ ] Expand native application compatibility and measure user-desktop non-interference on real Mac/Windows apps
-- [ ] Real Windows ARM64 and physical VM lifecycle acceptance; verified per-conversation identity remains dependent on trusted clients
+Implementation checks are not blanket certifications. Native hardware,
+external providers and OS security boundaries must be verified independently.

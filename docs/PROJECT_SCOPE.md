@@ -1,31 +1,29 @@
 # ChatToComputerMCP product vision
 
-## Goal
-Cloud AI chat applications (including ChatGPT and Claude where they support
-MCP transport) should access explicitly approved local development workspaces
-without needing a standalone agent CLI to be the user-facing chat interface.
+Cloud AI conversations, including ChatGPT and Claude where compatible MCP
+transport is available, should use explicitly approved local development
+workspaces and optional background computer use without requiring a separate
+agent CLI as their chat interface.
 
-## Core invariants
-- User-scoped folders and capabilities; shell off by default; secrets stay
-  in OS credential storage and are never exported for migration.
-- Independent worktrees, per-session concurrency, targeted cancellation and
-  auditable conflict diagnostics. Cwd guards are cooperative, not a sandbox.
-- Managed connection, restart/reconnect and rollback without deleting the
-  original application or changing users' connection tokens.
-- Standard protocols and genuinely verified client support, not unsupported
-  claims of native ChatGPT or Claude integration.
+## Core capabilities and boundaries
 
-## Product boundaries
-ChatToComputerMCP is a local host gateway, not an LLM service or AI companion.
-A conversation's agent identity belongs to its client and is not determined
-by ChatToComputerMCP's product name. Future extensions should support workspace
-admission, fair scheduling, process ownership, observability and approval
-rather than unrestricted shell access.
+- Native macOS/Windows loopback gateway: OpenAI Secure MCP Tunnel or
+  Cloudflare, scoped local tools, code search, Git and optional host Shell.
+- One default workspace and up to 12 named disjoint approvals; each tool call
+  can select its scope. Shared 4–16 command capacity, FIFO queue, targeted
+  cancellation, durable receipts, local command history and opt-in live
+  independent-worker reattachment after gateway restart.
+- Verified Cloudflare OAuth client grants and revocation; shared OpenAI
+  Tunnel is not an authenticated cloud-conversation principal. Shell cwd
+  protection is cooperative, not an OS sandbox.
+- Optional direct background native window control and separately granted
+  isolated browser. Independent Guest is off by default and only explicitly
+  enabled locally; never automatic foreground/Guest fallback.
+- Native desktop GUI, optional per-user login supervision, safe versioned
+  npm source installation and updates. No forced restart of active jobs.
 
-
-## Multi-workspace desktop management
-
-Mac supports a default workspace plus approved, named, disjoint folders.
-The native Workspaces page grants/revokes these scopes; the Tasks page
-inspects command status and targeted cancellation. Additional roots require
-explicit workspace_call selection and cannot be created remotely.
+ChatToComputerMCP is neither an LLM service nor an autonomous AI companion.
+It does not promise every remote-management feature, zero interference in
+all third-party apps or platform-verified per-conversation identity.
+User grants are not expanded by remote MCP requests. See [architecture](ARCHITECTURE.md),
+[tool contract](BASE_TOOL_CONTRACT.md), [CUA](CUA.md) and [platform parity](PLATFORM_PARITY.md).

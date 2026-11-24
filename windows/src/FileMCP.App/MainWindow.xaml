@@ -144,6 +144,60 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+            <TabItem Header="Workspaces" x:Name="SettingsTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="Shared directory"/>
+                            <TextBox x:Name="DirectoryBox" Grid.Column="1" Margin="0,0,8,0"/>
+                            <Button Grid.Column="2" x:Name="BrowseDirectoryButton" Content="Browse…" Click="BrowseDirectory_Click"/>
+                        </Grid>
+
+                        <TextBlock Text="Additional approved workspaces"
+                                   FontWeight="SemiBold" Margin="0,16,0,7"/>
+                        <ListBox x:Name="WorkspaceListBox" Height="148" SelectionChanged="WorkspaceSelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="3,4">
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Path}" FontSize="11" TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Path}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBox x:Name="WorkspaceNameBox" Margin="0,7,0,6"
+                                 ToolTip="Friendly name for the selected workspace (does not change its folder or ID)"/>
+                        <WrapPanel>
+                            <Button x:Name="AddWorkspaceButton" Content="Add folders…" Click="AddWorkspaces_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="RenameWorkspaceButton" Content="Rename" Click="RenameWorkspace_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="RemoveWorkspaceButton" Content="Remove approval" Click="RemoveWorkspace_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="WorkspacePermissionButton" Content="Permissions…" Click="WorkspacePermissions_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="DefaultPermissionButton" Content="Default permissions…" Click="DefaultPermissions_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="CopyWorkspaceScopeButton" Content="Copy AI scope" Click="CopyWorkspaceScope_Click" Margin="0,0,7,5" IsEnabled="False"/>
+                            <Button x:Name="RevealWorkspaceButton" Content="Reveal" Click="RevealWorkspace_Click" Margin="0,0,0,5"/>
+                        </WrapPanel>
+                        <TextBlock x:Name="WorkspacePermissionText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"/>
+                        <TextBlock Text="Additional workspaces can be changed online while affected scopes are idle. OAuth changes require fresh authorization. Default/global changes require reconnect. Removing approval never deletes files."
+                                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,4,0,9"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Total concurrent commands" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <ComboBox x:Name="CommandCapacityBox" Width="90" SelectedIndex="2"
+                                      ToolTip="Shared total for all approved workspaces.">
+                                <ComboBoxItem Content="4"/><ComboBoxItem Content="6"/><ComboBoxItem Content="8"/>
+                                <ComboBoxItem Content="10"/><ComboBoxItem Content="12"/><ComboBoxItem Content="16"/>
+                            </ComboBox>
+                        </StackPanel>
+                        <Button x:Name="SaveSettingsButton" Content="Save workspace" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="Connection" x:Name="ConnectionTab">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="16">
@@ -253,60 +307,6 @@
                             <Button x:Name="SaveConnectionButton" Content="Save connection"
                                     Margin="0,0,8,0" Click="SaveConnection_Click"/>
                         </StackPanel>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="Workspaces" x:Name="SettingsTab">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="16">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="120"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="Shared directory"/>
-                            <TextBox x:Name="DirectoryBox" Grid.Column="1" Margin="0,0,8,0"/>
-                            <Button Grid.Column="2" x:Name="BrowseDirectoryButton" Content="Browse…" Click="BrowseDirectory_Click"/>
-                        </Grid>
-
-                        <TextBlock Text="Additional approved workspaces"
-                                   FontWeight="SemiBold" Margin="0,16,0,7"/>
-                        <ListBox x:Name="WorkspaceListBox" Height="148" SelectionChanged="WorkspaceSelectionChanged">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Margin="3,4">
-                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
-                                        <TextBlock Text="{Binding Path}" FontSize="11" TextTrimming="CharacterEllipsis"
-                                                   ToolTip="{Binding Path}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        <TextBox x:Name="WorkspaceNameBox" Margin="0,7,0,6"
-                                 ToolTip="Friendly name for the selected workspace (does not change its folder or ID)"/>
-                        <WrapPanel>
-                            <Button x:Name="AddWorkspaceButton" Content="Add folders…" Click="AddWorkspaces_Click" Margin="0,0,7,5"/>
-                            <Button x:Name="RenameWorkspaceButton" Content="Rename" Click="RenameWorkspace_Click" Margin="0,0,7,5"/>
-                            <Button x:Name="RemoveWorkspaceButton" Content="Remove approval" Click="RemoveWorkspace_Click" Margin="0,0,7,5"/>
-                            <Button x:Name="WorkspacePermissionButton" Content="Permissions…" Click="WorkspacePermissions_Click" Margin="0,0,7,5"/>
-                            <Button x:Name="DefaultPermissionButton" Content="Default permissions…" Click="DefaultPermissions_Click" Margin="0,0,7,5"/>
-                            <Button x:Name="CopyWorkspaceScopeButton" Content="Copy AI scope" Click="CopyWorkspaceScope_Click" Margin="0,0,7,5" IsEnabled="False"/>
-                            <Button x:Name="RevealWorkspaceButton" Content="Reveal" Click="RevealWorkspace_Click" Margin="0,0,0,5"/>
-                        </WrapPanel>
-                        <TextBlock x:Name="WorkspacePermissionText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"/>
-                        <TextBlock Text="Additional workspaces can be changed online while affected scopes are idle. OAuth changes require fresh authorization. Default/global changes require reconnect. Removing approval never deletes files."
-                                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,4,0,9"/>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="Total concurrent commands" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                            <ComboBox x:Name="CommandCapacityBox" Width="90" SelectedIndex="2"
-                                      ToolTip="Shared total for all approved workspaces.">
-                                <ComboBoxItem Content="4"/><ComboBoxItem Content="6"/><ComboBoxItem Content="8"/>
-                                <ComboBoxItem Content="10"/><ComboBoxItem Content="12"/><ComboBoxItem Content="16"/>
-                            </ComboBox>
-                        </StackPanel>
-                        <Button x:Name="SaveSettingsButton" Content="Save workspace" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
