@@ -15,7 +15,7 @@ for required in (
     "search_code", "repo_overview", "glob", "file_info",
     "create_directory", "copy_file", "move_file",
     "write_file", "delete_file", "delete_directory", "run_command",
-    "batch_read", "save_conversation_to_codex", "command_capacity_status",
+    "batch_read", "save_conversation_to_codex", "command_capacity_status", "connection_identity", "list_my_commands",
 ):
     assert required in tools, f"Missing tool {required}"
 assert tools["list_files"]["outputSchema"]["properties"]["result"]["type"] == "array"
@@ -34,7 +34,7 @@ assert tools["file_info"]["annotations"]["readOnlyHint"] is True
 assert tools["command_capacity_status"]["annotations"]["readOnlyHint"] is True
 assert "list_workspaces" in tools and "workspace_call" in tools
 for name, definition in tools.items():
-    if name in ("list_workspaces", "workspace_call"):
+    if name in ("connection_identity", "list_workspaces", "workspace_call"):
         continue
     schema = definition["inputSchema"]
     assert schema["properties"]["workspace_id"]["type"] == "string", name

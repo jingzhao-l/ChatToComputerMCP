@@ -336,6 +336,7 @@ internal sealed partial class LocalTools
                 "read_command_output" => ObjectOutput(FindSession(GetRequiredString(arguments, "session_id")).Snapshot(GetInt(arguments, "cursor", 0))),
                 "cancel_command" => ObjectOutput(CancelCommand(GetRequiredString(arguments, "session_id"))),
                 "command_capacity_status" => ObjectOutput(_commandBudget.Status()),
+                "list_my_commands" => ObjectOutput(OwnCommandSessions(verifiedOwnerID ?? "__local_admin__")),
                 "write_file" => StringOutput(WriteFile(
                     GetRequiredString(arguments, "relative_path"),
                     GetRequiredString(arguments, "content"),

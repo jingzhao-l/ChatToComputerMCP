@@ -118,6 +118,12 @@ extension LocalMCPServer {
             precondition(response["isError"] as? Bool == expectedError, explanation)
         }
 
+        let aliceIdentity = try call("connection_identity", [:], alice)["structuredContent"] as! [String: Any]
+        precondition(aliceIdentity["verified_client_id"] as? String == alice.id)
+        precondition(aliceIdentity["conversation_authenticated"] as? Bool == false)
+        precondition(aliceIdentity["allowed_workspace_ids"] as? [String] == ["default"])
+        try checkCall("connection_identity", ["client_id": bob.id], alice, expectedError: true,
+            "Client cannot assert identity through arguments")
         let aliceList = try call("list_workspaces", [:], alice)
         let aliceScopes = (aliceList["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
         precondition(aliceScopes.count == 1 && aliceScopes[0]["id"] as? String == "default")
@@ -144,6 +150,10 @@ extension LocalMCPServer {
         ], alice)
         precondition(started["isError"] as? Bool == false)
         let sessionID = (started["structuredContent"] as! [String: Any])["session_id"] as! String
+        let own = try call("list_my_commands", [:], alice)["structuredContent"] as! [String: Any]
+        let foreign = try call("list_my_commands", [:], bob)["structuredContent"] as! [String: Any]
+        precondition((own["commands"] as! [[String: Any]]).first?["session_id"] as? String == sessionID)
+        precondition((foreign["commands"] as! [[String: Any]]).isEmpty)
         try checkCall("read_command_output", ["session_id": sessionID],
                       bob, expectedError: true,
                       "One OAuth client cannot read another client's output")
@@ -294,6 +304,9 @@ extension LocalMCPServer {
         let defaultWrite = try restrictedCall(defaultRestricted, "write_file", ["relative_path": "forbidden.txt", "content": "no"])
         precondition(defaultWrite["isError"] as? Bool == true)
         print("PASS: independently restricted workspaces and union tool discovery")
+        let shared = try call("connection_identity")["structuredContent"] as! [String: Any]
+        precondition(shared["authentication_mode"] as? String == "shared_connection")
+        precondition(shared["verified_client_id"] is NSNull && shared["conversation_authenticated"] as? Bool == false)
         let listed = try call("list_workspaces")
         let workspaces = (listed["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
         precondition(workspaces.count == 2)

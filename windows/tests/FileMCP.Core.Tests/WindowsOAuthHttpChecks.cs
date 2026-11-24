@@ -44,6 +44,13 @@ internal static partial class Program
                 "Verified client reaches MCP");
             return JsonNode.Parse(HttpBody(result))!["result"]!.AsObject();
         }
+        var identity = (await Call(first, "connection_identity"))["structuredContent"]!;
+        Assert(identity["authentication_mode"]!.GetValue<string>() == "verified_oauth_client" &&
+            !identity["conversation_authenticated"]!.GetValue<bool>() &&
+            identity["verified_client_id"] is not null && identity["allowed_workspace_ids"]!.AsArray().Count == 1,
+            "Verified client identity is token-derived, not conversation authentication");
+        Assert((await Call(first, "connection_identity", new JsonObject { ["client_id"] = "forged" }))["isError"]!.GetValue<bool>(),
+            "Client cannot assert identity");
         var firstScopes = await Call(first,"list_workspaces");
         Assert(firstScopes["structuredContent"]!["workspaces"]!.AsArray().Count==1,
             "Default-only client cannot discover another workspace");
@@ -78,6 +85,10 @@ internal static partial class Program
         Assert(!started["isError"]!.GetValue<bool>(),
             "OAuth-verified client owns a new command");
         var session = started["structuredContent"]!["session_id"]!.GetValue<string>();
+        var own = (await Call(first, "list_my_commands"))["structuredContent"]!["commands"]!.AsArray();
+        var foreign = (await Call(second, "list_my_commands"))["structuredContent"]!["commands"]!.AsArray();
+        Assert(own.Count == 1 && own[0]!["session_id"]!.GetValue<string>() == session && foreign.Count == 0,
+            "Owner command discovery never leaks foreign task IDs");
         var foreignRead = await Call(second, "read_command_output",
             new JsonObject { ["session_id"] = session });
         Assert(foreignRead["isError"]!.GetValue<bool>(),

@@ -59,6 +59,10 @@ internal static partial class Program
             "default read-only workspace rejects mutation");
         Assert(!(await RestrictedRpc("write_file", Obj(("workspace_id", "second"), ("relative_path", "allowed.txt"), ("content", "ok"))))["isError"]!.GetValue<bool>(),
             "writable secondary scope remains discoverable");
+        var shared = (await Rpc("connection_identity"))["structuredContent"]!;
+        Assert(shared["authentication_mode"]!.GetValue<string>() == "shared_connection" &&
+            shared["verified_client_id"] is null && !shared["conversation_authenticated"]!.GetValue<bool>(),
+            "shared tunnel never claims verified conversation identity");
         var listed = await Rpc("list_workspaces");
         Assert(listed["isError"]!.GetValue<bool>() == false, "list workspaces success");
         var workspaces = listed["structuredContent"]!["workspaces"]!.AsArray();

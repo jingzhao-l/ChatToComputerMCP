@@ -915,6 +915,7 @@ private final class LocalTools {
             return objectOutput(try receiptLedger.ownReceipt(scopeID: workspaceScopeID,
                 requestID: requiredString(arguments, "request_id"), ownerID: verifiedOwnerID ?? "__local_admin__"))
         case "command_capacity_status": return objectOutput(commandCapacityStatus())
+        case "list_my_commands": return objectOutput(ownCommandSessions(verifiedOwnerID ?? "__local_admin__"))
         case "read_command_output":
             return objectOutput(try findSession(requiredString(arguments, "session_id")).snapshot(cursor: int(arguments, "cursor", default: 0)))
         case "cancel_command":
@@ -4064,6 +4065,20 @@ final class LocalMCPServer {
                     "workspace_id": ["type": "string"],
                     "result": ["type": "object", "additionalProperties": true]],
                 "required": ["workspace_id", "result"], "additionalProperties": false]
+            let identitySchema: [String: Any] = ["type": "object", "properties": [
+                "authentication_mode": ["type": "string", "enum": ["verified_oauth_client", "shared_connection"]],
+                "verified_client_id": ["type": ["string", "null"]],
+                "conversation_authenticated": ["type": "boolean"],
+                "task_ownership": ["type": "string"],
+                "allowed_workspace_ids": ["type": "array", "items": ["type": "string"]]],
+                "required": ["authentication_mode", "verified_client_id", "conversation_authenticated", "task_ownership", "allowed_workspace_ids"],
+                "additionalProperties": false]
+            definitions.append([
+                "name": "connection_identity",
+                "description": "Report the server-verified principal and its allowed workspace IDs. OAuth verifies a client grant, not a chat conversation. Shared tunnel credentials are not individual identities.",
+                "inputSchema": ["type": "object", "properties": [:], "required": [], "additionalProperties": false],
+                "outputSchema": identitySchema,
+                "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]])
             definitions.append([
                 "name": "list_workspaces",
                 "description": "List explicitly approved local workspace IDs and names. No workspace permissions can be changed over MCP.",
@@ -4320,7 +4335,24 @@ final class LocalMCPServer {
         var auditTool = toolName
         do {
             let output: LocalToolCallOutput
-            if toolName == "list_workspaces" {
+            if toolName == "connection_identity" {
+                workspaceGate.lock(); defer { workspaceGate.unlock() }
+                guard arguments.isEmpty, !catalogStopped else { throw MCPServerError.invalidArguments("Identity query takes no arguments") }
+                if let client = verifiedClient, let oauth, !oauth.isCurrent(client) {
+                    throw MCPServerError.operationFailed("OAuth authorization changed; reconnect client")
+                }
+                let ids = ["default"] + catalogDefinitions.filter {
+                    verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
+                }.map(\.id).sorted()
+                let payload: [String: Any] = [
+                    "authentication_mode": verifiedClient == nil ? "shared_connection" : "verified_oauth_client",
+                    "verified_client_id": verifiedClient.map { $0.id as Any } ?? NSNull(),
+                    "conversation_authenticated": false,
+                    "task_ownership": verifiedClient == nil ? "shared_credential" : "oauth_client_grant",
+                    "allowed_workspace_ids": ids]
+                let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+                output = LocalToolCallOutput(content: [["type": "text", "text": String(decoding: data, as: UTF8.self)]], structuredContent: payload)
+            } else if toolName == "list_workspaces" {
                 workspaceGate.lock()
                 defer { workspaceGate.unlock() }
                 guard !catalogStopped else { throw MCPServerError.operationFailed("Runtime is stopping") }
@@ -4861,6 +4893,11 @@ private extension LocalTools {
             add(["started_at_unix_ms", "updated_at_unix_ms"], "integer")
             add(["reattachable"], "boolean")
             fields["exit_code"] = ["type": ["integer", "null"]]
+        case "own_commands":
+            fields["commands"] = ["type": "array", "items": ["type": "object",
+                "properties": ["session_id": ["type": "string"], "request_id": ["type": "string"],
+                    "state": ["type": "string"], "exit_code": ["type": ["integer", "null"]]],
+                "required": ["session_id", "request_id", "state", "exit_code"], "additionalProperties": false]]
         case "capacity":
             add(["max_concurrent_commands", "active_long_running", "active_synchronous",
                  "active_total", "available_slots", "queued_total"], "integer")
@@ -4927,6 +4964,8 @@ private extension LocalTools {
                      required: ["session_id"], readOnly: true, output: .object(agentOutputSchema("command"))),
                 tool(name: "cancel_command", description: "Request termination of the command and its descendants. Poll read_command_output until it reports a terminal state. Repeated cancellation is safe.",
                      properties: ["session_id": stringProperty("ID returned by start_command.")], required: ["session_id"], readOnly: false, destructive: true, output: .object(agentOutputSchema("command"))),
+                tool(name: "list_my_commands", description: "List retained long command sessions owned by the authenticated principal in this workspace. No command text or output. Shared connections share one principal, not individual chats. Use returned session IDs to read or cancel your jobs.",
+                     properties: [:], required: [], readOnly: true, output: .object(agentOutputSchema("own_commands"))),
                 tool(name: "command_capacity_status", description: "Read the current command capacity and slot utilization without revealing commands, working directories, or session identifiers. Available only when command execution is enabled.",
                      properties: [:], required: [], readOnly: true, output: .object(agentOutputSchema("capacity")))
             ]
@@ -5254,6 +5293,16 @@ private extension LocalTools {
             sessions.remove(at: oldestFinished)
         }
         return try session.snapshot(cursor: 0)
+    }
+
+    func ownCommandSessions(_ ownerID: String) -> [String: Any] {
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        let rows = sessions.filter { $0.ownerID == ownerID }.compactMap { session -> [String: Any]? in
+            guard let value = try? session.snapshot(cursor: 0) else { return nil }
+            return ["session_id": session.id, "request_id": session.requestID,
+                    "state": value["state"] ?? "unknown", "exit_code": value["exit_code"] ?? NSNull()]
+        }
+        return ["commands": rows]
     }
 
     func findSession(_ id: String) throws -> CommandSession {

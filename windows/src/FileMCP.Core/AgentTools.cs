@@ -51,6 +51,16 @@ internal sealed partial class LocalTools
             Add("boolean", "reattachable");
             fields["exit_code"] = new JsonObject { ["type"] = new JsonArray("integer", "null") };
         }
+        else if (kind == "own_commands")
+        {
+            fields["commands"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject {
+                ["type"] = "object", ["properties"] = new JsonObject {
+                    ["session_id"] = new JsonObject { ["type"] = "string" },
+                    ["request_id"] = new JsonObject { ["type"] = "string" },
+                    ["state"] = new JsonObject { ["type"] = "string" },
+                    ["exit_code"] = new JsonObject { ["type"] = new JsonArray("integer", "null") }
+                }, ["required"] = new JsonArray("session_id", "request_id", "state", "exit_code"), ["additionalProperties"] = false } };
+        }
         else if (kind == "context")
         {
             Add("string", "workspace_root", "cwd", "scope", "shell_execution"); Add("boolean", "shell_commands_enabled", "top_level_truncated");
@@ -94,6 +104,8 @@ internal sealed partial class LocalTools
             Props(("request_id", StringProperty("Unique retry key, 1–128 ASCII letters/digits/dot/underscore/hyphen. Reuse only for the same command.")),
                   ("command", StringProperty("Command in the workspace's configured shell.")), ("cwd", StringProperty("Working directory inside shared root.")),
                   ("timeout_seconds", IntegerProperty(1, 3600, 600)), ("queue_if_busy", BooleanProperty(false))), ["request_id", "command"], false, destructive: true, openWorld: true, output: AgentOutputSchema("command"));
+        yield return Tool("list_my_commands", "List retained long command sessions owned by the authenticated principal in this workspace. No command text or output. Shared connections share one principal, not individual chats.",
+            Props(), [], true, output: AgentOutputSchema("own_commands"));
         yield return Tool("command_receipt_status", "Read one of your earlier command receipts by request_id, including after application restart. Only the original authenticated client may inspect its status; interrupted is NOT a reattached process. Never returns command text, output, or working directory.",
             Props(("request_id", StringProperty("Original request_id from start_command."))), ["request_id"], true, output: AgentOutputSchema("receipt"));
         yield return Tool("read_command_output", "Read bounded combined stdout/stderr. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. queued/running/stopping are not completion; exited may have nonzero exit_code. Check has_more after completion. Unknown IDs may have expired or belong to an earlier runtime.",
@@ -460,6 +472,21 @@ internal sealed partial class LocalTools
         }
         foreach (var task in sync) task.Cancel();
         foreach (var task in longJobs) task.Cancel(synchronously: true);
+    }
+
+    private JsonObject OwnCommandSessions(string ownerID)
+    {
+        lock (_sessionGate)
+        {
+            var rows = new JsonArray();
+            foreach (var session in _sessions.Where(session => session.OwnerId == ownerID))
+            {
+                var snapshot = session.Snapshot(0);
+                rows.Add(new JsonObject { ["session_id"] = session.Id, ["request_id"] = session.RequestId,
+                    ["state"] = snapshot["state"]?.DeepClone(), ["exit_code"] = snapshot["exit_code"]?.DeepClone() });
+            }
+            return new JsonObject { ["commands"] = rows };
+        }
     }
 
     private CommandSession FindSession(string id)

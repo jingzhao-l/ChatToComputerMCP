@@ -206,6 +206,20 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 ["description"] = "Optional approved workspace ID from list_workspaces; omit for default. Keep the same ID for subsequent command calls."
             };
         }
+        tools.Add(new JsonObject {
+            ["name"] = "connection_identity",
+            ["description"] = "Report server-verified principal and allowed workspace IDs. OAuth verifies a client grant, not a chat conversation. Shared tunnel credentials are not individual identities.",
+            ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray(), ["additionalProperties"] = false },
+            ["outputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject {
+                ["authentication_mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("verified_oauth_client", "shared_connection") },
+                ["verified_client_id"] = new JsonObject { ["type"] = new JsonArray("string", "null") },
+                ["conversation_authenticated"] = new JsonObject { ["type"] = "boolean" },
+                ["task_ownership"] = new JsonObject { ["type"] = "string" },
+                ["allowed_workspace_ids"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } }
+            }, ["required"] = new JsonArray("authentication_mode", "verified_client_id", "conversation_authenticated", "task_ownership", "allowed_workspace_ids"),
+            ["additionalProperties"] = false },
+            ["annotations"] = new JsonObject { ["readOnlyHint"] = true, ["destructiveHint"] = false, ["openWorldHint"] = false }
+        });
         tools.Add(new JsonObject
         {
             ["name"] = "list_workspaces",
@@ -543,7 +557,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         CancellationToken cancellationToken, WindowsOAuthServer.VerifiedClient? verified = null)
     {
         if (parameters["name"] is not JsonValue nameNode || !nameNode.TryGetValue<string>(out var name)) return JsonRpcError(id, -32602, "Missing tool name", status: modern ? 400 : 200);
-        if (name is not ("list_workspaces" or "workspace_call") &&
+        if (name is not ("connection_identity" or "list_workspaces" or "workspace_call") &&
             !_tools.HasTool(name) && !_approved.Any(item =>
                 (verified is null || verified.Workspaces.Contains(item.Key)) && item.Value.Tools.HasTool(name)))
             return JsonRpcError(id, -32602, $"Unknown tool: {name}");
@@ -557,7 +571,24 @@ public sealed class LocalMcpServer : IAsyncDisposable
         try
         {
             ToolCallOutput output;
-            if (name == "list_workspaces")
+            if (name == "connection_identity")
+            {
+                lock (_workspaceGate)
+                {
+                    if (_catalogStopped || arguments.Count != 0) throw new FileMcpException("Identity query takes no arguments");
+                    if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified))
+                        throw new FileMcpException("OAuth authorization changed; reconnect client");
+                    var ids = new JsonArray("default");
+                    foreach (var scope in _catalog.Keys.Where(id => verified is null || verified.Workspaces.Contains(id)).OrderBy(id => id, StringComparer.Ordinal)) ids.Add(scope);
+                    var payload = new JsonObject {
+                        ["authentication_mode"] = verified is null ? "shared_connection" : "verified_oauth_client",
+                        ["verified_client_id"] = verified?.Id, ["conversation_authenticated"] = false,
+                        ["task_ownership"] = verified is null ? "shared_credential" : "oauth_client_grant", ["allowed_workspace_ids"] = ids
+                    };
+                    output = new ToolCallOutput(new JsonArray(new JsonObject { ["type"] = "text", ["text"] = payload.ToJsonString() }), payload);
+                }
+            }
+            else if (name == "list_workspaces")
             {
                 lock (_workspaceGate)
                 {
