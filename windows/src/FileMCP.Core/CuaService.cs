@@ -75,6 +75,10 @@ internal sealed class CuaService : IDisposable
                             g.clients.Contains(owner, StringComparer.Ordinal));
     }
     private sealed record Target(int Pid, long Window, string Application, long Launched);
+    internal sealed record WindowGeometry(int Left,int Top,int Right,int Bottom,bool Visible,bool Minimized,uint Dpi)
+    {
+        internal bool PixelEligible=>Visible&&!Minimized&&Dpi>0&&Right>Left&&Bottom>Top;
+    }
     private sealed class Session(string owner, Target target, byte[] policyBytes, Worker worker)
     {
         internal readonly string Id = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
@@ -85,6 +89,7 @@ internal sealed class CuaService : IDisposable
         internal long Last = Environment.TickCount64;
         internal bool Busy;
         internal bool Retiring;
+        internal readonly TaskCompletionSource<bool> Retired=new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal Snapshot? Snapshot;
     }
     internal sealed class Snapshot
@@ -96,12 +101,17 @@ internal sealed class CuaService : IDisposable
         internal readonly uint Width, Height;
         internal readonly long ObservedAt = Environment.TickCount64;
         internal readonly HashSet<string> Tokens = new(StringComparer.Ordinal);
-        internal Snapshot(JsonObject structured, JsonArray blocks)
+        internal readonly WindowGeometry? Geometry;
+        internal readonly bool TreeGrounded;
+        internal bool PixelGrounded=>CaptureId is not null&&Geometry?.PixelEligible==true;
+        internal bool Actionable=>TreeGrounded||PixelGrounded;
+        internal Snapshot(JsonObject structured, JsonArray blocks,WindowGeometry? geometry=null,bool includeElements=true)
         {
             Id = structured["snapshot_id"]?.GetValue<string>() ?? "";
-            if (!Regex.IsMatch(Id, "^s[0-9a-f]{8}$")) throw Fail("cua_missing_snapshot_id");
-            if (structured["ui_tree_revision"] is JsonValue revision && revision.TryGetValue<long>(out var r)) Revision = r;
-            if (structured["elements"] is JsonArray elements)
+            if (Id.Length>0&&!Regex.IsMatch(Id, "^s[0-9a-f]{8}$")) throw Fail("cua_invalid_snapshot_id");
+            Geometry=geometry;TreeGrounded=includeElements&&Id.Length>0;
+            if (TreeGrounded&&structured["ui_tree_revision"] is JsonValue revision && revision.TryGetValue<long>(out var r)) Revision = r;
+            if (TreeGrounded&&structured["elements"] is JsonArray elements)
                 foreach (var element in elements)
                     if (element is JsonObject obj && obj["element_token"] is JsonValue value &&
                         value.TryGetValue<string>(out var token) && token.StartsWith(Id+":",StringComparison.Ordinal) &&
@@ -109,17 +119,20 @@ internal sealed class CuaService : IDisposable
             var image = blocks.OfType<JsonObject>().FirstOrDefault(b =>
                 b["type"]?.GetValue<string>() == "image" && b["mimeType"]?.GetValue<string>() == "image/png");
             if (image?["data"] is JsonValue d && d.TryGetValue<string>(out var data) &&
-                structured["capture_id"] is JsonValue capture && capture.TryGetValue<string>(out var captureId) && !string.IsNullOrEmpty(captureId))
+                structured["capture_id"] is JsonValue capture && capture.TryGetValue<string>(out var captureId) && !string.IsNullOrEmpty(captureId)&&Encoding.UTF8.GetByteCount(captureId)<=1024)
             {
                 var bytes = Convert.FromBase64String(data);
-                if (bytes.Length >= 24 && bytes.AsSpan(0,8).SequenceEqual(new byte[]{137,80,78,71,13,10,26,10}))
-                {
-                    Width = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16,4));
-                    Height = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20,4));
-                    CaptureId = captureId;
+                if(bytes.Length>=24&&bytes.AsSpan(0,16).SequenceEqual(new byte[]{137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82})){
+                    uint w=BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16,4)),h=BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20,4));
+                    if(w is >=1 and <=8192&&h is >=1 and <=8192&&
+                       (!structured.ContainsKey("screenshot_width")||structured["screenshot_width"] is JsonValue sw&&sw.TryGetValue<uint>(out var rw)&&rw==w)&&
+                       (!structured.ContainsKey("screenshot_height")||structured["screenshot_height"] is JsonValue sh&&sh.TryGetValue<uint>(out var rh)&&rh==h)){
+                        Width=w;Height=h;CaptureId=captureId;
+                    }
                 }
             }
         }
+        internal void ValidatePixelGeometry(WindowGeometry? current){if(!PixelGrounded||current!=Geometry)throw Fail("cua_window_geometry_changed: observe the window again");}
         internal void ValidateObservationId(JsonNode? raw){if(raw is not JsonValue v||!v.TryGetValue<string>(out var id)||id!=ObservationId)throw Fail("cua_stale_or_foreign_observation");}
         internal void Validate(JsonObject args)
         {
@@ -223,8 +236,8 @@ internal sealed class CuaService : IDisposable
             Def("cua_create_session", "Acquire an exclusive background window session. Keep its bearer ID private.",
                 new() { ["pid"] = Integer(), ["window_id"] = Integer() }, ["pid","window_id"], false),
             Def("cua_list_sessions", "List own session status. Shared connections cannot enumerate session IDs.", new(), [], true),
-            Def("cua_observe", "Observe the exact leased window, including its accessibility tree and image.",
-                new() { ["session_id"] = String(), ["include_screenshot"] = Bool(),["query"]=String(),["max_elements"]=Integer(),["max_depth"]=Integer(),["max_image_dimension"]=Integer(),["timeout_ms"]=Integer() }, ["session_id"], false),
+            Def("cua_observe", "Observe the exact leased window: accessibility tree, image, or both. Only a returned observation_id can ground input.",
+                new() { ["session_id"] = String(), ["include_screenshot"] = Bool(),["include_accessibility_tree"]=Bool(),["query"]=String(),["max_elements"]=Integer(),["max_depth"]=Integer(),["max_image_dimension"]=Integer(),["timeout_ms"]=Integer() }, ["session_id"], false),
             Def("cua_act", "Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
                 new() { ["session_id"] = String(), ["request_id"] = String(), ["observation_id"]=String(), ["operation"] = new JsonObject { ["type"] = "string",
                     ["enum"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) },
@@ -335,6 +348,15 @@ internal sealed class CuaService : IDisposable
     }
     [StructLayout(LayoutKind.Sequential)] private struct WindowRect { internal int Left,Top,Right,Bottom; }
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd,out WindowRect rect);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
+    private static WindowGeometry? ReadGeometry(Target target)
+    {
+        var hwnd=new IntPtr(target.Window);
+        if(!IsWindow(hwnd)||GetWindowThreadProcessId(hwnd,out uint pid)==0||pid!=target.Pid||!GetWindowRect(hwnd,out var r))return null;
+        return new WindowGeometry(r.Left,r.Top,r.Right,r.Bottom,IsWindowVisible(hwnd),IsIconic(hwnd),GetDpiForWindow(hwnd));
+    }
     private static (string, long) ApprovedApp(int pid, Policy policy, string owner)
     {
         try
@@ -360,7 +382,7 @@ internal sealed class CuaService : IDisposable
             _ = GetWindowText(hwnd, text, text.Capacity);
             var bounds=new JsonObject();
             if(GetWindowRect(hwnd,out var rect)) bounds=new JsonObject { ["X"]=rect.Left,["Y"]=rect.Top,["Width"]=rect.Right-rect.Left,["Height"]=rect.Bottom-rect.Top };
-            list.Add(new JsonObject { ["window_id"] = hwnd.ToInt64(), ["title"] = text.ToString(),["bounds"]=bounds });
+            list.Add(new JsonObject { ["window_id"] = hwnd.ToInt64(), ["title"] = text.ToString(),["bounds"]=bounds,["on_screen"]=IsWindowVisible(hwnd)&&!IsIconic(hwnd),["minimized"]=IsIconic(hwnd) });
             return true;
         }, IntPtr.Zero);
         return list;
@@ -408,14 +430,20 @@ internal sealed class CuaService : IDisposable
             if (!StillAllowed(s, false)) Retire(s.Id); else if(expired)Retire(s.Id,true);
         }
     }
-    private void Retire(string id,bool onlyIdle=false)
+    private bool Retire(string id,bool onlyIdle=false,bool waitForCleanup=false)
     {
-        Session? s;
+        Session? s;bool ownsRetirement;
         lock(_gate){
-            if(!_sessions.TryGetValue(id,out s)||s.Retiring||onlyIdle&&(s.Busy||Environment.TickCount64-s.Last<=300000))return;
-            s.Retiring=true;
+            if(!_sessions.TryGetValue(id,out s))return true;
+            ownsRetirement=!s.Retiring;
+            if(ownsRetirement){
+                if(onlyIdle&&(s.Busy||Environment.TickCount64-s.Last<=300000))return false;
+                s.Retiring=true;
+            }
         }
-        try{s.Worker.Dispose();}finally{lock(_gate)_sessions.Remove(id);}
+        if(!ownsRetirement)return !waitForCleanup||s.Retired.Task.Wait(TimeSpan.FromSeconds(5));
+        try{s.Worker.Dispose();}finally{lock(_gate)_sessions.Remove(id);s.Retired.TrySetResult(true);}
+        return true;
     }
     internal bool HasLiveWork(){lock(_gate)return _sessions.Count>0||_extensions.Count>0||_launching.Count>0;}
     internal void Revoke(string owner)
@@ -515,7 +543,12 @@ internal sealed class CuaService : IDisposable
     }
     internal static JsonObject ObservationParameters(JsonObject args)
     {
-        var output=new JsonObject{["include_screenshot"]=args["include_screenshot"]?.GetValue<bool>()??true,["include_accessibility_tree"]=true,["tree_format"]="both"};
+        foreach(var key in new[]{"include_screenshot","include_accessibility_tree"})
+            if(args.ContainsKey(key)&&(args[key] is not JsonValue b||!b.TryGetValue<bool>(out _)))throw Fail("cua_invalid_observe");
+        bool image=args["include_screenshot"]?.GetValue<bool>()??true,tree=args["include_accessibility_tree"]?.GetValue<bool>()??true;
+        if(!image&&!tree)throw Fail("cua_observation_requires_image_or_tree");
+        if(!tree&&new[]{"query","max_elements","max_depth","timeout_ms"}.Any(args.ContainsKey))throw Fail("cua_tree_options_require_accessibility_tree");
+        var output=new JsonObject{["include_screenshot"]=image,["include_accessibility_tree"]=tree,["tree_format"]="both"};
         if(args.ContainsKey("query")){
             if(args["query"] is not JsonValue v||!v.TryGetValue<string>(out var q)||string.IsNullOrEmpty(q)||Encoding.UTF8.GetByteCount(q)>512)throw Fail("cua_invalid_observation_query");
             output["query"]=q;
@@ -749,7 +782,7 @@ internal sealed class CuaService : IDisposable
             var id = args["session_id"]?.GetValue<string>() ?? throw Fail("cua_invalid_session");
             lock (_gate)
                 if (!_sessions.TryGetValue(id, out var stoppedSession) || stoppedSession.Owner != owner) throw Fail("cua_unknown_or_unauthorized_session");
-            Retire(id);
+            if(!Retire(id,waitForCleanup:true))throw Fail("cua_cleanup_pending");
             return Output(new JsonObject { ["stopped"] = true });
         }
         var (policy,bytes) = LoadPolicy();
@@ -864,6 +897,7 @@ internal sealed class CuaService : IDisposable
             var driverArgs = new JsonObject { ["pid"] = s.Target.Pid, ["window_id"] = s.Target.Window };
             string driverTool;
             (CommandReceiptLedger Ledger,string Id)? actionReceipt=null;
+            Snapshot? coordinateSnapshot=null;WindowGeometry? observedGeometry=null;
             if (mutation)
             {
                 if (s.Snapshot is not { } snapshot || args["operation"] is not JsonValue op || !op.TryGetValue<string>(out var operation) ||
@@ -871,6 +905,9 @@ internal sealed class CuaService : IDisposable
                 snapshot.ValidateObservationId(args["observation_id"]);
                 ValidateAction(operation,parameters);
                 if(operation!="set_window_frame") snapshot.Validate(parameters); else snapshot.Validate(new JsonObject());
+                if(parameters.ContainsKey("capture_id")){
+                    snapshot.ValidatePixelGeometry(ReadGeometry(s.Target));coordinateSnapshot=snapshot;
+                }
                 var request=RequestId(args["request_id"]);var receipt=Ledger();
                 ReserveReceipt(receipt,request,owner);
                 actionReceipt=(receipt,request);
@@ -905,11 +942,12 @@ internal sealed class CuaService : IDisposable
                     (args["include_screenshot"] is not JsonValue b || !b.TryGetValue<bool>(out _)))) throw Fail("cua_invalid_observe");
                 driverTool = "get_window_state";
                 foreach(var (key,value) in ObservationParameters(args))driverArgs[key]=value?.DeepClone();
+                observedGeometry=ReadGeometry(s.Target);
                 s.Snapshot = null;
             }
             try
             {
-                var result = await s.Worker.CallAsync(driverTool, driverArgs, () => (focusGuard?.Permits()??true)&&StillAllowed(s,mutation), cancellation).ConfigureAwait(false);
+                var result = await s.Worker.CallAsync(driverTool, driverArgs, () => (focusGuard?.Permits()??true)&&StillAllowed(s,mutation), cancellation,()=>coordinateSnapshot?.ValidatePixelGeometry(ReadGeometry(s.Target))).ConfigureAwait(false);
                 if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested || focusGuard?.Permits()==false) throw Fail("cua_action_outcome_unknown: foreground changed or target became unavailable; observe actual state before any new action");
                 if (result["isError"]?.GetValue<bool>() == true)
                 {
@@ -937,14 +975,23 @@ internal sealed class CuaService : IDisposable
                 if (safe.Count == 0) throw Fail("cua_driver_invalid_content");
                 var structured = result["structuredContent"] as JsonObject ?? new JsonObject();
                 if (structured.ContainsKey("foreground_step")) throw Fail("cua_driver_reported_foreground_step");
-                if (name == "cua_observe") s.Snapshot = new Snapshot(structured,safe);
+                if(name=="cua_observe"){
+                    var geometry=observedGeometry==ReadGeometry(s.Target)?observedGeometry:null;
+                    var observation=new Snapshot(structured,safe,driverArgs["include_screenshot"]?.GetValue<bool>()==true?geometry:null,driverArgs["include_accessibility_tree"]?.GetValue<bool>()==true);
+                    s.Snapshot=observation.Actionable?observation:null;
+                }
                 var metadata = (JsonObject)structured.DeepClone();
                 foreach (var key in new[] {"screenshot","screenshot_base64","image","image_data","screenshot_file_path"}) metadata.Remove(key);
                 if (Encoding.UTF8.GetByteCount(metadata.ToJsonString()) > 2_000_000) throw Fail("cua_driver_metadata_too_large");
                 if(actionReceipt is { } ar) FinishReceipt(ar.Ledger,ar.Id,"exited");
                 var header=new JsonObject { ["session_id"] = sessionId, ["operation"] = driverTool,
                     ["background_only"] = true, ["verification_required"] = mutation };
-                if(name=="cua_observe"&&s.Snapshot is {} observation)header["observation_id"]=observation.ObservationId;
+                if(name=="cua_observe"){
+                    header["pixel_actions_available"]=s.Snapshot?.PixelGrounded??false;
+                    header["element_actions_available"]=s.Snapshot?.Tokens.Count>0;
+                    header["observation_only"]=s.Snapshot is null;
+                    if(s.Snapshot is {} observation)header["observation_id"]=observation.ObservationId;
+                }
                 var summary=(JsonObject)header.DeepClone();summary["driver_result"]=metadata;
                 safe.Insert(0,new JsonObject{["type"]="text",["text"]=header.ToJsonString()});
                 return new ToolCallOutput(safe,summary);
@@ -1078,7 +1125,7 @@ internal sealed class CuaService : IDisposable
                 throw Fail("cua_driver_contract_mismatch: "+tool);
             return result;
         }
-        internal async Task<JsonObject> CallAsync(string tool, JsonObject args, Func<bool> allowed, CancellationToken cancellation)
+        internal async Task<JsonObject> CallAsync(string tool, JsonObject args, Func<bool> allowed, CancellationToken cancellation,Action? beforeDispatch=null)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation,_stop.Token);
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
@@ -1111,6 +1158,7 @@ internal sealed class CuaService : IDisposable
                 }
                 if(!allowed())throw Fail("cua_session_revoked");
                 deadline.Token.ThrowIfCancellationRequested();
+                beforeDispatch?.Invoke();
                 return await RpcAsync("tools/call",new JsonObject { ["name"] = tool, ["arguments"] = checkedArgs },deadline.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw Fail("cua_driver_timeout_or_revoked: action outcome may be unknown; observe again in a new session"); }

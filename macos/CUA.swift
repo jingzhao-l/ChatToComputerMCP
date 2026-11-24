@@ -110,6 +110,15 @@ final class CUAHostFocusGuard {
     deinit{if let observer{NSWorkspace.shared.notificationCenter.removeObserver(observer)}}
 }
 
+/// OS-side geometry sampled independently of the driver's pixels.
+struct CUAWindowGeometry: Equatable {
+    let x:Double, y:Double, width:Double, height:Double
+    let onScreen:Bool
+    var pixelEligible:Bool {
+        onScreen && [x,y,width,height].allSatisfy(\.isFinite) && width>0 && height>0
+    }
+}
+
 struct CUATarget: Equatable {
     let pid: Int32
     let window: Int64
@@ -257,7 +266,7 @@ final class CUAWorker {
         }
         return args
     }
-    func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool) throws -> [String: Any] {
+    func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool, beforeDispatch: () throws -> Void = {}) throws -> [String: Any] {
         let deadline = ProcessInfo.processInfo.systemUptime + 10
         if !initialized {
             let initResult = try rpc("initialize", ["protocolVersion":"2025-06-18", "capabilities":[:],
@@ -282,6 +291,7 @@ final class CUAWorker {
             guard let schema=toolSchemas[tool] else{throw CUAFailure("cua_driver_tool_not_advertised: "+tool)}
             checked=try Self.validatedDriverArguments(tool,args,schema:schema)
         }
+        try beforeDispatch()
         return try rpc("tools/call", ["name":tool, "arguments":checked], deadline:deadline, allowed:allowed)
     }
 }
@@ -298,31 +308,44 @@ struct CUASnapshot {
     let width: Int?
     let height: Int?
     let tokens: Set<String>
+    let geometry: CUAWindowGeometry?
+    let treeGrounded: Bool
+    var pixelGrounded:Bool { captureID != nil && geometry?.pixelEligible == true }
+    var actionable:Bool { treeGrounded || pixelGrounded }
     let observedAt = ProcessInfo.processInfo.systemUptime
 
-    init(structured: [String:Any], blocks: [[String:Any]]) throws {
-        guard let id = structured["snapshot_id"] as? String,
-              id.range(of:"^s[0-9a-f]{8}$",options:.regularExpression) != nil else {
-            throw CUAFailure("cua_missing_snapshot_id")
+    init(structured: [String:Any], blocks: [[String:Any]], geometry:CUAWindowGeometry?=nil, includeElements:Bool=true) throws {
+        let id = structured["snapshot_id"] as? String ?? ""
+        guard id.isEmpty || id.range(of:"^s[0-9a-f]{8}$",options:.regularExpression) != nil else {
+            throw CUAFailure("cua_invalid_snapshot_id")
         }
         self.id = id
-        self.revision = structured["ui_tree_revision"] as? Int
-        let elements = structured["elements"] as? [[String:Any]] ?? []
+        self.geometry=geometry
+        treeGrounded=includeElements && !id.isEmpty
+        self.revision = treeGrounded ? structured["ui_tree_revision"] as? Int : nil
+        let elements = treeGrounded ? structured["elements"] as? [[String:Any]] ?? [] : []
         self.tokens = Set(elements.compactMap { $0["element_token"] as? String }.filter {
             $0.hasPrefix(id + ":") && $0.range(of:"^s[0-9a-f]{8}:[0-9]+$",options:.regularExpression) != nil
         })
         // Use the actual PNG dimensions rather than untrusted caller geometry.
         let image = blocks.first { $0["type"] as? String == "image" && $0["mimeType"] as? String == "image/png" }
         if let b64 = image?["data"] as? String, let bytes = Data(base64Encoded:b64),
-           bytes.count >= 24, Array(bytes.prefix(8)) == [137,80,78,71,13,10,26,10],
-           let capture = structured["capture_id"] as? String, !capture.isEmpty {
+           bytes.count >= 24, Array(bytes.prefix(16)) == [137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82],
+           let capture = structured["capture_id"] as? String, !capture.isEmpty, capture.utf8.count<=1024 {
             let dims = Array(bytes[16..<24])
-            width = dims.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-            height = dims.suffix(4).reduce(0) { ($0 << 8) | Int($1) }
-            captureID = capture
+            let w=dims.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+            let h=dims.suffix(4).reduce(0) { ($0 << 8) | Int($1) }
+            if (1...8192).contains(w),(1...8192).contains(h),
+               structured["screenshot_width"] == nil || structured["screenshot_width"] as? Int == w,
+               structured["screenshot_height"] == nil || structured["screenshot_height"] as? Int == h {
+                width=w;height=h;captureID=capture
+            }else{width=nil;height=nil;captureID=nil}
         } else {
             width = nil; height = nil; captureID = nil
         }
+    }
+    func validatePixelGeometry(_ current:CUAWindowGeometry?) throws {
+        guard pixelGrounded, current == geometry else {throw CUAFailure("cua_window_geometry_changed: observe the window again")}
     }
     func validateObservationID(_ raw:Any?) throws {
         guard raw as? String == observationID else {throw CUAFailure("cua_stale_or_foreign_observation")}
@@ -358,9 +381,11 @@ final class CUAService {
         var last = ProcessInfo.processInfo.systemUptime
         var busy = false
         var retiring = false
+        let retired=DispatchGroup()
         var snapshot: CUASnapshot?
         init(owner: String, target: CUATarget, policyBytes: Data, worker: CUAWorker) {
             self.owner = owner; self.target = target; self.policyBytes = policyBytes; self.worker = worker
+            retired.enter()
         }
     }
     private final class ExtensionSession {
@@ -440,7 +465,7 @@ final class CUAService {
             ("cua_list_windows","List windows of an approved running application.",["pid":integer],["pid"],true),
             ("cua_create_session","Acquire an exclusive background window session. Keep its bearer ID private.",["pid":integer,"window_id":integer],["pid","window_id"],false),
             ("cua_list_sessions","List own session status. Shared connections cannot enumerate session IDs.",[:],[],true),
-            ("cua_observe","Observe the exact leased window, including its accessibility tree and image.",["session_id":string,"include_screenshot":boolean,"query":string,"max_elements":integer,"max_depth":integer,"max_image_dimension":integer,"timeout_ms":integer],["session_id"],false),
+            ("cua_observe","Observe the exact leased window: accessibility tree, image, or both. Only a returned observation_id can ground input.",["session_id":string,"include_screenshot":boolean,"include_accessibility_tree":boolean,"query":string,"max_elements":integer,"max_depth":integer,"max_image_dimension":integer,"timeout_ms":integer],["session_id"],false),
             ("cua_act","Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
                 ["session_id":string,"request_id":string,"observation_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true]],["session_id","request_id","observation_id","operation","parameters"],false),
             ("cua_verify","Verify bounded element predicates in the leased window; unknown is not success.",["session_id":string,"expect":["type":"array","minItems":1,"maxItems":8,"items":["type":"object"]],"timeout_ms":["type":"integer","minimum":0,"maximum":6000],"stable_samples":integer],["session_id","expect"],true),
@@ -555,8 +580,15 @@ final class CUAService {
             guard (row[kCGWindowOwnerPID as String] as? Int32) == pid,
                   (row[kCGWindowLayer as String] as? Int) == 0,
                   let id = row[kCGWindowNumber as String] as? Int64, id > 0 else { return nil }
-            return ["window_id":id,"title":row[kCGWindowName as String] as? String ?? "", "bounds":row[kCGWindowBounds as String] as? [String:Any] ?? [:]]
+            return ["window_id":id,"title":row[kCGWindowName as String] as? String ?? "", "bounds":row[kCGWindowBounds as String] as? [String:Any] ?? [:],"on_screen":row[kCGWindowIsOnscreen as String] as? Bool ?? false]
         }
+    }
+    private func windowGeometry(_ target:CUATarget)->CUAWindowGeometry? {
+        guard let row=windows(target.pid).first(where:{$0["window_id"] as? Int64 == target.window}),
+              let bounds=row["bounds"] as? [String:Any],
+              let x=bounds["X"] as? Double,let y=bounds["Y"] as? Double,
+              let w=bounds["Width"] as? Double,let h=bounds["Height"] as? Double else{return nil}
+        return CUAWindowGeometry(x:x,y:y,width:w,height:h,onScreen:row["on_screen"] as? Bool ?? false)
     }
     private func target(_ pid: Int32, _ window: Int64, policy: CUAPolicy, owner: String) throws -> CUATarget {
         let (app,launch) = try approvedApp(pid,policy:policy,owner:owner)
@@ -585,12 +617,17 @@ final class CUAService {
             if !stillAllowed(s,mutation:false) { retire(s.id) } else if expired { retire(s.id,onlyIdle:true) }
         }
     }
-    private func retire(_ id: String, onlyIdle:Bool=false) {
+    @discardableResult
+    private func retire(_ id: String, onlyIdle:Bool=false,waitForCleanup:Bool=false)->Bool {
         gate.lock()
-        guard let s=sessions[id],!s.retiring, !onlyIdle || (!s.busy && ProcessInfo.processInfo.systemUptime-s.last>300) else{gate.unlock();return}
+        guard let s=sessions[id] else{gate.unlock();return true}
+        if s.retiring {gate.unlock();return !waitForCleanup || s.retired.wait(timeout:.now()+5) == .success}
+        guard !onlyIdle || (!s.busy && ProcessInfo.processInfo.systemUptime-s.last>300) else{gate.unlock();return false}
         s.retiring=true;gate.unlock()
         s.worker.close()
         gate.lock();sessions.removeValue(forKey:id);gate.unlock()
+        s.retired.leave()
+        return true
     }
     func hasLiveWork() -> Bool {
         gate.lock(); defer { gate.unlock() }
@@ -689,7 +726,13 @@ final class CUAService {
         values.count<=4 && Set(values).count==values.count && values.allSatisfy{["cmd","shift","option","alt","ctrl"].contains($0)}
     }
     static func observationParameters(_ args:[String:Any]) throws -> [String:Any] {
-        var out:[String:Any]=["include_screenshot":args["include_screenshot"] as? Bool ?? true,"include_accessibility_tree":true,"tree_format":"both"]
+        for key in ["include_screenshot","include_accessibility_tree"] where args[key] != nil {
+            guard let b=args[key] as? NSNumber,CFGetTypeID(b)==CFBooleanGetTypeID() else{throw CUAFailure("cua_invalid_observe")}
+        }
+        let image=args["include_screenshot"] as? Bool ?? true,tree=args["include_accessibility_tree"] as? Bool ?? true
+        guard image || tree else{throw CUAFailure("cua_observation_requires_image_or_tree")}
+        guard tree || !["query","max_elements","max_depth","timeout_ms"].contains(where:{args[$0] != nil}) else{throw CUAFailure("cua_tree_options_require_accessibility_tree")}
+        var out:[String:Any]=["include_screenshot":image,"include_accessibility_tree":tree,"tree_format":"both"]
         if let query=args["query"] {
             guard let q=query as? String,!q.isEmpty,q.utf8.count<=512 else{throw CUAFailure("cua_invalid_observation_query")}
             out["query"]=q
@@ -896,7 +939,7 @@ final class CUAService {
             guard let id = args["session_id"] as? String else { throw CUAFailure("cua_invalid_session") }
             gate.lock(); let owned = sessions[id]?.owner == owner; gate.unlock()
             guard owned else { throw CUAFailure("cua_unknown_or_unauthorized_session") }
-            retire(id)
+            guard retire(id,waitForCleanup:true) else{throw CUAFailure("cua_cleanup_pending")}
             return try output(["stopped":true])
         }
         let (policy,bytes) = try loadPolicy()
@@ -990,12 +1033,18 @@ final class CUAService {
         var driverArgs: [String:Any] = ["pid":s.target.pid,"window_id":s.target.window]
         let driverTool: String
         var actionReceipt: (CommandReceiptLedger,String)?
+        var coordinateSnapshot:CUASnapshot?
+        var observedGeometry:CUAWindowGeometry?
         if mutation {
             guard let snapshot = s.snapshot, let operation = args["operation"] as? String,
                   let parameters = args["parameters"] as? [String:Any] else { throw CUAFailure("cua_observe_before_action") }
             try snapshot.validateObservationID(args["observation_id"])
             try Self.validateAction(operation,parameters)
             if operation != "set_window_frame" { try snapshot.validate(parameters) } else { try snapshot.validate([:]) }
+            if parameters["capture_id"] != nil {
+                try snapshot.validatePixelGeometry(windowGeometry(s.target))
+                coordinateSnapshot=snapshot
+            }
             let request = try Self.requestID(args["request_id"])
             let receipt = try ledger()
             try reserveReceipt(receipt,request:request,owner:owner)
@@ -1027,10 +1076,13 @@ final class CUAService {
             guard name == "cua_observe", args["include_screenshot"] == nil || (args["include_screenshot"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else { throw CUAFailure("cua_invalid_observe") }
             driverTool = "get_window_state"
             for (key,value) in try Self.observationParameters(args) {driverArgs[key]=value}
+            observedGeometry=windowGeometry(s.target)
             s.snapshot = nil
         }
         do {
-            let reply = try s.worker.call(driverTool,driverArgs,allowed:{ requestAlive() && (focusGuard?.permits() ?? true) && self.stillAllowed(s,mutation:mutation) })
+            let reply = try s.worker.call(driverTool,driverArgs,allowed:{ requestAlive() && (focusGuard?.permits() ?? true) && self.stillAllowed(s,mutation:mutation) },beforeDispatch:{
+                if let coordinateSnapshot {try coordinateSnapshot.validatePixelGeometry(self.windowGeometry(s.target))}
+            })
             guard requestAlive(), focusGuard?.permits() != false, self.stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_action_outcome_unknown: foreground changed or target became unavailable; observe actual state before any new action") }
             guard reply["isError"] as? Bool != true else { throw CUAFailure("cua_driver_rejected: " + ((reply["content"] as? [[String:Any]])?.first?["text"] as? String ?? "background unavailable").prefix(2000)) }
             guard let blocks = reply["content"] as? [[String:Any]], !blocks.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
@@ -1048,13 +1100,22 @@ final class CUAService {
             guard !safe.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
             let structured = reply["structuredContent"] as? [String:Any] ?? [:]
             if structured["foreground_step"] != nil { throw CUAFailure("cua_driver_reported_foreground_step") }
-            if name == "cua_observe" { s.snapshot = try CUASnapshot(structured:structured,blocks:safe) }
+            if name == "cua_observe" {
+                let geometry=observedGeometry == windowGeometry(s.target) ? observedGeometry : nil
+                let observation=try CUASnapshot(structured:structured,blocks:safe,geometry:driverArgs["include_screenshot"] as? Bool == true ? geometry : nil,includeElements:driverArgs["include_accessibility_tree"] as? Bool == true)
+                s.snapshot=observation.actionable ? observation : nil
+            }
             // Images are only returned as MCP image blocks, not duplicated in JSON.
             let metadata = structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path"].contains($0.key) }
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
             if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited") }
             var header:[String:Any] = ["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation]
-            if let snapshot=s.snapshot,name=="cua_observe" {header["observation_id"]=snapshot.observationID}
+            if name=="cua_observe" {
+                header["pixel_actions_available"]=s.snapshot?.pixelGrounded ?? false
+                header["element_actions_available"]=s.snapshot?.tokens.isEmpty == false
+                header["observation_only"]=s.snapshot == nil
+                if let snapshot=s.snapshot {header["observation_id"]=snapshot.observationID}
+            }
             var summary=header;summary["driver_result"]=metadata
             return ([[ "type":"text","text":String(decoding:try JSONSerialization.data(withJSONObject:header),as:UTF8.self) ]] + safe,summary)
         } catch {

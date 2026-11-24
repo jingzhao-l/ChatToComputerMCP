@@ -57,6 +57,28 @@ import Foundation
         expectFailure("same snapshot unknown row") { try snap.validate(["element_token":"s00000001:2"]) }
         expectFailure("stale capture") { try snap.validate(["x":5,"y":5,"capture_id":"old"]) }
         expectFailure("out of bounds coordinate") { try snap.validate(["x":100,"y":0,"capture_id":"cap"]) }
+        let geometry=CUAWindowGeometry(x:-100,y:40,width:800,height:600,onScreen:true)
+        let imageBlocks:[[String:Any]]=[["type":"image","mimeType":"image/png","data":png.base64EncodedString()]]
+        let visual=try CUASnapshot(structured:["capture_id":"cap"],blocks:imageBlocks,geometry:geometry,includeElements:false)
+        precondition(visual.actionable && visual.pixelGrounded && !visual.treeGrounded && visual.tokens.isEmpty)
+        try visual.validatePixelGeometry(geometry)
+        try visual.validate(["x":5,"y":10,"capture_id":"cap"])
+        expectFailure("moved window invalidates screenshot coordinates"){try visual.validatePixelGeometry(CUAWindowGeometry(x:-99,y:40,width:800,height:600,onScreen:true))}
+        expectFailure("off-screen window invalidates screenshot coordinates"){try visual.validatePixelGeometry(CUAWindowGeometry(x:-100,y:40,width:800,height:600,onScreen:false))}
+        expectFailure("visual mode does not inherit AX elements"){try visual.validate(["element_token":"s00000001:1"])}
+        let screenshotWithoutCapture=try CUASnapshot(structured:[:],blocks:imageBlocks,geometry:geometry,includeElements:false)
+        precondition(!screenshotWithoutCapture.actionable)
+        let mismatched=try CUASnapshot(structured:["capture_id":"cap","screenshot_width":101],blocks:imageBlocks,geometry:geometry,includeElements:false)
+        precondition(!mismatched.actionable)
+        let treeOnly=try CUASnapshot(structured:["snapshot_id":"s00000001","elements":[["element_token":"s00000001:1"]]],blocks:[],geometry:nil)
+        precondition(treeOnly.treeGrounded && treeOnly.actionable && !treeOnly.pixelGrounded)
+        let imageOnly=try CUAService.observationParameters(["include_accessibility_tree":false])
+        precondition(imageOnly["include_screenshot"] as? Bool == true && imageOnly["include_accessibility_tree"] as? Bool == false)
+        expectFailure("empty observation"){_ = try CUAService.observationParameters(["include_screenshot":false,"include_accessibility_tree":false])}
+        expectFailure("visual mode refuses tree query"){_ = try CUAService.observationParameters(["include_accessibility_tree":false,"query":"button"])}
+        expectFailure("invalid observation bool"){_ = try CUAService.observationParameters(["include_accessibility_tree":1])}
+        print("PASS visual-only and accessibility-only grounding; independent window geometry admission")
+
         _ = try CUAService.verifyPredicates([["element":["selector":["role":"button","label_contains":"OK"],"exists":true]]])
         expectFailure("false absence claim") { _ = try CUAService.verifyPredicates([["element":["selector":["role":"button"],"exists":false]]]) }
         expectFailure("arbitrary nested selector") { _ = try CUAService.verifyPredicates([["element":["selector":["pid":1],"exists":true]]]) }
@@ -99,6 +121,7 @@ import Foundation
         let structured = result["structuredContent"] as! [String:Any]
         let echo = structured["echo"] as! [String:Any]
         precondition(echo["window_id"] as? Int == 2)
+        expectFailure("before-dispatch geometry guard refuses transport") { _ = try worker.call("get_window_state",["pid":1,"window_id":2],allowed:{true},beforeDispatch:{throw CUAFailure("stale geometry")}) }
         expectFailure("unadvertised driver tool") {_ = try worker.call("bring_to_front",[:],allowed:{true})}
         worker.close()
         precondition(!worker.isAlive)

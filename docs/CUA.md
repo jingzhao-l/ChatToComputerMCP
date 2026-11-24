@@ -88,6 +88,18 @@ Use cua_observe with query (case-insensitive, up to 512 bytes), max_elements
 (1–1500), max_depth (1–50), max_image_dimension (320–1920), and timeout_ms
 (100–4000) to inspect complex applications without unbounded tree walks.
 A truncated tree is partial evidence, not proof that a control is missing.
+For custom-rendered applications, pass include_accessibility_tree:false to
+request a screenshot without walking the accessibility tree; pass
+include_screenshot:false for tree-only inspection. At least one is required.
+The gateway reports observation_only, pixel_actions_available, and
+element_actions_available. A screenshot without a valid capture ID is display
+evidence only, never a pixel action grant. The gateway independently checks
+that window geometry is stable during capture and immediately before
+coordinate dispatch; movement, resize, minimization, or a Windows DPI change
+invalidates previous pixel coordinates. Tree-only actions remain available
+when the driver supplies an actionable tree. Explicit native session closure
+waits for cleanup rather than acknowledging release while a worker is retiring.
+
 Native controls should use accessibility tokens first; use pixel coordinates
 only with a current capture ID. Keyboard shortcuts are routed only through
 the pinned driver's background mode. Global app-switch shortcuts are refused.

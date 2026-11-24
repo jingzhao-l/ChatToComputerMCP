@@ -62,6 +62,24 @@ internal static partial class Program
         Refuse("unknown row", () => snap.Validate(J("""{"element_token":"s00000001:2"}""")));
         Refuse("stale capture", () => snap.Validate(J("""{"x":2,"y":3,"capture_id":"old"}""")));
         Refuse("outside window", () => snap.Validate(J("""{"x":100,"y":0,"capture_id":"cap"}""")));
+        var geometry=new CuaService.WindowGeometry(-100,40,700,640,true,false,144);
+        var images=new JsonArray(new JsonObject{["type"]="image",["mimeType"]="image/png",["data"]=png});
+        var visual=new CuaService.Snapshot(J("""{"capture_id":"cap"}"""),images,geometry,false);
+        Assert(visual.Actionable&&visual.PixelGrounded&&!visual.TreeGrounded&&visual.Tokens.Count==0,"visual-only grounding");
+        visual.ValidatePixelGeometry(geometry);
+        visual.Validate(J("""{"x":5,"y":10,"capture_id":"cap"}"""));
+        Refuse("window moved",()=>visual.ValidatePixelGeometry(geometry with{Left=-99}));
+        Refuse("window minimized",()=>visual.ValidatePixelGeometry(geometry with{Minimized=true}));
+        Refuse("window DPI changed",()=>visual.ValidatePixelGeometry(geometry with{Dpi=96}));
+        Refuse("visual mode does not inherit AX",()=>visual.Validate(J("""{"element_token":"s00000001:1"}""")));
+        Assert(!new CuaService.Snapshot(new(),images,geometry,false).Actionable,"image without capture is display only");
+        Assert(!new CuaService.Snapshot(J("""{"capture_id":"cap","screenshot_width":101}"""),images,geometry,false).Actionable,"mismatched dimensions cannot ground action");
+        var treeOnly=new CuaService.Snapshot(J("""{"snapshot_id":"s00000001","elements":[{"element_token":"s00000001:1"}]}"""),new());
+        Assert(treeOnly.Actionable&&!treeOnly.PixelGrounded&&treeOnly.TreeGrounded,"accessibility-only grounding");
+        Assert(CuaService.ObservationParameters(J("""{"include_accessibility_tree":false}"""))["include_accessibility_tree"]!.GetValue<bool>()==false,"visual-only observation options");
+        Refuse("empty observation",()=>CuaService.ObservationParameters(J("""{"include_accessibility_tree":false,"include_screenshot":false}""")));
+        Refuse("visual tree query",()=>CuaService.ObservationParameters(J("""{"include_accessibility_tree":false,"query":"button"}""")));
+        Refuse("invalid observation bool",()=>CuaService.ObservationParameters(J("""{"include_accessibility_tree":1}""")));
         CuaService.VerifyPredicates(JsonNode.Parse("""[{"element":{"selector":{"role":"button"},"exists":true}}]"""));
         Refuse("unproven absence", () => CuaService.VerifyPredicates(JsonNode.Parse("""[{"element":{"selector":{"role":"button"},"exists":false}}]""")));
         Refuse("nested selector", () => CuaService.VerifyPredicates(JsonNode.Parse("""[{"element":{"selector":{"pid":1},"exists":true}}]""")));
@@ -94,6 +112,7 @@ internal static partial class Program
         {
             var result = await worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default);
             Assert(result["structuredContent"]?["echo"]?["window_id"]?.GetValue<int>() == 2, "CUA bounded stdio handshake");
+            await RefuseAsync("before-dispatch geometry guard",()=>worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default,()=>throw new FileMcpException("stale geometry")));
             await RefuseAsync("unadvertised driver tool",()=>worker.CallAsync("bring_to_front",new(),()=>true,default));
         }
         using (var worker = new CuaService.Worker(exe,exe))
