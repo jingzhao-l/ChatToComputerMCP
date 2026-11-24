@@ -54,4 +54,3 @@ internal sealed record ShellExecutionPlan(string Executable, IReadOnlyList<strin
         return new(docker, args, root, environment, Cleanup);
     }
 }
-
