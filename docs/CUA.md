@@ -200,7 +200,11 @@ Inspect the window and verify the intended state; driver evidence is not
 an independent verification result.
 
 New native sessions perform a read-only driver handshake and permission
-preflight before admission is acknowledged. Responses report driver_ready,
+preflight before admission is acknowledged. On Windows, permission evidence
+is read directly from the actual driver process token using TOKEN_QUERY and
+TokenIntegrityLevel; the gateway does not invoke the pinned upstream
+check_permissions tool, whose PowerShell subprocess can hang. The result
+reports integrity level (or Unavailable), not proven UIA/input delivery. Responses report driver_ready,
 driver_operations (actual negotiated operation names), and bounded
 driver_permission_evidence. Permission status is not proof that a specific
 application supports background input. A refused probe retires the worker
@@ -208,7 +212,7 @@ and frees its lease, without requesting permissions or activating windows.
 The driver hash check runs before taking the global lease lock; actual
 policy and process identity are rechecked at admission.
 
-Both native workers explicitly start the pinned driver in direct mode and never attach to an existing daemon. Windows uses `mcp --direct --no-overlay`; the pinned Mac direct mode disables the overlay internally. Only a cold Windows host read-only permission preflight may use a separate 25-second startup budget; native input and post-action reads keep their original limits. Host mutations and launches latch foreground continuity: changed or unknown foreground aborts the current dispatch and never restores user focus. macOS watches workspace activation notifications; Windows watches an out-of-context foreground WinEvent subscription as well as the exact foreground HWND. A Windows observer that cannot register refuses host mutations. Sampling/notification delivery can miss short transitions and cannot prevent all app-internal activation. The pinned upstream launch implementation also contains best-effort foreground-restoration guards. The gateway does not itself issue a foreground-restoration command. This is detection and refusal, not a universal no-interference guarantee.
+Both native workers explicitly start the pinned driver in direct mode and never attach to an existing daemon. Windows uses `mcp --direct --no-overlay`; the pinned Mac direct mode disables the overlay internally. Windows handshake and native calls use the original bounded ten-second maximum; no PowerShell permission probe or extended startup wait is required. Host mutations and launches latch foreground continuity: changed or unknown foreground aborts the current dispatch and never restores user focus. macOS watches workspace activation notifications; Windows watches an out-of-context foreground WinEvent subscription as well as the exact foreground HWND. A Windows observer that cannot register refuses host mutations. Sampling/notification delivery can miss short transitions and cannot prevent all app-internal activation. The pinned upstream launch implementation also contains best-effort foreground-restoration guards. The gateway does not itself issue a foreground-restoration command. This is detection and refusal, not a universal no-interference guarantee.
 
 Each native worker verifies the driver's version and advertised tools/list
 contract before sending an action. Unsupported tools/parameters are refused
@@ -276,7 +280,7 @@ For an existing Lume (Mac) or Hyper-V (Windows) VM, add --vm-provider lume or hy
 
 Mac and Windows have matching tool definitions and native policy, snapshot and stdio fixtures. The pinned signed Mac driver handshake and bounded refusals are exercised separately. The P4 regression uses real Chromium through a native HTTP MCP server, exercises tabs, cross-frame references, dialogs, bounded file artifacts, drag, wait-for, receipt replay, strict verified-client denial and process-exclusive state, and uses two native processes for guest-only transport; it is not a physical VM test.
 
-Run `bash tests/test_swift_cua.sh`, `python3 tests/check_platform_tool_contracts.py`, `npm test` and the Windows native test suite. To run the real browser regression, install the locked dependencies with npm ci --prefix cua-runtime --ignore-scripts, install Chromium using PLAYWRIGHT_BROWSERS_PATH set to cua-runtime/browsers, then run tests/test_swift_cua_p4.sh on Mac or tests/test_cua_p4.mjs with CTCMCP_CUA_TEST_SERVER set to the Windows test apphost. Both primary platform CI jobs include this real Chromium regression. Native CUA protocol and lifecycle fixtures and checksum-pinned real-driver read-only permission probes are required on macOS Apple Silicon/Intel and Windows x64/ARM64. These checks never request desktop input permission or exercise user application input.
+Run `bash tests/test_swift_cua.sh`, `python3 tests/check_platform_tool_contracts.py`, `npm test` and the Windows native test suite. To run the real browser regression, install the locked dependencies with npm ci --prefix cua-runtime --ignore-scripts, install Chromium using PLAYWRIGHT_BROWSERS_PATH set to cua-runtime/browsers, then run tests/test_swift_cua_p4.sh on Mac or tests/test_cua_p4.mjs with CTCMCP_CUA_TEST_SERVER set to the Windows test apphost. Both primary platform CI jobs include this real Chromium regression. Native CUA protocol and lifecycle fixtures and checksum-pinned real-driver initialization and schema negotiation are required on macOS Apple Silicon/Intel and Windows x64/ARM64. Mac also performs the no-prompt upstream permission probe; Windows independently queries the actual child token. These checks never request desktop input permission or exercise user application input.
 
 Formal acceptance remains: real granted app actions/launch/window geometry on macOS and Windows, actual independent guest/VM transport and lifecycle, foreground non-interference across apps, and ordinary cloud Chat image/action round trips. Cross-target builds and two-process guest tests do not establish those results.
 

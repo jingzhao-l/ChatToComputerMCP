@@ -8,6 +8,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Win32.SafeHandles;
 
 namespace FileMCP.Core;
 
@@ -641,12 +642,38 @@ internal sealed class CuaService : IDisposable
         var names=mods.Select(m=>m?.GetValue<string>()??"").ToArray();
         return names.Length<=3&&names.Distinct(StringComparer.Ordinal).Count()==names.Length&&names.All(m=>m is "ctrl" or "shift" or "alt");
     }
-    internal static JsonObject PermissionEvidence(JsonObject structured)
+    /// Query the actual child process token, rather than the upstream
+    /// check_permissions tool which launches a PowerShell compiler and can hang.
+    /// No elevation, input, permission prompt, or shell subprocess.
+    [DllImport("advapi32.dll",SetLastError=true)]
+    private static extern bool OpenProcessToken(SafeProcessHandle process,uint access,out SafeAccessTokenHandle token);
+    [DllImport("advapi32.dll",SetLastError=true)]
+    private static extern bool GetTokenInformation(SafeAccessTokenHandle token,int kind,IntPtr data,uint size,out uint needed);
+    internal static JsonObject ReadProcessIntegrity(Process process)
     {
-        var result=new JsonObject();
-        foreach(var key in new[]{"accessibility","screen_recording","screen_capture","automation","elevated","integrity_level","integrity_level_rid","uia","post_message","interactive_session","granted"})
-            if(structured[key] is JsonValue v&&(v.TryGetValue<string>(out var text)?Encoding.UTF8.GetByteCount(text)<=80:v.TryGetValue<bool>(out _)||v.TryGetValue<double>(out _)))
-                result[key]=v.DeepClone();
+        var result=new JsonObject{["source"]="windows_driver_process_token",["integrity_level"]="Unavailable"};
+        try{
+            if(!OpenProcessToken(process.SafeHandle,8,out var token))return result; // TOKEN_QUERY only
+            using(token){
+                GetTokenInformation(token,25,IntPtr.Zero,0,out var needed); // TokenIntegrityLevel
+                if(needed<(uint)IntPtr.Size||needed>65536)return result;
+                var data=Marshal.AllocHGlobal((int)needed);
+                try{
+                    if(!GetTokenInformation(token,25,data,needed,out _))return result;
+                    var sidPointer=Marshal.ReadIntPtr(data);
+                    if(sidPointer==IntPtr.Zero)return result;
+                    var sid=new SecurityIdentifier(sidPointer).Value;
+                    const string prefix="S-1-16-";
+                    if(!sid.StartsWith(prefix,StringComparison.Ordinal)||!uint.TryParse(sid[prefix.Length..],out var rid))return result;
+                    result["integrity_level_rid"]=rid;
+                    result["integrity_level"]=rid switch{
+                        0=>"Untrusted",0x1000=>"Low",0x2000=>"Medium",0x2100=>"Medium+",
+                        0x3000=>"High",0x4000=>"System",_=>"Other"
+                    };
+                    result["high_integrity_or_above"]=rid>=0x3000;
+                }finally{Marshal.FreeHGlobal(data);}
+            }
+        }catch(System.ComponentModel.Win32Exception){}catch(InvalidOperationException){}catch(ArgumentException){}
         return result;
     }
     internal static JsonObject NativeActionEvidence(JsonObject structured)
@@ -1054,13 +1081,11 @@ internal sealed class CuaService : IDisposable
                 created.Busy=true;
             }
             try{
-                var evidence=new JsonObject();
                 if(!transferred){
-                    var probe=await created.Worker.CallAsync("check_permissions",new JsonObject{["prompt"]=false},()=>StillAllowed(created,false),cancellation,timeoutMs:_guestMode?10000:25000).ConfigureAwait(false);
-                    if(probe["isError"]?.GetValue<bool>()==true||probe["content"] is not JsonArray {Count:>0}||!created.Worker.Advertises("get_window_state"))
-                        throw Fail("cua_driver_preflight_failed");
-                    evidence=PermissionEvidence(probe["structuredContent"] as JsonObject??new());
+                    await created.Worker.InitializeAsync(()=>StillAllowed(created,false),cancellation).ConfigureAwait(false);
+                    if(!created.Worker.Advertises("get_window_state"))throw Fail("cua_driver_preflight_failed");
                 }
+                var evidence=created.Worker.ReadPermissionEvidence();
                 if(cancellation.IsCancellationRequested||!StillAllowed(created,false))throw Fail("cua_driver_preflight_revoked");
                 return Output(new JsonObject{["session_id"]=created.Id,["pid"]=pid,["window_id"]=window,["transferred"]=transferred,["driver_ready"]=true,
                     ["driver_operations"]=new JsonArray(Actions.Keys.Where(created.Worker.Advertises).Order().Select(name=>(JsonNode?)JsonValue.Create(name)).ToArray()),
@@ -1249,6 +1274,11 @@ internal sealed class CuaService : IDisposable
         private int _offset, _length, _id, _closed;
         private readonly Dictionary<string,JsonObject> _toolSchemas=new(StringComparer.Ordinal);
         internal bool Advertises(string name)=>_toolSchemas.ContainsKey(name);
+        internal JsonObject ReadPermissionEvidence(){
+            var evidence=ReadProcessIntegrity(_process);
+            evidence["driver_schema_negotiated"]=_initialized;
+            return evidence;
+        }
         private bool _initialized;
         private readonly long _started=Environment.TickCount64;
         internal long AgeSeconds=>(Environment.TickCount64-_started)/1000;
@@ -1269,7 +1299,7 @@ internal sealed class CuaService : IDisposable
             {
                 var manifest = new {
                     version = 3, expires_after = "2h", idle_timeout = "10m",
-                    allow = new { tools = new[] {"check_permissions","get_window_state","click","type_text","press_key","hotkey","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"}.Concat(launch?new[]{"launch_app"}:Array.Empty<string>()).ToArray() },
+                    allow = new { tools = new[] {"get_window_state","click","type_text","press_key","hotkey","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"}.Concat(launch?new[]{"launch_app"}:Array.Empty<string>()).ToArray() },
                     resources = new { apps = new[] { new { executable = application, launch, windows = "all" } },
                         desktop = new { display = false } }
                 };
@@ -1371,15 +1401,21 @@ internal sealed class CuaService : IDisposable
                 throw Fail("cua_driver_contract_mismatch: "+tool);
             return result;
         }
-        internal async Task<JsonObject> CallAsync(string tool, JsonObject args, Func<bool> allowed, CancellationToken cancellation,Action? beforeDispatch=null,int timeoutMs=10000)
+        internal async Task InitializeAsync(Func<bool> allowed,CancellationToken cancellation)
+        {
+            if(_isExtension)throw Fail("cua_native_preflight_required");
+            _=await ExecuteAsync(null,new(),allowed,cancellation,null,10000).ConfigureAwait(false);
+        }
+        internal Task<JsonObject> CallAsync(string tool, JsonObject args, Func<bool> allowed, CancellationToken cancellation,Action? beforeDispatch=null,int timeoutMs=10000)
+            =>ExecuteAsync(tool,args,allowed,cancellation,beforeDispatch,timeoutMs);
+
+        private async Task<JsonObject> ExecuteAsync(string? tool,JsonObject args,Func<bool> allowed,CancellationToken cancellation,Action? beforeDispatch,int timeoutMs)
         {
             var started=Environment.TickCount64;
             LastHandshakeMs=0;
             string stage="admission";
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation,_stop.Token);
-            // Only cold, read-only permission preflight may have a separate startup budget.
-            int ceiling=!_initialized&&!_isExtension&&tool=="check_permissions"?25000:10000;
-            deadline.CancelAfter(TimeSpan.FromMilliseconds(Math.Clamp(timeoutMs,0,ceiling)));
+            deadline.CancelAfter(TimeSpan.FromMilliseconds(Math.Clamp(timeoutMs,0,10000)));
             using var abort = deadline.Token.Register(() => { try { if (!_process.HasExited) _process.Kill(entireProcessTree:_job is not null); } catch { } });
             int checking=0;
             using var watchdog=new Timer(_=>{
@@ -1411,6 +1447,9 @@ internal sealed class CuaService : IDisposable
                     }
                     _initialized = true;LastHandshakeMs=Environment.TickCount64-started;
                 }
+                if(!allowed())throw Fail("cua_session_revoked");
+                deadline.Token.ThrowIfCancellationRequested();
+                if(tool is null)return new JsonObject();
                 var checkedArgs=args;
                 if(!_isExtension){
                     if(!_toolSchemas.TryGetValue(tool,out var schema))throw Fail("cua_driver_tool_not_advertised: "+tool);

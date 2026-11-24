@@ -154,19 +154,24 @@ internal static partial class Program
         using(var guard=new CuaHostFocusGuard()){
             Assert(guard.Monitoring,"Windows native foreground event subscription");
         }
+        using(var current=Process.GetCurrentProcess()){
+            var tokenEvidence=CuaService.ReadProcessIntegrity(current);
+            Assert(tokenEvidence["integrity_level_rid"] is JsonValue&&tokenEvidence["source"]?.GetValue<string>()=="windows_driver_process_token","native process integrity query");
+        }
         var exe = Environment.ProcessPath!;
         Assert(!Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase), "CUA fixture requires test apphost");
         if(Environment.GetEnvironmentVariable("CTCMCP_REAL_CUA_DRIVER") is string driver){
             using var actual=new CuaService.Worker(driver,exe);
-            var permissions=await actual.CallAsync("check_permissions",J("""{"prompt":false}"""),()=>true,default,timeoutMs:25000);
-            Assert(permissions["isError"]?.GetValue<bool>()!=true&&permissions["content"] is JsonArray {Count:>0},"pinned real Windows driver read-only probe");
-            Assert(actual.Advertises("get_window_state"),"native observation contract");
-            var permissionEvidence=CuaService.PermissionEvidence(J("""{"uia":true,"integrity_level":"Medium","path":"private"}"""));
-            Assert(permissionEvidence["uia"]?.GetValue<bool>()==true&&!permissionEvidence.ContainsKey("path"),"bounded permission evidence");
-            Console.WriteLine("PASS pinned actual Windows driver handshake, tools/list and read-only permission probe; no desktop input");
+            await actual.InitializeAsync(()=>true,default);
+            Assert(actual.Advertises("get_window_state")&&actual.Advertises("click")&&actual.Advertises("verify_state"),"native observation, action and verification contracts");
+            var permissionEvidence=actual.ReadPermissionEvidence();
+            Assert(permissionEvidence["source"]?.GetValue<string>()=="windows_driver_process_token"&&permissionEvidence["integrity_level_rid"] is JsonValue&&permissionEvidence["driver_schema_negotiated"]?.GetValue<bool>()==true,"native driver token evidence");
+            Console.WriteLine("PASS pinned actual Windows driver initialization/tools/list and native child-token diagnostics; no desktop input");
         }
         using (var worker = new CuaService.Worker(exe,exe))
         {
+            await worker.InitializeAsync(()=>true,default);
+            Assert(worker.Advertises("get_window_state")&&worker.LastCallMs>=worker.LastHandshakeMs,"explicit native preflight");
             var result = await worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default);
             Assert(result["structuredContent"]?["echo"]?["window_id"]?.GetValue<int>() == 2, "CUA bounded stdio handshake");
             Assert(worker.LastCallMs>=worker.LastHandshakeMs,"CUA timing");
@@ -200,7 +205,8 @@ internal static partial class Program
         var path=Environment.GetEnvironmentVariable("CUA_DRIVER_CAPABILITY_MANIFEST_FILE");
         var manifest=JsonNode.Parse(await File.ReadAllTextAsync(path!))!;
         if (manifest["resources"]?["desktop"]?["display"]?.GetValue<bool>() != false ||
-            manifest["resources"]?["apps"]?.AsArray().Count != 1) return 3;
+            manifest["resources"]?["apps"]?.AsArray().Count != 1 ||
+            manifest["allow"]?["tools"]?.AsArray().Any(t=>t?.GetValue<string>()=="check_permissions")!=false) return 3;
         while (await Console.In.ReadLineAsync() is { } line)
         {
             var request=JsonNode.Parse(line)!;
