@@ -342,6 +342,34 @@ final class LocalMCPRuntime {
         }
     }
 
+    func activateUpdateWhenIdle(schedule: @escaping () throws -> Void, completion: @escaping (String?) -> Void) {
+        queue.async { [weak self] in
+            do {
+                guard let self else { return }
+                switch self.state {
+                case .running:
+                    guard let server = self.server else {
+                        throw NSError(domain: "ChatToComputerMCP", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "No running local server."])
+                    }
+                    try server.freezeForIdleActivation(schedule: schedule)
+                case .stopped, .failed:
+                    try schedule()
+                default:
+                    throw NSError(domain: "ChatToComputerMCP", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Wait until connection startup or shutdown finishes."])
+                }
+                self.setStopRequested(true)
+                self.setState(.stopping)
+                self.shutdownOnQueue()
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { completion(message) }
+            }
+        }
+    }
+
     func shutdownImmediately() {
         setStopRequested(true)
         if DispatchQueue.getSpecific(key: queueSpecificKey) != nil {

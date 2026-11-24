@@ -3503,6 +3503,19 @@ final class LocalMCPServer {
         if remaining == 0 { workspaceLeases.removeValue(forKey: id) } else { workspaceLeases[id] = remaining }
     }
 
+    /// Atomically close remote admission only when every accepted call and
+    /// every command has finished. Scheduling a relaunch may fail; in that
+    /// case restore admission without tearing down the running service.
+    func freezeForIdleActivation(schedule: () throws -> Void) throws {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        guard !catalogStopped, workspaceLeases.values.allSatisfy({ $0 == 0 }),
+              !commandBudget.hasActiveCommands() else {
+            throw MCPServerError.operationFailed("Active or queued work remains. Finish it before activating an update.")
+        }
+        catalogStopped = true
+        do { try schedule() } catch { catalogStopped = false; throw error }
+    }
+
     func desktopReceiptSummary() -> [String: Int] {
         receiptLedger?.summary() ?? [:]
     }
@@ -4186,6 +4199,7 @@ final class LocalMCPServer {
             if toolName == "list_workspaces" {
                 workspaceGate.lock()
                 defer { workspaceGate.unlock() }
+                guard !catalogStopped else { throw MCPServerError.operationFailed("Runtime is stopping") }
                 if let client = verifiedClient, let oauth, !oauth.isCurrent(client) {
                     throw MCPServerError.operationFailed("OAuth authorization changed; reconnect client")
                 }

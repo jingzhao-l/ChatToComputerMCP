@@ -273,6 +273,32 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         finally { _serial.Release(); }
     }
 
+    public async Task ActivateUpdateWhenIdleAsync(Action schedule)
+    {
+        await _serial.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            switch (State.Status)
+            {
+                case LocalMcpRuntimeStatus.Running:
+                    if (_server is null) throw new FileMcpException("No running local server");
+                    _server.FreezeForIdleActivation(schedule);
+                    break;
+                case LocalMcpRuntimeStatus.Stopped:
+                case LocalMcpRuntimeStatus.Failed:
+                    schedule();
+                    break;
+                default:
+                    throw new FileMcpException("Wait until connection startup or shutdown finishes.");
+            }
+            _requestedStop = true;
+            SetState(LocalMcpRuntimeState.Stopping);
+            _tunnelProcess?.StopSynchronously();
+            FinishStop();
+        }
+        finally { _serial.Release(); }
+    }
+
     public async Task ShutdownAsync()
     {
         _requestedStop = true; _startupCts?.Cancel();

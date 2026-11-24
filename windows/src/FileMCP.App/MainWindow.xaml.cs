@@ -321,6 +321,30 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private async void ActivateUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updateBusy || _availableUpdateVersion is not string version ||
+            !DesktopUpdates.IsNewer(version, DesktopUpdates.CurrentVersion) || !DesktopUpdates.Installed(version)) return;
+        if (System.Windows.MessageBox.Show(this,
+            "The app will restart only when all commands and accepted requests have finished. No active work will be cancelled. Reconnect the tunnel from the new app if needed.",
+            "Activate v" + version, MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        _updateBusy = true;
+        ActivateUpdateButton.IsEnabled = false;
+        CheckUpdatesButton.IsEnabled = false;
+        try
+        {
+            await _runtime.ActivateUpdateWhenIdleAsync(() => DesktopUpdates.ScheduleActivation(version));
+            await QuitAsync();
+        }
+        catch (Exception error)
+        {
+            _updateBusy = false;
+            ActivateUpdateButton.IsEnabled = true;
+            CheckUpdatesButton.IsEnabled = true;
+            ShowError(error.Message);
+        }
+    }
+
     private void OpenActivityAudit_Click(object sender, RoutedEventArgs e)
     {
         new ActivityAuditWindow(ProfileBox.Text.Trim()) { Owner = this }.ShowDialog();
@@ -609,6 +633,7 @@ public partial class MainWindow : Window
         if (_updateBusy) return;
         _updateBusy = true;
         _availableUpdateVersion = null;
+        ActivateUpdateButton.IsEnabled = false;
         CheckUpdatesButton.IsEnabled = false;
         InstallUpdateButton.IsEnabled = false;
         UpdateStatusText.Text = "Checking official npm Registry…";
@@ -624,6 +649,7 @@ public partial class MainWindow : Window
             }
             if (DesktopUpdates.Installed(latest))
             {
+                ActivateUpdateButton.IsEnabled = true;
                 UpdateStatusText.Text = "v" + latest +
                     " is already installed. Quit and reopen ChatToComputerMCP to use it.";
                 return;
@@ -656,11 +682,13 @@ public partial class MainWindow : Window
         _updateBusy = true;
         CheckUpdatesButton.IsEnabled = false;
         InstallUpdateButton.IsEnabled = false;
+        ActivateUpdateButton.IsEnabled = false;
         UpdateStatusText.Text = "Compiling v" + target +
             " into a separate version directory. Existing AI tasks remain running…";
         try
         {
             await DesktopUpdates.InstallAsync(target);
+            ActivateUpdateButton.IsEnabled = true;
             UpdateStatusText.Text = "v" + target +
                 " installed. Quit and reopen the app to use it; active tasks and tunnel were not restarted.";
         }

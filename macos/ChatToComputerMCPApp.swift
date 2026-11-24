@@ -542,6 +542,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         "Check npm for a newer release. Updates install separately; running tasks are never interrupted.")
     private let updateCheckButton = NSButton(title: "Check for updates", target: nil, action: nil)
     private let updateInstallButton = NSButton(title: "Install update", target: nil, action: nil)
+    private let updateActivateButton = NSButton(title: "Activate update…", target: nil, action: nil)
     private let updateAutoCheckCheckbox = NSButton(
         checkboxWithTitle: "Check for updates automatically while the app is open",
         target: nil, action: nil)
@@ -1215,7 +1216,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateAutoCheckCheckbox.action = #selector(updatePreferencesChanged)
         updateAutoInstallCheckbox.target = self
         updateAutoInstallCheckbox.action = #selector(updatePreferencesChanged)
-        for button in [updateCheckButton, updateInstallButton] {
+        for button in [updateCheckButton, updateInstallButton, updateActivateButton] {
             button.target = self
             button.bezelStyle = .rounded
             button.setAccessibilityLabel(button.title)
@@ -1223,7 +1224,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateCheckButton.action = #selector(checkUpdatesNow)
         updateInstallButton.action = #selector(installSelectedUpdate)
         updateInstallButton.isEnabled = false
-        let updateButtons = NSStackView(views: [updateCheckButton, updateInstallButton])
+        updateActivateButton.action = #selector(activateInstalledUpdate)
+        updateActivateButton.isEnabled = false
+        let updateButtons = NSStackView(views: [updateCheckButton, updateInstallButton, updateActivateButton])
         updateButtons.orientation = .horizontal
         updateButtons.spacing = 8
 
@@ -1810,6 +1813,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         guard !updateBusy else { return }
         updateBusy = true
         updateLatestVersion = nil
+        updateActivateButton.isEnabled = false
         updateCheckButton.isEnabled = false
         updateInstallButton.isEnabled = false
         updateStatusLabel.stringValue = "Checking official npm Registry…"
@@ -1830,6 +1834,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                     return
                 }
                 if DesktopUpdater.alreadyInstalled(latest) {
+                    self.updateActivateButton.isEnabled = true
                     self.updateStatusLabel.stringValue =
                         "v\(latest) is installed. Quit and reopen the app to use it; " +
                         "the current connection is not interrupted."
@@ -1855,6 +1860,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateBusy = true
         updateCheckButton.isEnabled = false
         updateInstallButton.isEnabled = false
+        updateActivateButton.isEnabled = false
         updateStatusLabel.stringValue =
             "Downloading source and compiling v\(version) into a separate release directory. " +
             "The current app and AI tasks continue running…"
@@ -1864,6 +1870,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             self.updateCheckButton.isEnabled = true
             switch result {
             case .success:
+                self.updateActivateButton.isEnabled = true
                 self.updateStatusLabel.stringValue =
                     "v\(version) installed successfully. Quit and reopen ChatToComputerMCP " +
                     "to use it. No active tasks, tunnel or LaunchAgent were restarted."
@@ -1871,6 +1878,36 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 self.updateStatusLabel.stringValue =
                     "Update failed: " + error.localizedDescription
                 self.updateInstallButton.isEnabled = true
+            }
+        }
+    }
+
+    @objc private func activateInstalledUpdate() {
+        guard !updateBusy, let version = updateLatestVersion,
+              DesktopUpdater.isNewer(version, than: DesktopUpdater.currentVersion()),
+              DesktopUpdater.alreadyInstalled(version) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Activate v\(version)?"
+        alert.informativeText = "The app will restart only if all commands and accepted requests have finished. No active work will be cancelled. Reconnect the tunnel from the new app if needed."
+        alert.addButton(withTitle: "Activate when idle")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        updateBusy = true
+        updateActivateButton.isEnabled = false
+        updateCheckButton.isEnabled = false
+        let wasAutomatic = automaticConnectionEnabled
+        automaticConnectionEnabled = false
+        reconnectTask?.cancel()
+        runtime.activateUpdateWhenIdle(schedule: { try DesktopUpdater.scheduleActivation(version: version) }) { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.updateBusy = false
+                self.updateActivateButton.isEnabled = true
+                self.updateCheckButton.isEnabled = true
+                self.automaticConnectionEnabled = wasAutomatic
+                self.showError(error)
+            } else {
+                NSApp.terminate(nil)
             }
         }
     }

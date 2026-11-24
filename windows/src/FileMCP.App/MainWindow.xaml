@@ -317,6 +317,8 @@
                                     Click="CheckUpdates_Click" Margin="0,0,8,0"/>
                             <Button x:Name="InstallUpdateButton" Content="Install update"
                                     Click="InstallUpdate_Click" IsEnabled="False"/>
+                            <Button x:Name="ActivateUpdateButton" Content="Activate update…" Margin="8,0,0,0"
+                                    Click="ActivateUpdate_Click" IsEnabled="False"/>
                         </StackPanel>
 
                         <Button x:Name="SaveSettingsButton" Content="Save settings" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>

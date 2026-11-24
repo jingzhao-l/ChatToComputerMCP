@@ -274,6 +274,18 @@ public sealed class LocalMcpServer : IAsyncDisposable
         }
     }
 
+    internal void FreezeForIdleActivation(Action schedule)
+    {
+        lock (_workspaceGate)
+        {
+            if (_catalogStopped || _workspaceLeases.Values.Any(value => value != 0) || _commandBudget.HasActiveCommands())
+                throw new FileMcpException("Active or queued work remains. Finish it before activating an update.");
+            _catalogStopped = true;
+            try { schedule(); }
+            catch { _catalogStopped = false; throw; }
+        }
+    }
+
     public IReadOnlyDictionary<string, int> DesktopReceiptSummary() =>
         _tools.CommandReceiptSummary();
 
@@ -556,6 +568,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             {
                 lock (_workspaceGate)
                 {
+                if (_catalogStopped) throw new FileMcpException("Runtime is stopping");
                 if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified))
                     throw new FileMcpException("OAuth authorization changed; reconnect client");
                 var listed = new JsonArray {
