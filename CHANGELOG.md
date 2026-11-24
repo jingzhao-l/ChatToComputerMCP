@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.5.1] — 2026-11-24
+
+- Correct the Windows FIFO ordering fixture to use explicit .NET file I/O and
+  check both predecessor and successor terminal receipts, exact order and
+  cancelled-job absence. The v0.5.0 native Windows gate failed before npm
+  publication; its immutable source tag is retained for audit.
+
 ## [0.5.0] — 2026-11-24
 
 - Make approved workspaces first-class MCP routing targets, with local live
