@@ -24,7 +24,8 @@ internal static partial class Program
     {
         if (args.Length == 2 && args[0] == "--supervisor-fixture") { SupervisorFixture(args[1]); return 0; }
         if (args.Length == 2 && args[0] == "--command-worker") { try { CommandSupervisor.RunWorker(args[1]); return 0; } catch { return 1; } }
-        if (args.Length > 0 && args[0] is "init" or "doctor" or "run")
+        if (args.Length == 1 && args[0] == "--health-policy-check") { CheckTunnelHealthPolicy(); return 0; }
+        if (args.Length > 0 && args[0] is "init" or "doctor" or "run" or "health")
             return await RunFakeTunnelClientAsync(args);
         if (args.Length > 0 && args[0] == "tunnel" &&
             Environment.GetEnvironmentVariable("MCP_TEST_FAKE_CLOUDFLARED") == "1")
@@ -62,6 +63,8 @@ internal static partial class Program
             await TestHttpAndMcpAsync(root);
             await TestWorkspaceScopeAsync(root);
             await TestWindowsOAuthAsync(root);
+            CheckTunnelHealthPolicy();
+            await CheckProfileLockAcrossThreadsAsync();
             await TestRuntimeAsync(root);
             await TestWindowsCloudflareRuntimeAsync(root);
             await TestWindowsNamedCloudflareAsync(root);
@@ -730,12 +733,19 @@ internal static partial class Program
         Environment.SetEnvironmentVariable("MCP_SERVER_URL", "http://evil.invalid/mcp");
         var crashMarker = Path.Combine(root, "transport-crash");
         Environment.SetEnvironmentVariable("MCP_TEST_TRANSPORT_EXIT_FILE", crashMarker);
-        var runtime = new LocalMcpRuntime(profiles, Path.Combine(root, "runtime-data")); var logs = new StringBuilder(); runtime.Log += text => logs.Append(text);
+        var pollFile = Path.Combine(root, "poll.json");
+        Environment.SetEnvironmentVariable("MCP_TEST_POLL_FILE", pollFile);
+        var clock = new TestHealthClock();
+        var runtime = new LocalMcpRuntime(profiles, Path.Combine(root, "runtime-data")) { HealthClock = clock }; var logs = new StringBuilder(); runtime.Log += text => logs.Append(text);
         try
         {
             var config = new LocalMcpConfiguration("tunnel_" + new string('b', 32), "sk-runtime-test-secret", "runtime-test", (ushort)FreePort(), workspace, "127.0.0.1:0", "", "", true);
             await runtime.StartAsync(config);
             Assert(runtime.State.Status == LocalMcpRuntimeStatus.Running, "runtime running");
+            Assert(runtime.CloudHealth == TunnelCloudHealth.AwaitingPoll, "process launch alone is not cloud connectivity");
+            var stamp = clock.GetUtcNow().ToUnixTimeMilliseconds() / 1000d;
+            File.WriteAllText(pollFile, System.Text.Json.JsonSerializer.Serialize(new { control_plane_poll = new { value = stamp } }));
+            await WaitHealthAsync(runtime, TunnelCloudHealth.Connected);
             Assert(File.Exists(Path.Combine(profiles, "runtime-test.yaml")), "isolated profile created");
             var captureText = File.ReadAllText(capture);
             Assert(captureText.Contains("X-FileMCP-Local-Token: env:FILEMCP_LOCAL_AUTH_TOKEN"), "local auth header env indirection");
@@ -773,13 +783,27 @@ internal static partial class Program
                 await Task.Delay(50);
             }
             Assert(finished, "same actual command finishes after transport reconnect");
+            // A live child with stale metrics must be distinguished from a healthy connection.
+            stamp = clock.GetUtcNow().ToUnixTimeMilliseconds() / 1000d;
+            File.WriteAllText(pollFile, System.Text.Json.JsonSerializer.Serialize(new { control_plane_poll = new { value = stamp } }));
+            await WaitHealthAsync(runtime, TunnelCloudHealth.Connected);
+            clock.Advance(TimeSpan.FromSeconds(181));
+            await WaitHealthAsync(runtime, TunnelCloudHealth.Stalled);
+            Assert(runtime.State.Status == LocalMcpRuntimeStatus.Running, "stale polling alone does not restart without opt-in");
+            runtime.AutomaticHealthRecovery = true;
+            clock.Advance(TimeSpan.FromSeconds(61));
+            runtime.CheckCloudHealthNow();
+            var recovered = Stopwatch.StartNew();
+            while (runtime.State.Status != LocalMcpRuntimeStatus.Starting && recovered.Elapsed < TimeSpan.FromSeconds(12))
+                await Task.Delay(25);
+            Assert(runtime.State.Status == LocalMcpRuntimeStatus.Starting, "idle stalled transport restarts");
             await runtime.StopAsync();
             Assert(runtime.State.Status == LocalMcpRuntimeStatus.Stopped, "runtime stopped");
         }
         finally
         {
             await runtime.DisposeAsync();
-            Environment.SetEnvironmentVariable("MCP_TUNNEL_CLIENT", null); Environment.SetEnvironmentVariable("MCP_TEST_ENV_CAPTURE", null); Environment.SetEnvironmentVariable("MCP_TEST_TRANSPORT_EXIT_FILE", null);
+            Environment.SetEnvironmentVariable("MCP_TUNNEL_CLIENT", null); Environment.SetEnvironmentVariable("MCP_TEST_ENV_CAPTURE", null); Environment.SetEnvironmentVariable("MCP_TEST_TRANSPORT_EXIT_FILE", null); Environment.SetEnvironmentVariable("MCP_TEST_POLL_FILE", null);
             Environment.SetEnvironmentVariable("LOG_HTTP_RAW_UNSAFE", null); Environment.SetEnvironmentVariable("MCP_SERVER_URL", null);
         }
         Console.WriteLine("windows-runtime-lifecycle: ok");
@@ -1015,6 +1039,14 @@ internal static partial class Program
 
     private static async Task<int> RunFakeTunnelClientAsync(string[] args)
     {
+        if (args[0] == "health")
+        {
+            var pollFile = Environment.GetEnvironmentVariable("MCP_TEST_POLL_FILE");
+            if (!args.Contains("--require-control-plane-poll") || !args.Contains("--json") ||
+                !File.Exists(ValueAfter(args, "--url-file")) || string.IsNullOrEmpty(pollFile) ||
+                !File.Exists(pollFile)) return 1;
+            Console.WriteLine(File.ReadAllText(pollFile)); return 0;
+        }
         var capture = Environment.GetEnvironmentVariable("MCP_TEST_ENV_CAPTURE");
         if (!string.IsNullOrEmpty(capture))
         {

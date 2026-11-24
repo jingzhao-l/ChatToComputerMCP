@@ -71,7 +71,7 @@ Local policy changes invalidate leases. Already dispatched actions cannot be und
 | cua_create_session | Exclusive PID/window lease. |
 | cua_list_sessions | Own leases for verified clients; shared session IDs are hidden. |
 | cua_observe | Window accessibility tree and optional image; return current element and capture tokens. |
-| cua_act | Background click, type_text, press_key, scroll, drag, set_value, invoke_menu or set_window_frame. |
+| cua_act | Background click, type_text, press_key, hotkey, scroll, drag, set_value, invoke_menu or set_window_frame. |
 | cua_verify | Evaluate explicit element predicates; unknown is not success. |
 | cua_receipt_status | Owner-bound durable action dispatch receipt. |
 | cua_stop_session | Revoke lease and stop worker. |
@@ -80,7 +80,31 @@ Local policy changes invalidate leases. Already dispatched actions cannot be und
 | cua_extension_call | Perform a supported operation in an existing extension lease. |
 | cua_extension_close | Close extension lease and retire worker. |
 
-List approved apps/windows, create a session for the selected PID and window, observe, and act using current element tokens or coordinates tied to the current capture_id. Every cua_act requires a unique unpredictable 32–128-character request_id. Observe again before another action; snapshots expire after 30 seconds. Verify the actual UI state separately. A durable receipt with state exited confirms a successful dispatch response, not that the intended UI effect occurred. After interruption, query the original receipt and inspect actual state; never replay the same request ID or blindly retry with a new one.
+List approved apps/windows, create a session for the selected PID and window, observe, and act using current element tokens or coordinates tied to the current capture_id. Every cua_act requires the observation_id returned by the latest cua_observe of that exact lease, plus a unique unpredictable 32–128-character request_id. The gateway observation nonce prevents cross-worker snapshot number collisions. Observe again before another action; snapshots expire after 30 seconds. Verify the actual UI state separately. A durable receipt with state exited confirms a successful dispatch response, not that the intended UI effect occurred. After interruption, query the original receipt and inspect actual state; never replay the same request ID or blindly retry with a new one.
+
+### Native compatibility and recovery
+
+Use cua_observe with query (case-insensitive, up to 512 bytes), max_elements
+(1–1500), max_depth (1–50), max_image_dimension (320–1920), and timeout_ms
+(100–4000) to inspect complex applications without unbounded tree walks.
+A truncated tree is partial evidence, not proof that a control is missing.
+Native controls should use accessibility tokens first; use pixel coordinates
+only with a current capture ID. Keyboard shortcuts are routed only through
+the pinned driver's background mode. Global app-switch shortcuts are refused.
+Supported modifiers are platform-specific (Mac cmd/shift/option/alt/ctrl;
+Windows ctrl/shift/alt). The driver may refuse controls requiring real
+foreground input; no escalation is performed. Window verification supports
+bounds with tolerance_px (0–100) and stable_samples (1–5). An action receipt
+whose state is interrupted does not prove that the action was not delivered.
+
+Each native worker verifies the driver's version and advertised tools/list
+contract before sending an action. Unsupported tools/parameters are refused
+rather than guessed; Windows can omit an unavailable upstream revision
+parameter but keeps the gateway's one-use snapshot and exact PID/window
+binding. A closed/exited worker's lease is retired, and idle cleanup rechecks
+admission atomically. Do not retry an uncertain mutation automatically.
+Background does not establish zero interference for every third-party
+application; app compatibility still requires real UI acceptance.
 
 ## Isolated browser
 

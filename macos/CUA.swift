@@ -89,6 +89,7 @@ final class CUAWorker {
     private var pending = Data()
     private var nextID = 0
     private var initialized = false
+    private var toolSchemas: [String:[String:Any]] = [:]
     private let manifestURL: URL
     private let isExtension: Bool
 
@@ -100,7 +101,7 @@ final class CUAWorker {
         try FileManager.default.createDirectory(at:directory, withIntermediateDirectories:false, attributes:[.posixPermissions:0o700])
         manifestURL = directory.appendingPathComponent("capability.json")
         let manifest: [String:Any] = ["version":3,"expires_after":"2h","idle_timeout":"10m",
-            "allow":["tools":["check_permissions","get_window_state","click","type_text","press_key","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"] + (launch ? ["launch_app"] : [])],
+            "allow":["tools":["check_permissions","get_window_state","click","type_text","press_key","hotkey","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"] + (launch ? ["launch_app"] : [])],
             "resources":["apps":[["bundle_id":application,"launch":launch,"windows":"all"]],"desktop":["display":false]]]
         do {
             let data = try extensionProfile.map { try JSONEncoder().encode($0) } ?? JSONSerialization.data(withJSONObject:manifest)
@@ -137,6 +138,7 @@ final class CUAWorker {
         }
     }
 
+    var isAlive: Bool {life.lock();defer{life.unlock()};return !closed && process.isRunning}
     func close() {
         life.lock(); defer { life.unlock() }
         guard !closed else { return }
@@ -210,6 +212,14 @@ final class CUAWorker {
         return try receive(id:nextID, deadline:deadline, allowed:allowed)
     }
 
+    static func validatedDriverArguments(_ tool:String, _ args:[String:Any], schema:[String:Any]) throws -> [String:Any] {
+        guard let properties=schema["properties"] as? [String:Any] else{throw CUAFailure("cua_driver_schema_missing")}
+        guard Set(args.keys).isSubset(of:Set(properties.keys)),
+              (schema["required"] as? [String] ?? []).allSatisfy({args[$0] != nil}) else{
+            throw CUAFailure("cua_driver_contract_mismatch: "+tool)
+        }
+        return args
+    }
     func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool) throws -> [String: Any] {
         let deadline = ProcessInfo.processInfo.systemUptime + 10
         if !initialized {
@@ -219,15 +229,32 @@ final class CUAWorker {
                   let info = initResult["serverInfo"] as? [String:Any], info["name"] as? String == (isExtension ? "ctcmcp-cua-extension" : "cua-driver"),
                   info["version"] as? String == (isExtension ? "1.0.0" : "0.61.0") else { throw CUAFailure("cua_driver_protocol_or_version_mismatch") }
             try send(["jsonrpc":"2.0", "method":"notifications/initialized"], deadline:deadline, allowed:allowed)
+            if !isExtension {
+                let listed=try rpc("tools/list",[:],deadline:deadline,allowed:allowed)
+                guard let tools=listed["tools"] as? [[String:Any]],!tools.isEmpty,tools.count<=256,listed["nextCursor"] == nil else{throw CUAFailure("cua_driver_schema_missing")}
+                for item in tools {
+                    guard let name=item["name"] as? String,let schema=item["inputSchema"] as? [String:Any],toolSchemas[name]==nil else{throw CUAFailure("cua_driver_schema_invalid")}
+                    toolSchemas[name]=schema
+                }
+            }
             initialized = true
         }
-        return try rpc("tools/call", ["name":tool, "arguments":args], deadline:deadline, allowed:allowed)
+        let checked:[String:Any]
+        if isExtension{checked=args}
+        else{
+            guard let schema=toolSchemas[tool] else{throw CUAFailure("cua_driver_tool_not_advertised: "+tool)}
+            checked=try Self.validatedDriverArguments(tool,args,schema:schema)
+        }
+        return try rpc("tools/call", ["name":tool, "arguments":checked], deadline:deadline, allowed:allowed)
     }
 }
 
 /// Single runtime authority. Session tokens are unguessable bearer
 /// capabilities, additionally bound to a verified OAuth identity when present.
 struct CUASnapshot {
+    // Driver snapshot numbers restart with each worker. A gateway nonce
+    // prevents accidentally reusing another window/lease observation.
+    let observationID = UUID().uuidString
     let id: String
     let revision: Int?
     let captureID: String?
@@ -260,6 +287,9 @@ struct CUASnapshot {
             width = nil; height = nil; captureID = nil
         }
     }
+    func validateObservationID(_ raw:Any?) throws {
+        guard raw as? String == observationID else {throw CUAFailure("cua_stale_or_foreign_observation")}
+    }
     func validate(_ args: [String:Any]) throws {
         guard ProcessInfo.processInfo.systemUptime - observedAt <= 30 else { throw CUAFailure("cua_snapshot_expired") }
         if let token = args["element_token"] as? String, !tokens.contains(token) {
@@ -290,6 +320,7 @@ final class CUAService {
         let worker: CUAWorker
         var last = ProcessInfo.processInfo.systemUptime
         var busy = false
+        var retiring = false
         var snapshot: CUASnapshot?
         init(owner: String, target: CUATarget, policyBytes: Data, worker: CUAWorker) {
             self.owner = owner; self.target = target; self.policyBytes = policyBytes; self.worker = worker
@@ -303,6 +334,7 @@ final class CUAService {
         let worker: CUAWorker
         var last = ProcessInfo.processInfo.systemUptime
         var busy = true
+        var retiring = false
         let guestEpoch: String?
         init(owner: String, profile: CUAPolicy.ExtensionProfile, policyBytes: Data, worker: CUAWorker, guestEpoch: String?) {
             self.owner=owner; self.profile=profile; self.policyBytes=policyBytes; self.worker=worker; self.guestEpoch=guestEpoch
@@ -325,10 +357,11 @@ final class CUAService {
     private var timer: DispatchSourceTimer?
     private static let actions: [String: Set<String>] = [
         "click":["element_token","x","y","capture_id","button","count","action"],
-        "type_text":["element_token","text","x","y","capture_id"],
-        "press_key":["key","modifiers","element_token"],
-        "scroll":["element_token","direction","amount","x","y","capture_id"],
-        "drag":["from_x","from_y","to_x","to_y","duration_ms","capture_id"],
+        "type_text":["element_token","text","x","y","capture_id","delay_ms"],
+        "press_key":["key","modifiers","element_token","x","y","capture_id"],
+        "hotkey":["keys","element_token","x","y","capture_id"],
+        "scroll":["element_token","direction","amount","x","y","capture_id","by"],
+        "drag":["from_x","from_y","to_x","to_y","duration_ms","capture_id","steps","button"],
         "set_value":["element_token","value"],
         "invoke_menu":["path"],
         "set_window_frame":["x","y","width","height"]
@@ -368,10 +401,10 @@ final class CUAService {
             ("cua_list_windows","List windows of an approved running application.",["pid":integer],["pid"],true),
             ("cua_create_session","Acquire an exclusive background window session. Keep its bearer ID private.",["pid":integer,"window_id":integer],["pid","window_id"],false),
             ("cua_list_sessions","List own session status. Shared connections cannot enumerate session IDs.",[:],[],true),
-            ("cua_observe","Observe the exact leased window, including its accessibility tree and image.",["session_id":string,"include_screenshot":boolean],["session_id"],false),
+            ("cua_observe","Observe the exact leased window, including its accessibility tree and image.",["session_id":string,"include_screenshot":boolean,"query":string,"max_elements":integer,"max_depth":integer,"max_image_dimension":integer,"timeout_ms":integer],["session_id"],false),
             ("cua_act","Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
-                ["session_id":string,"request_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true]],["session_id","request_id","operation","parameters"],false),
-            ("cua_verify","Verify bounded element predicates in the leased window; unknown is not success.",["session_id":string,"expect":["type":"array","minItems":1,"maxItems":8,"items":["type":"object"]],"timeout_ms":["type":"integer","minimum":0,"maximum":6000]],["session_id","expect"],true),
+                ["session_id":string,"request_id":string,"observation_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true]],["session_id","request_id","observation_id","operation","parameters"],false),
+            ("cua_verify","Verify bounded element predicates in the leased window; unknown is not success.",["session_id":string,"expect":["type":"array","minItems":1,"maxItems":8,"items":["type":"object"]],"timeout_ms":["type":"integer","minimum":0,"maximum":6000],"stable_samples":integer],["session_id","expect"],true),
             ("cua_stop_session","Revoke a leased session; interrupted action outcomes may be unknown.",["session_id":string],["session_id"],false)
         ]
         return items.map { name, description, props, required, read in
@@ -494,8 +527,8 @@ final class CUAService {
         return CUATarget(pid:pid,window:window,application:app,launched:launch)
     }
     private func stillAllowed(_ s: Session, mutation: Bool) -> Bool {
-        gate.lock(); let live = !stopped && !revoked.contains(s.owner) && sessions[s.id] === s; gate.unlock()
-        guard live, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
+        gate.lock(); let live = !stopped && !s.retiring && !revoked.contains(s.owner) && sessions[s.id] === s; gate.unlock()
+        guard live, s.worker.isAlive, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
               (try? target(s.target.pid,s.target.window,policy:policy,owner:s.owner)) == s.target else { return false }
         if mutation && !guestMode {
             guard let foreground = NSWorkspace.shared.frontmostApplication, foreground.processIdentifier != s.target.pid else { return false }
@@ -506,15 +539,19 @@ final class CUAService {
         gate.lock(); let all = Array(sessions.values); let extended = Array(extensions.values); gate.unlock()
         for ext in extended {
             gate.lock(); let expired = !ext.busy && ProcessInfo.processInfo.systemUptime - ext.last > 300; gate.unlock()
-            if expired || !extensionAllowed(ext) { retireExtension(ext.id) }
+            if !extensionAllowed(ext) { retireExtension(ext.id) } else if expired { retireExtension(ext.id,onlyIdle:true) }
         }
         for s in all {
             gate.lock(); let expired = !s.busy && ProcessInfo.processInfo.systemUptime - s.last > 300; gate.unlock()
-            if expired || !stillAllowed(s,mutation:false) { retire(s.id) }
+            if !stillAllowed(s,mutation:false) { retire(s.id) } else if expired { retire(s.id,onlyIdle:true) }
         }
     }
-    private func retire(_ id: String) {
-        gate.lock(); let s = sessions[id]; s?.worker.close(); sessions.removeValue(forKey:id); gate.unlock()
+    private func retire(_ id: String, onlyIdle:Bool=false) {
+        gate.lock()
+        guard let s=sessions[id],!s.retiring, !onlyIdle || (!s.busy && ProcessInfo.processInfo.systemUptime-s.last>300) else{gate.unlock();return}
+        s.retiring=true;gate.unlock()
+        s.worker.close()
+        gate.lock();sessions.removeValue(forKey:id);gate.unlock()
     }
     func revoke(owner: String) {
         gate.lock(); revoked.insert(owner); let ids = sessions.values.filter { $0.owner == owner }.map(\.id); let ext = extensions.values.filter { $0.owner == owner }.map(\.id); let workers = launchWorkers.values.filter { $0.owner == owner }.map(\.worker); gate.unlock()
@@ -555,10 +592,10 @@ final class CUAService {
         }
         for (key,value) in args {
             switch key {
-            case "x","y","from_x","from_y","to_x","to_y","count","amount","duration_ms":
+            case "x","y","from_x","from_y","to_x","to_y","count","amount","duration_ms","delay_ms","steps":
                 guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
                       n.doubleValue.isFinite, n.doubleValue >= 0, n.doubleValue <= 32768 else { throw CUAFailure("cua_invalid_coordinate_or_amount") }
-            case "modifiers","path":
+            case "modifiers","path","keys":
                 guard let a = value as? [String], a.count <= 16,
                       a.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }) else { throw CUAFailure("cua_invalid_array") }
             default:
@@ -568,28 +605,76 @@ final class CUAService {
         if let count = args["count"] as? NSNumber, !(1...3).contains(count.intValue) || count.doubleValue != Double(count.intValue) { throw CUAFailure("cua_invalid_click_count") }
         if let amount = args["amount"] as? NSNumber, !(1...50).contains(amount.intValue) || amount.doubleValue != Double(amount.intValue) { throw CUAFailure("cua_invalid_scroll_amount") }
         if let duration = args["duration_ms"] as? NSNumber, duration.doubleValue != Double(duration.intValue) || !(0...3000).contains(duration.intValue) { throw CUAFailure("cua_invalid_drag_duration") }
-        if let button = args["button"] as? String, !["left","right"].contains(button) { throw CUAFailure("cua_invalid_button") }
+        for (key,range) in [("delay_ms",0...100),("steps",1...60)] {
+            if let n=args[key] as? NSNumber, n.doubleValue != Double(n.intValue) || !range.contains(n.intValue) {throw CUAFailure("cua_invalid_action_timing")}
+        }
+        if let by=args["by"] as? String, !["line","page"].contains(by) {throw CUAFailure("cua_invalid_scroll_unit")}
+        if let button = args["button"] as? String, !["left","right","middle"].contains(button) { throw CUAFailure("cua_invalid_button") }
         if let action = args["action"] as? String, !["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"].contains(action) { throw CUAFailure("cua_invalid_element_action") }
         let token = args["element_token"] != nil
         let xy = args["x"] != nil && args["y"] != nil
         if token && (args["x"] != nil || args["y"] != nil || args["capture_id"] != nil || args["count"] != nil) { throw CUAFailure("cua_ambiguous_action_target") }
+        if xy && args["capture_id"] == nil {throw CUAFailure("cua_coordinate_capture_required")}
         if (args["x"] != nil) != (args["y"] != nil) { throw CUAFailure("cua_incomplete_coordinates") }
         switch name {
         case "click":
             guard token != xy, token ? args["x"] == nil && args["y"] == nil : args["capture_id"] != nil else { throw CUAFailure("cua_click_requires_snapshot_token_or_capture_bound_coordinates") }
         case "type_text": guard token != xy, args["text"] != nil else { throw CUAFailure("cua_text_requires_snapshot_target") }
         case "set_value": guard token, args["value"] != nil else { throw CUAFailure("cua_value_requires_element_token") }
-        case "press_key": guard args["key"] != nil else { throw CUAFailure("cua_key_required") }
+        case "press_key":
+            guard let key=args["key"] as? String, validKey(key), validModifiers(args["modifiers"] as? [String] ?? []) else {throw CUAFailure("cua_invalid_key")}
+        case "hotkey":
+            guard let keys=args["keys"] as? [String], (2...5).contains(keys.count), let key=keys.last, validKey(key),
+                  validModifiers(Array(keys.dropLast())) else {throw CUAFailure("cua_invalid_hotkey")}
         case "scroll": guard ["up","down","left","right"].contains(args["direction"] as? String ?? ""), token != xy else { throw CUAFailure("cua_scroll_requires_target") }
         case "drag": guard ["from_x","from_y","to_x","to_y","capture_id"].allSatisfy({ args[$0] != nil }) else { throw CUAFailure("cua_drag_requires_coordinates") }
         case "invoke_menu": guard let path = args["path"] as? [String], !path.isEmpty else { throw CUAFailure("cua_menu_path_required") }
         default: throw CUAFailure("cua_invalid_action")
         }
+        if name=="press_key" || name=="hotkey" {
+            let keys=args["keys"] as? [String] ?? []
+            let mods=name=="hotkey" ? Array(keys.dropLast()) : (args["modifiers"] as? [String] ?? [])
+            let key=name=="hotkey" ? keys.last ?? "" : args["key"] as? String ?? ""
+            if (mods.contains("cmd") && ["tab","space"].contains(key)) || (mods.contains("ctrl") && ["up","down","left","right"].contains(key)) {throw CUAFailure("cua_global_shortcut_not_allowed")}
+        }
+    }
+
+    private static func validKey(_ key:String) -> Bool {
+        key.range(of:"^(return|enter|tab|escape|up|down|left|right|space|delete|backspace|home|end|pageup|pagedown|f([1-9]|1[0-2])|[a-zA-Z0-9])$",options:.regularExpression) != nil
+    }
+    private static func validModifiers(_ values:[String]) -> Bool {
+        values.count<=4 && Set(values).count==values.count && values.allSatisfy{["cmd","shift","option","alt","ctrl"].contains($0)}
+    }
+    static func observationParameters(_ args:[String:Any]) throws -> [String:Any] {
+        var out:[String:Any]=["include_screenshot":args["include_screenshot"] as? Bool ?? true,"include_accessibility_tree":true,"tree_format":"both"]
+        if let query=args["query"] {
+            guard let q=query as? String,!q.isEmpty,q.utf8.count<=512 else{throw CUAFailure("cua_invalid_observation_query")}
+            out["query"]=q
+        }
+        for (key,min,max,defaultValue) in [("max_elements",1,1500,250),("max_depth",1,50,25),("max_image_dimension",320,1920,1600),("timeout_ms",100,4000,1000)] {
+            if let raw=args[key] {
+                guard let n=raw as? NSNumber,CFGetTypeID(n) != CFBooleanGetTypeID(),n.doubleValue==Double(n.intValue),(min...max).contains(n.intValue) else{throw CUAFailure("cua_invalid_observation_budget")}
+                out[key]=n.intValue
+            }else{out[key]=defaultValue}
+        }
+        return out
     }
 
     static func verifyPredicates(_ raw: Any?) throws -> [[String:Any]] {
         guard let predicates = raw as? [[String:Any]], (1...8).contains(predicates.count) else { throw CUAFailure("cua_invalid_verify_predicates") }
         for predicate in predicates {
+            if Set(predicate.keys)==["window"],let window=predicate["window"] as? [String:Any] {
+                guard Set(window.keys).isSubset(of:["exists","bounds"]),!window.isEmpty else{throw CUAFailure("cua_invalid_window_predicate")}
+                if let raw=window["exists"] {guard let b=raw as? NSNumber,CFGetTypeID(b)==CFBooleanGetTypeID(),b.boolValue else{throw CUAFailure("cua_invalid_window_exists")}}
+                if let raw=window["bounds"] {
+                    guard let bounds=raw as? [String:Any],Set(bounds.keys).isSubset(of:["x","y","width","height","tolerance_px"]),["x","y","width","height"].allSatisfy({bounds[$0] != nil}) else{throw CUAFailure("cua_invalid_window_bounds")}
+                    for (k,v) in bounds {
+                        guard let n=v as? NSNumber,CFGetTypeID(n) != CFBooleanGetTypeID(),n.doubleValue.isFinite,
+                              (k=="tolerance_px" ? (0...100).contains(n.doubleValue) : k=="width"||k=="height" ? (1...32768).contains(n.doubleValue) : (-32768...32768).contains(n.doubleValue)) else{throw CUAFailure("cua_invalid_window_bounds")}
+                    }
+                }
+                continue
+            }
             guard Set(predicate.keys) == ["element"], let element = predicate["element"] as? [String:Any],
                   Set(element.keys).isSubset(of:["selector","exists","enabled","selected","value_equals"]),
                   let selector = element["selector"] as? [String:Any], !selector.isEmpty,
@@ -606,13 +691,15 @@ final class CUAService {
         return predicates
     }
     private func extensionAllowed(_ e: ExtensionSession) -> Bool {
-        gate.lock(); let live = !stopped && !revoked.contains(e.owner) && extensions[e.id] === e; gate.unlock()
-        return live && (e.profile.kind != "guest" || (e.guestEpoch != nil && guestEpoch() == e.guestEpoch)) && (try? loadPolicy().1) == e.policyBytes
+        gate.lock(); let live = !stopped && !e.retiring && !revoked.contains(e.owner) && extensions[e.id] === e; gate.unlock()
+        return live && e.worker.isAlive && (e.profile.kind != "guest" || (e.guestEpoch != nil && guestEpoch() == e.guestEpoch)) && (try? loadPolicy().1) == e.policyBytes
     }
-    private func retireExtension(_ id: String) {
-        gate.lock(); let e = extensions[id]; gate.unlock()
-        e?.worker.close()
-        gate.lock(); extensions.removeValue(forKey:id); gate.unlock()
+    private func retireExtension(_ id: String, onlyIdle:Bool=false) {
+        gate.lock()
+        guard let e=extensions[id],!e.retiring,!onlyIdle || (!e.busy && ProcessInfo.processInfo.systemUptime-e.last>300) else{gate.unlock();return}
+        e.retiring=true;gate.unlock()
+        e.worker.close()
+        gate.lock();extensions.removeValue(forKey:id);gate.unlock()
     }
     private func checkFile(_ path: String, hash: String, executable: Bool) throws {
         let url = URL(fileURLWithPath:path)
@@ -696,7 +783,7 @@ final class CUAService {
         guard name == "cua_extension_call",let id=args["session_id"] as? String,let op=args["operation"] as? String,
               let params=args["parameters"] as? [String:Any], try JSONSerialization.data(withJSONObject:params).count <= 32768 else { throw CUAFailure("invalid_extension_call") }
         gate.lock()
-        guard let e=extensions[id],e.owner == owner,!e.busy,ProcessInfo.processInfo.systemUptime-e.last<=300 else {
+        guard let e=extensions[id],e.owner == owner,!e.busy,!e.retiring,ProcessInfo.processInfo.systemUptime-e.last<=300 else {
             gate.unlock();throw CUAFailure("unknown_or_busy_extension_session")
         }
         e.busy=true;gate.unlock()
@@ -764,6 +851,9 @@ final class CUAService {
         if name == "cua_launch_app" {
             guard let application = args["application"] as? String, Self.allowedApplication(application),
                   policy.permitsLaunch(application,owner:owner) else { throw CUAFailure("cua_launch_not_approved") }
+            if !guestMode, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == application {
+                throw CUAFailure("cua_target_in_use_by_user")
+            }
             let request = try Self.requestID(args["request_id"])
             let receipt = try ledger()
             let driver = try checkedDriver(policy)
@@ -829,7 +919,7 @@ final class CUAService {
         }
         guard let id = args["session_id"] as? String else { throw CUAFailure("cua_invalid_session") }
         gate.lock()
-        guard let s = sessions[id], s.owner == owner, !s.busy, !stopped, ProcessInfo.processInfo.systemUptime - s.last <= 300 else {
+        guard let s = sessions[id], s.owner == owner, !s.busy, !s.retiring, !stopped, ProcessInfo.processInfo.systemUptime - s.last <= 300 else {
             gate.unlock(); throw CUAFailure("cua_unknown_unauthorized_or_busy_session")
         }
         s.busy = true; gate.unlock()
@@ -842,6 +932,7 @@ final class CUAService {
         if mutation {
             guard let snapshot = s.snapshot, let operation = args["operation"] as? String,
                   let parameters = args["parameters"] as? [String:Any] else { throw CUAFailure("cua_observe_before_action") }
+            try snapshot.validateObservationID(args["observation_id"])
             try Self.validateAction(operation,parameters)
             if operation != "set_window_frame" { try snapshot.validate(parameters) } else { try snapshot.validate([:]) }
             let request = try Self.requestID(args["request_id"])
@@ -865,16 +956,16 @@ final class CUAService {
             driverTool = "verify_state"
             driverArgs["expect"] = expect
             driverArgs["timeout_ms"] = timeout
+            if let raw=args["stable_samples"] {
+                guard let n=raw as? NSNumber,CFGetTypeID(n) != CFBooleanGetTypeID(),n.doubleValue==Double(n.intValue),(1...5).contains(n.intValue) else{throw CUAFailure("cua_invalid_stable_samples")}
+                driverArgs["stable_samples"]=n.intValue
+            }
             driverArgs["include_screenshot"] = false
             s.snapshot = nil
         } else {
             guard name == "cua_observe", args["include_screenshot"] == nil || (args["include_screenshot"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else { throw CUAFailure("cua_invalid_observe") }
             driverTool = "get_window_state"
-            driverArgs["include_screenshot"] = args["include_screenshot"] as? Bool ?? true
-            driverArgs["include_accessibility_tree"] = true
-            driverArgs["max_image_dimension"] = 1600
-            driverArgs["tree_format"] = "both"
-            driverArgs["max_elements"] = 250
+            for (key,value) in try Self.observationParameters(args) {driverArgs[key]=value}
             s.snapshot = nil
         }
         do {
@@ -901,10 +992,14 @@ final class CUAService {
             let metadata = structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path"].contains($0.key) }
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
             if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited") }
-            return (safe,["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation,"driver_result":metadata])
+            var header:[String:Any] = ["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation]
+            if let snapshot=s.snapshot,name=="cua_observe" {header["observation_id"]=snapshot.observationID}
+            var summary=header;summary["driver_result"]=metadata
+            return ([[ "type":"text","text":String(decoding:try JSONSerialization.data(withJSONObject:header),as:UTF8.self) ]] + safe,summary)
         } catch {
             // Do not replay actions after timeout, loss of transport or
             // uncertain native dispatch. New session and fresh observation.
+            if let (receipt,request)=actionReceipt {try? finishReceipt(receipt,request:request,state:"interrupted")}
             retire(id)
             throw error
         }

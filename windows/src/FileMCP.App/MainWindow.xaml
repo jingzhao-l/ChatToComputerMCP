@@ -1,30 +1,54 @@
 <Window x:Class="FileMCP.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ChatToComputerMCP" Width="1000" Height="720" MinWidth="820" MinHeight="560"
+        Title="ChatToComputerMCP" Width="1000" Height="720" MinWidth="620" MinHeight="510"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResize"
-        Icon="Assets/chat-to-computer-mcp.ico">
+        Icon="Assets/chat-to-computer-mcp.ico"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}">
     <Window.Resources>
+        <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/></Style>
         <Style TargetType="TextBox">
-            <Setter Property="Height" Value="28"/>
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"/>
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"/>
+            <Setter Property="MinHeight" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="PasswordBox">
-            <Setter Property="Height" Value="28"/>
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"/>
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"/>
+            <Setter Property="MinHeight" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"/>
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.ControlBrushKey}}"/>
+        </Style>
         <Style TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.ControlBrushKey}}"/>
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.ControlTextBrushKey}}"/>
             <Setter Property="MinHeight" Value="30"/>
             <Setter Property="Padding" Value="12,4"/>
         </Style>
     </Window.Resources>
     <Grid Margin="16">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <Button x:Name="ThemeButton" DockPanel.Dock="Right" Content="Dark" Click="ToggleTheme_Click" AutomationProperties.Name="Switch appearance"/>
+            <TextBlock Text="ChatToComputerMCP" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </DockPanel>
 
-        <TabControl x:Name="MainTabs" Grid.Row="0" Margin="0,0,0,12" TabStripPlacement="Left"
+        <TabControl x:Name="MainTabs" Grid.Row="1" Margin="0,0,0,12" TabStripPlacement="Left"
                     BorderThickness="0" Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
             <TabControl.ItemContainerStyle>
                 <Style TargetType="TabItem">
@@ -34,6 +58,7 @@
                     <Setter Property="Padding" Value="12,8"/>
                     <Setter Property="HorizontalContentAlignment" Value="Left"/>
                     <Setter Property="FontSize" Value="13"/>
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="TabItem">
@@ -57,6 +82,15 @@
                             </ControlTemplate>
                         </Setter.Value>
                     </Setter>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding TabStripPlacement, RelativeSource={RelativeSource AncestorType=TabControl}}" Value="Top">
+                            <Setter Property="Width" Value="Auto"/>
+                            <Setter Property="MinHeight" Value="30"/>
+                            <Setter Property="Padding" Value="8,4"/>
+                            <Setter Property="Margin" Value="0,1,2,1"/>
+                            <Setter Property="FontSize" Value="12"/>
+                        </DataTrigger>
+                    </Style.Triggers>
                 </Style>
             </TabControl.ItemContainerStyle>
             <TabItem Header="Overview" x:Name="OverviewTab">
@@ -66,7 +100,7 @@
                                    FontSize="22" FontWeight="SemiBold"
                                    TextWrapping="Wrap" Margin="0,2,0,7"/>
                         <TextBlock Text="Connect ChatGPT, Claude and other compatible cloud AI chats to approved Windows folders, tools and concurrent commands."
-                                   TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,18"/>
+                                   TextWrapping="Wrap" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Margin="0,0,0,18"/>
                         <Border Padding="14" BorderBrush="#8890A5" BorderThickness="1"
                                 CornerRadius="9" Margin="0,0,0,12">
                             <StackPanel>
@@ -75,7 +109,7 @@
                                 <TextBlock x:Name="OverviewConnectionStatus" Text="Disconnected"
                                            FontSize="17" Margin="0,0,0,4"/>
                                 <TextBlock x:Name="OverviewProvider" Text="OpenAI Secure MCP Tunnel"
-                                           Foreground="Gray" TextWrapping="Wrap"/>
+                                           Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <Border Padding="14" BorderBrush="#8890A5" BorderThickness="1"
@@ -87,10 +121,10 @@
                                            Text="Choose a default workspace"
                                            TextWrapping="Wrap" Margin="0,0,0,5"/>
                                 <TextBlock x:Name="OverviewCommandCapacity" Text="8 concurrent commands"
-                                           Foreground="Gray" Margin="0,0,0,4"/>
+                                           Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Margin="0,0,0,4"/>
                                 <TextBlock x:Name="OverviewPermissions"
                                            Text="Shell off · Git push off · Codex history off"
-                                           Foreground="Gray" TextWrapping="Wrap"/>
+                                           Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <TextBlock Text="Quick actions" FontWeight="SemiBold"
@@ -105,7 +139,7 @@
                             <Button Content="Check updates" Margin="0,0,0,7"
                                     Click="OverviewUpdates_Click"/>
                         </WrapPanel>
-                        <TextBlock Foreground="Gray" TextWrapping="Wrap"
+                        <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"
                                    Text="Local workspace access requires your approval. Shell commands use your Windows account permissions and are not an operating-system sandbox. OpenAI Secure MCP Tunnel credentials are connection-level; verified per-client grants require Cloudflare OAuth."/>
                     </StackPanel>
                 </ScrollViewer>
@@ -119,7 +153,7 @@
                             <ComboBoxItem Tag="openai" Content="OpenAI Secure MCP Tunnel"/>
                             <ComboBoxItem Tag="cloudflare" Content="Cloudflare Tunnel · verified OAuth clients"/>
                         </ComboBox>
-                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,12"
+                        <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,0,0,12"
                                    Text="Select the tunnel that connects cloud AI chats to your approved local computer workspaces. Credentials are saved only in this Windows user's Credential Manager."/>
 
                         <StackPanel x:Name="OpenAIConnectionGroup">
@@ -130,12 +164,12 @@
                             <PasswordBox x:Name="ApiKeyBox" Margin="0,0,0,5"
                                          ToolTip="A Platform runtime key, not your ChatGPT subscription."/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                                <TextBlock x:Name="ApiKeyStatusText" Foreground="Gray"
+                                <TextBlock x:Name="ApiKeyStatusText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                            VerticalAlignment="Center"/>
                                 <Button x:Name="DeleteApiKeyButton" Content="Delete API key"
                                         Margin="12,0,0,0" Click="DeleteApiKey_Click"/>
                             </StackPanel>
-                            <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"
+                            <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,0,0,10"
                                        Text="Private OpenAI Secure MCP Tunnel uses a shared local connection identity. Individual ChatGPT chats cannot be cryptographically distinguished by this mode."/>
                         </StackPanel>
 
@@ -156,7 +190,7 @@
                             <PasswordBox x:Name="CloudflareTokenBox" Margin="0,0,0,6"
                                          ToolTip="Stored in Windows Credential Manager; never added to command line arguments."/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,9">
-                                <TextBlock x:Name="CloudflareTokenStatusText" Foreground="Gray"
+                                <TextBlock x:Name="CloudflareTokenStatusText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                            VerticalAlignment="Center"/>
                                 <Button x:Name="DeleteCloudflareTokenButton" Content="Delete token"
                                         Click="DeleteCloudflareToken_Click" Margin="12,0,0,0"/>
@@ -179,13 +213,13 @@
                                     <Button x:Name="CloudflareDeleteButton" Content="Delete"
                                             Click="CloudflareDelete_Click" Margin="0,0,7,5"/>
                                 </WrapPanel>
-                                <TextBlock x:Name="CloudflareManagementStatus" Foreground="Gray"
+                                <TextBlock x:Name="CloudflareManagementStatus" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                            TextWrapping="Wrap" Margin="0,0,0,9"
                                            Text="Install and log in to cloudflared.exe first. Named tunnel credentials stay in your Cloudflare account."/>
                             </StackPanel>
                             <TextBlock Text="Local OAuth pairing code" FontWeight="SemiBold" Margin="0,0,0,6"/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock x:Name="CloudflarePairingStatusText" Foreground="Gray"
+                                <TextBlock x:Name="CloudflarePairingStatusText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                            VerticalAlignment="Center"
                                            Text="A private pairing code is generated when connecting."/>
                                 <Button x:Name="CopyCloudflarePairingButton" Content="Copy login code"
@@ -193,16 +227,16 @@
                                 <Button x:Name="ResetCloudflarePairingButton" Content="Regenerate"
                                         Click="ResetCloudflarePairing_Click"/>
                             </StackPanel>
-                            <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"
+                            <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,0,0,10"
                                        Text="Install cloudflared.exe separately and configure the entire hostname, including /mcp, /oauth/* and /.well-known/*, to reach this local MCP server. Default OAuth mode is safer than embedding secrets in URLs."/>
                             <TextBlock Text="Authorized OAuth clients" FontWeight="SemiBold" Margin="0,8,0,6"/>
-                            <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,6"
+                            <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,0,0,6"
                                        Text="Client names are self-reported. Verified access tokens determine each client identity and approved workspace scope."/>
                             <ListBox x:Name="OAuthClientListBox" Height="95"
                                      DisplayMemberPath="Display"
                                      SelectionChanged="OAuthClientSelectionChanged"
                                      Margin="0,0,0,6"/>
-                            <TextBlock x:Name="OAuthClientScopeText" Foreground="Gray"
+                            <TextBlock x:Name="OAuthClientScopeText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                        TextWrapping="Wrap" Margin="0,0,0,7"
                                        Text="Connect with Cloudflare OAuth to list approved clients."/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
@@ -213,7 +247,7 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,8,0,14"
+                        <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,8,0,14"
                                    Text="The local server listens on loopback. Approve workspaces in Settings first, then save and connect. Changes to provider and access scopes require reconnecting."/>
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button x:Name="SaveConnectionButton" Content="Save connection"
@@ -234,7 +268,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="Shared directory"/>
                             <TextBox x:Name="DirectoryBox" Grid.Column="1" Margin="0,0,8,0"/>
-                            <Button Grid.Column="2" Content="Browse…" Click="BrowseDirectory_Click"/>
+                            <Button Grid.Column="2" x:Name="BrowseDirectoryButton" Content="Browse…" Click="BrowseDirectory_Click"/>
                         </Grid>
 
                         <TextBlock Text="Additional approved workspaces"
@@ -258,11 +292,12 @@
                             <Button x:Name="RemoveWorkspaceButton" Content="Remove approval" Click="RemoveWorkspace_Click" Margin="0,0,7,5"/>
                             <Button x:Name="WorkspacePermissionButton" Content="Permissions…" Click="WorkspacePermissions_Click" Margin="0,0,7,5"/>
                             <Button x:Name="DefaultPermissionButton" Content="Default permissions…" Click="DefaultPermissions_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="CopyWorkspaceScopeButton" Content="Copy AI scope" Click="CopyWorkspaceScope_Click" Margin="0,0,7,5" IsEnabled="False"/>
                             <Button x:Name="RevealWorkspaceButton" Content="Reveal" Click="RevealWorkspace_Click" Margin="0,0,0,5"/>
                         </WrapPanel>
-                        <TextBlock x:Name="WorkspacePermissionText" Foreground="Gray" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="WorkspacePermissionText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"/>
                         <TextBlock Text="Additional workspaces can be changed online while affected scopes are idle. OAuth changes require fresh authorization. Default/global changes require reconnect. Removing approval never deletes files."
-                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,4,0,9"/>
+                                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,4,0,9"/>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="Total concurrent commands" VerticalAlignment="Center" Margin="0,0,12,0"/>
                             <ComboBox x:Name="CommandCapacityBox" Width="90" SelectedIndex="2"
@@ -286,12 +321,12 @@
                     <StackPanel Grid.Row="0" Margin="0,0,0,8">
                         <TextBlock x:Name="TasksSummaryText"
                                    Text="Connect to review tasks across approved workspaces."
-                                   TextWrapping="Wrap" Foreground="Gray"/>
+                                   TextWrapping="Wrap" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
                         <TextBlock x:Name="ReceiptStatusText" Margin="0,5,0,0"
                                    Text="Connect to view prior interrupted command receipts."
                                    TextWrapping="Wrap" Foreground="DarkOrange"/>
                     </StackPanel>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
+                    <WrapPanel Grid.Row="1" Margin="0,0,0,9">
                         <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
                         <Button Content="History…" Click="OpenCommandHistory_Click" Margin="0,0,8,0"/>
                         <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"
@@ -300,13 +335,13 @@
                                 IsEnabled="False" Margin="0,0,8,0"/>
                         <Button x:Name="CopyTaskOutputButton" Content="Copy output" Click="CopyTaskOutput_Click"
                                 IsEnabled="False" ToolTip="Command output may contain secrets. Review before sharing."/>
-                    </StackPanel>
+                    </WrapPanel>
                     <ListBox x:Name="TaskListBox" Grid.Row="2" DisplayMemberPath="Display"
                              SelectionChanged="TaskSelectionChanged"/>
                     <TextBlock x:Name="TaskDetailText" Grid.Row="3" Margin="0,8,0,0"
-                               TextWrapping="Wrap" Foreground="Gray"
+                               TextWrapping="Wrap" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                Text="Select a session to review its scope and status."/>
-                    <TextBox x:Name="TaskOutputBox" Grid.Row="4" Margin="0,9,0,0"
+                    <TextBox x:Name="TaskOutputBox" VerticalContentAlignment="Top" Grid.Row="4" Margin="0,9,0,0"
                              IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              FontFamily="Consolas" FontSize="11"
@@ -317,11 +352,13 @@
             <TabItem Header="Activity">
                 <Grid Margin="10">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <WrapPanel Margin="0,0,0,8">
+                        <CheckBox x:Name="FollowLogsBox" Content="Follow" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,0" Click="FollowLogs_Click"/>
                         <Button Content="Activity audit…" Click="OpenActivityAudit_Click" Margin="0,0,8,0"/>
-                        <TextBlock Text="Diagnostic logs (not the durable audit)" VerticalAlignment="Center" Foreground="Gray"/>
-                    </StackPanel>
-                    <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                        <Button x:Name="CopyLogsButton" Content="Copy" Click="CopyLogs_Click" IsEnabled="False" Margin="0,0,8,0"/>
+                        <Button Content="Clear" Click="ClearLogs_Click"/>
+                    </WrapPanel>
+                    <TextBox Grid.Row="1" x:Name="LogBox" VerticalContentAlignment="Top" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              FontFamily="Consolas" FontSize="11" Background="#191919" Foreground="White"/>
                 </Grid>
@@ -330,10 +367,10 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="16">
                         <TextBlock Text="Permissions &amp; security" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                        <TextBlock Text="Global permissions are upper bounds. Individual workspace restrictions are managed in Workspaces. OAuth verifies a client grant, not a chat conversation." TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10"/>
+                        <TextBlock Text="Global permissions are upper bounds. Individual workspace restrictions are managed in Workspaces. OAuth verifies a client grant, not a chat conversation." TextWrapping="Wrap" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Margin="0,0,0,10"/>
                         <CheckBox x:Name="EnableCommandsCheckBox" Margin="0,14,0,0" Content="Allow shell commands"
                                   ToolTip="Allow ChatToComputerMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
-                        <TextBlock Margin="0,5,0,0" Foreground="Gray" TextWrapping="Wrap"
+                        <TextBlock Margin="0,5,0,0" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"
                                    Text="Allows ChatGPT to run PowerShell/CLI commands with the current Windows user's permissions. Enable only for workspaces you trust."/>
                         <CheckBox x:Name="PersistLongTasksBox" Margin="0,10,0,0" Content="Keep running commands through app restarts (stores bounded output)" ToolTip="Quitting preserves launched jobs; Disconnect cancels. Queued jobs are never replayed."/>
                         <CheckBox x:Name="CaptureCommandHistoryBox" Margin="0,10,0,0"
@@ -342,7 +379,7 @@
                         <CheckBox x:Name="EnableGitPushBox" Content="Allow Git push to remote servers"
                                   Margin="0,12,0,0"
                                   ToolTip="Sends repository contents to configured remote servers and may use existing credentials. Disabled by default."/>
-                        <TextBlock Margin="0,4,0,0" Foreground="Gray" TextWrapping="Wrap"
+                        <TextBlock Margin="0,4,0,0" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap"
                                    Text="Git push can disclose source to remotes and requires separate approval."/>
 
                         <Button x:Name="SaveSecurityButton" Content="Save permissions" HorizontalAlignment="Right" Margin="0,16,0,0" Click="SaveSettings_Click"/>
@@ -357,7 +394,7 @@
                             <StackPanel Margin="0,8,0,0">
                                 <CheckBox x:Name="EnableCodexHistoryBox" Content="Allow importing conversations into Codex history"
                                           ToolTip="Writes conversation content to the user's Codex history outside approved workspaces. Disabled by default."/>
-                                <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,5,0,0"
+                                <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,5,0,0"
                                            Text="Enable only if you use Codex. Import writes outside approved folders, and workspace-specific permission still applies."/>
                             </StackPanel>
                         </Expander>
@@ -391,7 +428,7 @@
                         <TextBlock Text="Background service (optional)" FontWeight="SemiBold"
                                    Margin="0,18,0,7"/>
                         <TextBlock Text="Login startup uses this user's Windows startup registration and a small in-app supervisor. Nothing is installed or started unless explicitly enabled. Crash recovery restarts an abnormal exit; Always-on also relaunches normal Quit."
-                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,0,0,8"/>
                         <CheckBox x:Name="LoginStartupBox"
                                   Content="Start ChatToComputerMCP at user sign-in (minimized to tray)"
                                   Click="LoginOptions_Click" Margin="0,0,0,5"/>
@@ -405,14 +442,14 @@
                                 Content="Apply Windows login settings"
                                 HorizontalAlignment="Left"
                                 Click="ApplyLoginSettings_Click"/>
-                        <TextBlock x:Name="LoginStatusText" Foreground="Gray"
+                        <TextBlock x:Name="LoginStatusText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                    TextWrapping="Wrap" Margin="0,7,0,0"
                                    Text="Login startup is disabled."/>
                         <TextBlock Text="Application updates" FontWeight="SemiBold"
                                    Margin="0,18,0,7"/>
                         <TextBlock Text="Updates use official npm releases and compile a separate app version. The running connection and tasks are never restarted automatically."
-                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
-                        <TextBlock x:Name="UpdateStatusText" Foreground="Gray"
+                                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="UpdateStatusText" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                    TextWrapping="Wrap" Margin="0,0,0,7"
                                    Text="Check npm for a newer release."/>
                         <CheckBox x:Name="AutoCheckUpdatesBox"
@@ -437,14 +474,14 @@
             </TabItem>
         </TabControl>
 
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" VerticalAlignment="Center">
                 <TextBlock x:Name="FooterStatus" Text="Disconnected" FontWeight="SemiBold"/>
-                <TextBlock Foreground="Gray" FontSize="11" Text="Closing the window keeps the gateway in the tray." TextWrapping="Wrap"/>
+                <TextBlock Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" FontSize="11" Text="Closing the window keeps the gateway in the tray." TextWrapping="Wrap"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
                 <Button Content="Quit" Click="Quit_Click" Margin="0,0,8,0"/>

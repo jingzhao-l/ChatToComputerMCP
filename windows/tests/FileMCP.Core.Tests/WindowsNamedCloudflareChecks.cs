@@ -37,6 +37,32 @@ internal static partial class Program
         await using var runtime=new LocalMcpRuntime(Path.Combine(root,"profiles"));
         try
         {
+            var certificate = Path.Combine(root, "isolated-cert.pem");
+            var previousCert = Environment.GetEnvironmentVariable("TUNNEL_ORIGIN_CERT");
+            var previousMode = Environment.GetEnvironmentVariable("MCP_TEST_CF_LOGIN_MODE");
+            try
+            {
+                Environment.SetEnvironmentVariable("TUNNEL_ORIGIN_CERT", certificate);
+                File.WriteAllText(certificate, "old-test-certificate");
+                Environment.SetEnvironmentVariable("MCP_TEST_CF_LOGIN_MODE", "fail");
+                try { await LocalMcpRuntime.LoginCloudflareAsync(true, CancellationToken.None); throw new Exception("Expected failed login"); }
+                catch (FileMcpException) {}
+                Assert(File.ReadAllText(certificate) == "old-test-certificate", "failed login restores previous certificate");
+                Environment.SetEnvironmentVariable("MCP_TEST_CF_LOGIN_MODE", "cancel");
+                using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
+                try { await LocalMcpRuntime.LoginCloudflareAsync(true, cancel.Token); throw new Exception("Expected cancelled login"); }
+                catch (OperationCanceledException) {}
+                Assert(File.ReadAllText(certificate) == "old-test-certificate", "cancelled login restores previous certificate");
+                Environment.SetEnvironmentVariable("MCP_TEST_CF_LOGIN_MODE", "success");
+                var backup = await LocalMcpRuntime.LoginCloudflareAsync(true, CancellationToken.None);
+                Assert(backup is not null && File.ReadAllText(backup) == "old-test-certificate" &&
+                    File.ReadAllText(certificate) == "new-test-certificate", "successful switch retains previous certificate");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("TUNNEL_ORIGIN_CERT", previousCert);
+                Environment.SetEnvironmentVariable("MCP_TEST_CF_LOGIN_MODE", previousMode);
+            }
             var list=LocalMcpRuntime.ListCloudflareNamedTunnels();
             Assert(list.Any(t=>t.Id==tunnelID && t.Name==tunnelName),
                 "Locally-managed Cloudflare tunnel discovery works");

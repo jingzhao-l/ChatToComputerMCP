@@ -320,7 +320,7 @@ internal sealed partial class LocalTools
                 acquiredSerialization = true;
             }
             ValidateArguments(name, arguments);
-            if (serialize && name != "start_command") EnsureNoActiveCommand();
+            if (serialize && name != "start_command") EnsureNoConflictingCommand(name, arguments);
             return name switch
             {
                 "list_files" or "read_file" or "read_file_range" or "file_info" or "grep" or "search_code" or

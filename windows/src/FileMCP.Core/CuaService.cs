@@ -66,11 +66,13 @@ internal sealed class CuaService : IDisposable
         internal readonly Worker Worker = worker;
         internal long Last = Environment.TickCount64;
         internal bool Busy;
+        internal bool Retiring;
         internal Snapshot? Snapshot;
     }
     internal sealed class Snapshot
     {
         internal readonly string Id;
+        internal readonly string ObservationId=Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         internal readonly long? Revision;
         internal readonly string? CaptureId;
         internal readonly uint Width, Height;
@@ -100,6 +102,7 @@ internal sealed class CuaService : IDisposable
                 }
             }
         }
+        internal void ValidateObservationId(JsonNode? raw){if(raw is not JsonValue v||!v.TryGetValue<string>(out var id)||id!=ObservationId)throw Fail("cua_stale_or_foreign_observation");}
         internal void Validate(JsonObject args)
         {
             if (Environment.TickCount64 - ObservedAt > 30000) throw Fail("cua_snapshot_expired");
@@ -126,6 +129,7 @@ internal sealed class CuaService : IDisposable
         internal readonly Worker Worker=worker;
         internal long Last=Environment.TickCount64;
         internal bool Busy=true;
+        internal bool Retiring;
         internal readonly string? GuestEpoch=guestEpoch;
     }
     private readonly Dictionary<string,ExtensionSession> _extensions=new(StringComparer.Ordinal);
@@ -146,10 +150,11 @@ internal sealed class CuaService : IDisposable
     private static readonly Dictionary<string, string[]> Actions = new(StringComparer.Ordinal)
     {
         ["click"] = ["element_token","x","y","capture_id","button","count","action"],
-        ["type_text"] = ["element_token","text","x","y","capture_id"],
-        ["press_key"] = ["key","modifiers","element_token"],
-        ["scroll"] = ["element_token","direction","amount","x","y","capture_id"],
-        ["drag"] = ["from_x","from_y","to_x","to_y","duration_ms","capture_id"],
+        ["type_text"] = ["element_token","text","x","y","capture_id","delay_ms"],
+        ["press_key"] = ["key","modifiers","element_token","x","y","capture_id"],
+        ["hotkey"] = ["keys","element_token","x","y","capture_id"],
+        ["scroll"] = ["element_token","direction","amount","x","y","capture_id","by"],
+        ["drag"] = ["from_x","from_y","to_x","to_y","duration_ms","capture_id","steps","button"],
         ["set_value"] = ["element_token","value"],
         ["invoke_menu"] = ["path"],
         ["set_window_frame"] = ["x","y","width","height"]
@@ -200,15 +205,15 @@ internal sealed class CuaService : IDisposable
                 new() { ["pid"] = Integer(), ["window_id"] = Integer() }, ["pid","window_id"], false),
             Def("cua_list_sessions", "List own session status. Shared connections cannot enumerate session IDs.", new(), [], true),
             Def("cua_observe", "Observe the exact leased window, including its accessibility tree and image.",
-                new() { ["session_id"] = String(), ["include_screenshot"] = Bool() }, ["session_id"], false),
+                new() { ["session_id"] = String(), ["include_screenshot"] = Bool(),["query"]=String(),["max_elements"]=Integer(),["max_depth"]=Integer(),["max_image_dimension"]=Integer(),["timeout_ms"]=Integer() }, ["session_id"], false),
             Def("cua_act", "Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
-                new() { ["session_id"] = String(), ["request_id"] = String(), ["operation"] = new JsonObject { ["type"] = "string",
+                new() { ["session_id"] = String(), ["request_id"] = String(), ["observation_id"]=String(), ["operation"] = new JsonObject { ["type"] = "string",
                     ["enum"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) },
                     ["parameters"] = new JsonObject { ["type"] = "object", ["additionalProperties"] = true } },
-                ["session_id","request_id","operation","parameters"], false),
+                ["session_id","request_id","observation_id","operation","parameters"], false),
             Def("cua_verify", "Verify bounded element predicates in the leased window; unknown is not success.",
                 new() { ["session_id"] = String(), ["expect"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 8, ["items"] = new JsonObject { ["type"] = "object" } },
-                    ["timeout_ms"] = new JsonObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 6000 } }, ["session_id","expect"], true),
+                    ["timeout_ms"] = new JsonObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 6000 },["stable_samples"]=Integer() }, ["session_id","expect"], true),
             Def("cua_stop_session", "Revoke a leased session; interrupted action outcomes may be unknown.",
                 new() { ["session_id"] = String() }, ["session_id"], false)
         );
@@ -349,7 +354,7 @@ internal sealed class CuaService : IDisposable
     private bool StillAllowed(Session s, bool mutation)
     {
         lock (_gate)
-            if (_stopped || !_sessions.TryGetValue(s.Id, out var live) || !ReferenceEquals(live, s) || _revoked.Contains(s.Owner)) return false;
+            if (_stopped || s.Retiring || !s.Worker.IsAlive || !_sessions.TryGetValue(s.Id, out var live) || !ReferenceEquals(live, s) || _revoked.Contains(s.Owner)) return false;
         try
         {
             var (policy, bytes) = LoadPolicy();
@@ -371,18 +376,23 @@ internal sealed class CuaService : IDisposable
         foreach(var e in extended)
         {
             bool expired;lock(_gate)expired=!e.Busy && Environment.TickCount64-e.Last>300000;
-            if(expired||!ExtensionAllowed(e))RetireExtension(e.Id);
+            if(!ExtensionAllowed(e))RetireExtension(e.Id);else if(expired)RetireExtension(e.Id,true);
         }
         foreach (var s in all)
         {
             bool expired;
             lock (_gate) expired = !s.Busy && Environment.TickCount64 - s.Last > 300000;
-            if (expired || !StillAllowed(s, false)) Retire(s.Id);
+            if (!StillAllowed(s, false)) Retire(s.Id); else if(expired)Retire(s.Id,true);
         }
     }
-    private void Retire(string id)
+    private void Retire(string id,bool onlyIdle=false)
     {
-        lock (_gate) { if (_sessions.TryGetValue(id,out var s)) s.Worker.Dispose(); _sessions.Remove(id); }
+        Session? s;
+        lock(_gate){
+            if(!_sessions.TryGetValue(id,out s)||s.Retiring||onlyIdle&&(s.Busy||Environment.TickCount64-s.Last<=300000))return;
+            s.Retiring=true;
+        }
+        try{s.Worker.Dispose();}finally{lock(_gate)_sessions.Remove(id);}
     }
     internal void Revoke(string owner)
     {
@@ -427,12 +437,12 @@ internal sealed class CuaService : IDisposable
         }
         foreach (var (key,value) in args)
         {
-            if (key is "x" or "y" or "from_x" or "from_y" or "to_x" or "to_y" or "count" or "amount" or "duration_ms")
+            if (key is "x" or "y" or "from_x" or "from_y" or "to_x" or "to_y" or "count" or "amount" or "duration_ms" or "delay_ms" or "steps")
             {
                 if (value is not JsonValue number || !number.TryGetValue<double>(out var n) || !double.IsFinite(n) || n < 0 || n > 32768)
                     throw Fail("cua_invalid_coordinate_or_amount");
             }
-            else if (key is "modifiers" or "path")
+            else if (key is "modifiers" or "path" or "keys")
             {
                 if (value is not JsonArray a || a.Count > 16 ||
                     a.Any(item => item is not JsonValue v || !v.TryGetValue<string>(out var str) || string.IsNullOrEmpty(str) || Encoding.UTF8.GetByteCount(str) > 256))
@@ -442,14 +452,16 @@ internal sealed class CuaService : IDisposable
                 Encoding.UTF8.GetByteCount(s) > (key is "text" or "value" ? 16000 : 1024))
                 throw Fail("cua_invalid_string");
         }
-        foreach (var (key,min,max) in new[] { ("count",1,3),("amount",1,50),("duration_ms",0,3000) })
+        foreach (var (key,min,max) in new[] { ("count",1,3),("amount",1,50),("duration_ms",0,3000),("delay_ms",0,100),("steps",1,60) })
             if (args[key] is JsonValue n && (!n.TryGetValue<int>(out var integer) || integer < min || integer > max))
                 throw Fail("cua_invalid_integer_action_parameter");
-        if (args["button"] is JsonValue button && !new[] {"left","right"}.Contains(button.GetValue<string>(),StringComparer.Ordinal))
+        if (args["button"] is JsonValue button && !new[] {"left","right","middle"}.Contains(button.GetValue<string>(),StringComparer.Ordinal))
             throw Fail("cua_invalid_button");
         if (args["action"] is JsonValue action && !new[] {"expand"}.Contains(action.GetValue<string>(),StringComparer.Ordinal))
             throw Fail("cua_invalid_element_action");
+        if(args["by"] is JsonValue by&&by.GetValue<string>() is not ("line" or "page"))throw Fail("cua_invalid_scroll_unit");
         bool token = args.ContainsKey("element_token"), xy = args.ContainsKey("x") && args.ContainsKey("y");
+        if(xy&&!args.ContainsKey("capture_id"))throw Fail("cua_coordinate_capture_required");
         if (token && (args.ContainsKey("x") || args.ContainsKey("y") || args.ContainsKey("capture_id") || args.ContainsKey("count")) ||
             args.ContainsKey("x") != args.ContainsKey("y")) throw Fail("cua_ambiguous_action_target");
         bool valid = name switch
@@ -457,21 +469,58 @@ internal sealed class CuaService : IDisposable
             "click" => token != xy && (token ? !args.ContainsKey("x") && !args.ContainsKey("y") : args.ContainsKey("capture_id")),
             "type_text" => token != xy && args.ContainsKey("text"),
             "set_value" => token && args.ContainsKey("value"),
-            "press_key" => args.ContainsKey("key"),
+            "press_key" => args["key"] is JsonValue key && ValidKey(key.GetValue<string>()) && ValidModifiers(args["modifiers"] as JsonArray ?? new()),
+            "hotkey" => args["keys"] is JsonArray {Count:>=2 and <=4} keys && ValidModifiers(new JsonArray(keys.Take(keys.Count-1).Select(k=>k?.DeepClone()).ToArray())) && keys[^1] is JsonValue last && ValidKey(last.GetValue<string>()),
             "scroll" => args["direction"] is JsonValue dir && new[] {"up","down","left","right"}.Contains(dir.GetValue<string>(),StringComparer.Ordinal) && token != xy,
             "drag" => new[] {"from_x","from_y","to_x","to_y","capture_id"}.All(args.ContainsKey),
             "invoke_menu" => args["path"] is JsonArray { Count: > 0 },
             _ => false
         };
         if (!valid) throw Fail("cua_action_requires_exact_snapshot_target_and_parameters");
+        if(name is "press_key" or "hotkey"){
+            var mods=name=="hotkey"?((JsonArray)args["keys"]!).Take(((JsonArray)args["keys"]!).Count-1).Select(x=>x!.GetValue<string>()):((JsonArray?)args["modifiers"]??new()).Select(x=>x!.GetValue<string>());
+            var key=name=="hotkey"?((JsonArray)args["keys"]!)[^1]!.GetValue<string>():args["key"]!.GetValue<string>();
+            if(mods.Contains("alt")&&key is "tab" or "escape" or "f4" || mods.Contains("ctrl")&&key=="escape")throw Fail("cua_global_shortcut_not_allowed");
+        }
     }
 
+    private static bool ValidKey(string key)=>Regex.IsMatch(key,"\\A(return|enter|tab|escape|up|down|left|right|space|delete|backspace|home|end|pageup|pagedown|f([1-9]|1[0-2])|[a-zA-Z0-9])\\z");
+    private static bool ValidModifiers(JsonArray mods){
+        var names=mods.Select(m=>m?.GetValue<string>()??"").ToArray();
+        return names.Length<=3&&names.Distinct(StringComparer.Ordinal).Count()==names.Length&&names.All(m=>m is "ctrl" or "shift" or "alt");
+    }
+    internal static JsonObject ObservationParameters(JsonObject args)
+    {
+        var output=new JsonObject{["include_screenshot"]=args["include_screenshot"]?.GetValue<bool>()??true,["include_accessibility_tree"]=true,["tree_format"]="both"};
+        if(args.ContainsKey("query")){
+            if(args["query"] is not JsonValue v||!v.TryGetValue<string>(out var q)||string.IsNullOrEmpty(q)||Encoding.UTF8.GetByteCount(q)>512)throw Fail("cua_invalid_observation_query");
+            output["query"]=q;
+        }
+        foreach(var (key,min,max,defaultValue) in new[]{("max_elements",1,1500,250),("max_depth",1,50,25),("max_image_dimension",320,1920,1600),("timeout_ms",100,4000,1000)}){
+            int n=defaultValue;
+            if(args.ContainsKey(key)&&(args[key] is not JsonValue v||!v.TryGetValue<int>(out n)||n<min||n>max))throw Fail("cua_invalid_observation_budget");
+            output[key]=n;
+        }
+        return output;
+    }
     internal static JsonArray VerifyPredicates(JsonNode? raw)
     {
         if (raw is not JsonArray predicates || predicates.Count is < 1 or > 8)
             throw Fail("cua_invalid_verify_predicates");
         foreach (var node in predicates)
         {
+            if(node is JsonObject w&&w.Count==1&&w["window"] is JsonObject window){
+                if(window.Count==0||window.Any(kv=>kv.Key is not ("exists" or "bounds")))throw Fail("cua_invalid_window_predicate");
+                if(window.ContainsKey("exists")&&(window["exists"] is not JsonValue x||!x.TryGetValue<bool>(out var exists)||!exists))throw Fail("cua_invalid_window_exists");
+                if(window.ContainsKey("bounds")){
+                    if(window["bounds"] is not JsonObject bounds||!new[]{"x","y","width","height"}.All(bounds.ContainsKey))throw Fail("cua_invalid_window_bounds");
+                    foreach(var (k,rawBound) in bounds){
+                        if(k is not ("x" or "y" or "width" or "height" or "tolerance_px")||rawBound is not JsonValue num||!num.TryGetValue<double>(out var d)||!double.IsFinite(d)||
+                            d<(k=="tolerance_px"?0:k is "width" or "height"?1:-32768)||d>(k=="tolerance_px"?100:32768))throw Fail("cua_invalid_window_bounds");
+                    }
+                }
+                continue;
+            }
             if (node is not JsonObject predicate || predicate.Count != 1 || predicate["element"] is not JsonObject element ||
                 element.Any(kv => !new[] {"selector","exists","enabled","selected","value_equals"}.Contains(kv.Key,StringComparer.Ordinal)) ||
                 element["selector"] is not JsonObject selector || selector.Count == 0 || element.Count < 2 ||
@@ -490,13 +539,17 @@ internal sealed class CuaService : IDisposable
 
     private bool ExtensionAllowed(ExtensionSession e)
     {
-        lock(_gate)if(_stopped||_revoked.Contains(e.Owner)||!_extensions.TryGetValue(e.Id,out var live)||!ReferenceEquals(live,e))return false;
+        lock(_gate)if(_stopped||e.Retiring||!e.Worker.IsAlive||_revoked.Contains(e.Owner)||!_extensions.TryGetValue(e.Id,out var live)||!ReferenceEquals(live,e))return false;
         try{return (e.Profile.kind!="guest"||(e.GuestEpoch is not null&&GuestEpoch()==e.GuestEpoch))&&LoadPolicy().Item2.AsSpan().SequenceEqual(e.PolicyBytes);}catch{return false;}
     }
-    private void RetireExtension(string id)
+    private void RetireExtension(string id,bool onlyIdle=false)
     {
-        ExtensionSession? e;lock(_gate)_extensions.TryGetValue(id,out e);
-        e?.Worker.Dispose();lock(_gate)_extensions.Remove(id);
+        ExtensionSession? e;
+        lock(_gate){
+            if(!_extensions.TryGetValue(id,out e)||e.Retiring||onlyIdle&&(e.Busy||Environment.TickCount64-e.Last<=300000))return;
+            e.Retiring=true;
+        }
+        try{e.Worker.Dispose();}finally{lock(_gate)_extensions.Remove(id);}
     }
     private static void CheckFile(string path,string hash)
     {
@@ -599,7 +652,7 @@ internal sealed class CuaService : IDisposable
         ExtensionSession session;
         lock(_gate)
         {
-            if(!_extensions.TryGetValue(sessionId,out var e)||e.Owner!=owner||e.Busy||Environment.TickCount64-e.Last>300000)
+            if(!_extensions.TryGetValue(sessionId,out var e)||e.Owner!=owner||e.Busy||e.Retiring||Environment.TickCount64-e.Last>300000)
                 throw Fail("unknown_or_busy_extension_session");
             session=e;session.Busy=true;
         }
@@ -754,7 +807,7 @@ internal sealed class CuaService : IDisposable
         Session s;
         lock (_gate)
         {
-            if (!_sessions.TryGetValue(sessionId,out var selected) || selected.Owner != owner || selected.Busy || _stopped ||
+            if (!_sessions.TryGetValue(sessionId,out var selected) || selected.Owner != owner || selected.Busy || selected.Retiring || _stopped ||
                 Environment.TickCount64 - selected.Last > 300000) throw Fail("cua_unknown_unauthorized_or_busy_session");
             s = selected; s.Busy = true;
         }
@@ -769,6 +822,7 @@ internal sealed class CuaService : IDisposable
             {
                 if (s.Snapshot is not { } snapshot || args["operation"] is not JsonValue op || !op.TryGetValue<string>(out var operation) ||
                     args["parameters"] is not JsonObject parameters) throw Fail("cua_observe_before_action");
+                snapshot.ValidateObservationId(args["observation_id"]);
                 ValidateAction(operation,parameters);
                 if(operation!="set_window_frame") snapshot.Validate(parameters); else snapshot.Validate(new JsonObject());
                 var request=RequestId(args["request_id"]);var receipt=Ledger();
@@ -792,6 +846,10 @@ internal sealed class CuaService : IDisposable
                 driverTool = "verify_state";
                 driverArgs["expect"] = expect;
                 driverArgs["timeout_ms"] = timeout;
+                if(args.ContainsKey("stable_samples")){
+                    if(args["stable_samples"] is not JsonValue sample||!sample.TryGetValue<int>(out var n)||n<1||n>5)throw Fail("cua_invalid_stable_samples");
+                    driverArgs["stable_samples"]=n;
+                }
                 driverArgs["include_screenshot"] = false;
                 s.Snapshot = null;
             }
@@ -800,11 +858,7 @@ internal sealed class CuaService : IDisposable
                 if (name != "cua_observe" || (args.ContainsKey("include_screenshot") &&
                     (args["include_screenshot"] is not JsonValue b || !b.TryGetValue<bool>(out _)))) throw Fail("cua_invalid_observe");
                 driverTool = "get_window_state";
-                driverArgs["include_screenshot"] = args["include_screenshot"]?.GetValue<bool>() ?? true;
-                driverArgs["include_accessibility_tree"] = true;
-                driverArgs["max_image_dimension"] = 1600;
-                driverArgs["tree_format"] = "both";
-                driverArgs["max_elements"] = 250;
+                foreach(var (key,value) in ObservationParameters(args))driverArgs[key]=value?.DeepClone();
                 s.Snapshot = null;
             }
             try
@@ -842,10 +896,14 @@ internal sealed class CuaService : IDisposable
                 foreach (var key in new[] {"screenshot","screenshot_base64","image","image_data","screenshot_file_path"}) metadata.Remove(key);
                 if (Encoding.UTF8.GetByteCount(metadata.ToJsonString()) > 2_000_000) throw Fail("cua_driver_metadata_too_large");
                 if(actionReceipt is { } ar) FinishReceipt(ar.Ledger,ar.Id,"exited");
-                return new ToolCallOutput(safe, new JsonObject { ["session_id"] = sessionId, ["operation"] = driverTool,
-                    ["background_only"] = true, ["verification_required"] = mutation, ["driver_result"] = metadata });
+                var header=new JsonObject { ["session_id"] = sessionId, ["operation"] = driverTool,
+                    ["background_only"] = true, ["verification_required"] = mutation };
+                if(name=="cua_observe"&&s.Snapshot is {} observation)header["observation_id"]=observation.ObservationId;
+                var summary=(JsonObject)header.DeepClone();summary["driver_result"]=metadata;
+                safe.Insert(0,new JsonObject{["type"]="text",["text"]=header.ToJsonString()});
+                return new ToolCallOutput(safe,summary);
             }
-            catch { Retire(sessionId); throw; }
+            catch { if(actionReceipt is {} ar)try{FinishReceipt(ar.Ledger,ar.Id,"interrupted");}catch{} Retire(sessionId); throw; }
         }
         finally { lock (_gate) { s.Busy = false; s.Last = Environment.TickCount64; } }
     }
@@ -858,6 +916,7 @@ internal sealed class CuaService : IDisposable
         private readonly CancellationTokenSource _stop = new();
         private readonly byte[] _buffer = new byte[65536];
         private int _offset, _length, _id, _closed;
+        private readonly Dictionary<string,JsonObject> _toolSchemas=new(StringComparer.Ordinal);
         private bool _initialized;
         private readonly string _manifestDirectory;
         private readonly WindowsJob? _job;
@@ -866,13 +925,13 @@ internal sealed class CuaService : IDisposable
         {
             _isExtension=runtime is not null;
             _manifestDirectory = Path.Combine(Path.GetTempPath(),"ctcmcp-cua-"+Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(_manifestDirectory);
+            CommandReceiptLedger.EnsurePrivateFolder(_manifestDirectory);
             var manifestPath = Path.Combine(_manifestDirectory,"capability.json");
             try
             {
                 var manifest = new {
                     version = 3, expires_after = "2h", idle_timeout = "10m",
-                    allow = new { tools = new[] {"check_permissions","get_window_state","click","type_text","press_key","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"}.Concat(launch?new[]{"launch_app"}:Array.Empty<string>()).ToArray() },
+                    allow = new { tools = new[] {"check_permissions","get_window_state","click","type_text","press_key","hotkey","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"}.Concat(launch?new[]{"launch_app"}:Array.Empty<string>()).ToArray() },
                     resources = new { apps = new[] { new { executable = application, launch, windows = "all" } },
                         desktop = new { display = false } }
                 };
@@ -907,6 +966,7 @@ internal sealed class CuaService : IDisposable
             // Drain stderr without retaining private desktop content.
             _ = _process.StandardError.BaseStream.CopyToAsync(Stream.Null).ContinueWith(_ => {}, TaskScheduler.Default);
         }
+        internal bool IsAlive {get{try{return Volatile.Read(ref _closed)==0&&!_process.HasExited;}catch{return false;}}}
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _closed,1) != 0) return;
@@ -953,6 +1013,19 @@ internal sealed class CuaService : IDisposable
             await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["method"] = method, ["params"] = args },token).ConfigureAwait(false);
             return await ReadAsync(id,token).ConfigureAwait(false);
         }
+        internal static JsonObject ValidatedDriverArguments(string tool,JsonObject args,JsonObject schema)
+        {
+            if(schema["properties"] is not JsonObject properties)throw Fail("cua_driver_schema_missing");
+            // The Windows implementation may omit the optional revision check;
+            // the gateway still requires its own fresh, one-use snapshot. Never
+            // strip pid/window, delivery_mode, scope or requested action data.
+            var result=(JsonObject)args.DeepClone();
+            if(!properties.ContainsKey("ui_tree_revision"))result.Remove("ui_tree_revision");
+            if(result.Any(kv=>!properties.ContainsKey(kv.Key))||
+                schema["required"] is JsonArray required&&required.Any(k=>!result.ContainsKey(k!.GetValue<string>())))
+                throw Fail("cua_driver_contract_mismatch: "+tool);
+            return result;
+        }
         internal async Task<JsonObject> CallAsync(string tool, JsonObject args, Func<bool> allowed, CancellationToken cancellation)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation,_stop.Token);
@@ -970,9 +1043,23 @@ internal sealed class CuaService : IDisposable
                         info["name"]?.GetValue<string>() != (_isExtension?"ctcmcp-cua-extension":"cua-driver") || info["version"]?.GetValue<string>() != (_isExtension?"1.0.0":"0.61.0"))
                         throw Fail("cua_driver_protocol_or_version_mismatch");
                     await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/initialized" },deadline.Token).ConfigureAwait(false);
+                    if(!_isExtension){
+                        var listed=await RpcAsync("tools/list",new(),deadline.Token).ConfigureAwait(false);
+                        if(listed["tools"] is not JsonArray definitions||definitions.Count is <1 or >256||listed["nextCursor"] is not null)throw Fail("cua_driver_schema_missing");
+                        foreach(var item in definitions){
+                            if(item?["name"] is not JsonValue name||!name.TryGetValue<string>(out var id)||item["inputSchema"] is not JsonObject schema||!_toolSchemas.TryAdd(id,schema))throw Fail("cua_driver_schema_invalid");
+                        }
+                    }
                     _initialized = true;
                 }
-                return await RpcAsync("tools/call",new JsonObject { ["name"] = tool, ["arguments"] = args },deadline.Token).ConfigureAwait(false);
+                var checkedArgs=args;
+                if(!_isExtension){
+                    if(!_toolSchemas.TryGetValue(tool,out var schema))throw Fail("cua_driver_tool_not_advertised: "+tool);
+                    checkedArgs=ValidatedDriverArguments(tool,args,schema);
+                }
+                if(!allowed())throw Fail("cua_session_revoked");
+                deadline.Token.ThrowIfCancellationRequested();
+                return await RpcAsync("tools/call",new JsonObject { ["name"] = tool, ["arguments"] = checkedArgs },deadline.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw Fail("cua_driver_timeout_or_revoked: action outcome may be unknown; observe again in a new session"); }
         }

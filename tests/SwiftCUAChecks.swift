@@ -49,6 +49,8 @@ import Foundation
         let png = Data([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,100,0,0,0,80])
         let snap = try CUASnapshot(structured:["snapshot_id":"s00000001","ui_tree_revision":7,"capture_id":"cap","elements":[["element_token":"s00000001:1"]]],blocks:[
             ["type":"image","mimeType":"image/png","data":png.base64EncodedString()]])
+        try snap.validateObservationID(snap.observationID)
+        expectFailure("foreign gateway observation") {try snap.validateObservationID("other")}
         try snap.validate(["element_token":"s00000001:1"])
         try snap.validate(["x":99,"y":79,"capture_id":"cap"])
         expectFailure("foreign element") { try snap.validate(["element_token":"s00000002:1"]) }
@@ -60,12 +62,37 @@ import Foundation
         expectFailure("arbitrary nested selector") { _ = try CUAService.verifyPredicates([["element":["selector":["pid":1],"exists":true]]]) }
         expectFailure("numeric boolean") { _ = try CUAService.verifyPredicates([["element":["selector":["role":"button"],"exists":1]]]) }
 
+        try CUAService.validateAction("hotkey",["keys":["cmd","s"],"element_token":"s00000001:1"])
+        try CUAService.validateAction("type_text",["text":"test","element_token":"s00000001:1","delay_ms":25])
+        try CUAService.validateAction("scroll",["direction":"down","element_token":"s00000001:1","by":"page"])
+        expectFailure("global app switch") {try CUAService.validateAction("hotkey",["keys":["cmd","tab"]])}
+        expectFailure("unbound coordinate typing") {try CUAService.validateAction("type_text",["x":1,"y":2,"text":"test"])}
+        expectFailure("invalid key") {try CUAService.validateAction("press_key",["key":"superkey"])}
+        let obs=try CUAService.observationParameters(["query":"button|menu","max_elements":1000,"max_depth":40,"timeout_ms":3000])
+        precondition(obs["max_elements"] as? Int == 1000 && obs["query"] as? String == "button|menu")
+        expectFailure("unbounded tree") {_ = try CUAService.observationParameters(["max_elements":100000])}
+        expectFailure("numeric boolean observation budget") {_ = try CUAService.observationParameters(["max_depth":true])}
+        _ = try CUAService.verifyPredicates([["window":["bounds":["x":-100,"y":20,"width":640,"height":480,"tolerance_px":3]]]])
+        expectFailure("invalid geometry predicate") {_ = try CUAService.verifyPredicates([["window":["bounds":["x":0,"y":0,"width":1,"height":-1]]]])}
+        expectFailure("schema refuses unknown key") {
+            _ = try CUAWorker.validatedDriverArguments("click",["pid":1,"delivery_mode":"background"],schema:["properties":["pid":[:]]])
+        }
+        if let real=ProcessInfo.processInfo.environment["CTCMCP_REAL_CUA_DRIVER"] {
+            let pinned=try CUAWorker(driver:real,application:"com.example.NonexistentFixture")
+            defer{pinned.close()}
+            let permissions=try pinned.call("check_permissions",["prompt":false,"probe_direct_capture":false],allowed:{true})
+            precondition(permissions["isError"] as? Bool != true)
+            print("PASS pinned actual Mac driver handshake, tools/list and read-only permission probe; no desktop input")
+        }
+
         let worker = try CUAWorker(driver:fixture,application:"com.example.Fixture")
         let result = try worker.call("get_window_state",["pid":1,"window_id":2],allowed:{true})
         let structured = result["structuredContent"] as! [String:Any]
         let echo = structured["echo"] as! [String:Any]
         precondition(echo["window_id"] as? Int == 2)
+        expectFailure("unadvertised driver tool") {_ = try worker.call("bring_to_front",[:],allowed:{true})}
         worker.close()
+        precondition(!worker.isAlive)
         expectFailure("closed worker never replays") { _ = try worker.call("click",[:],allowed:{true}) }
         let hanging = try CUAWorker(driver:fixture,application:"com.example.Fixture")
         let start = Date()

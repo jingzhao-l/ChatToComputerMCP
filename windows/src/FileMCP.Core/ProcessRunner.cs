@@ -103,7 +103,8 @@ public static class ProcessRunner
         int outputLimitBytes = DefaultOutputLimitBytes,
         CancellationToken cancellationToken = default,
         bool utf8Output = false,
-        Action<string, bool>? onOutput = null)
+        Action<string, bool>? onOutput = null,
+        int maxTimeoutSeconds = MaxCommandTimeoutSeconds)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateProcessStrings(executable, arguments, cwd, environment);
@@ -114,7 +115,7 @@ public static class ProcessRunner
         var stdoutTask = DrainAsync(process.StandardOutput, stdout, text => onOutput?.Invoke(text, false));
         var stderrTask = DrainAsync(process.StandardError, stderr, text => onOutput?.Invoke(text, true));
 
-        var timeout = Math.Max(1, Math.Min(timeoutSeconds, MaxCommandTimeoutSeconds));
+        var timeout = Math.Max(1, Math.Min(timeoutSeconds, Math.Clamp(maxTimeoutSeconds, 1, 600)));
         var timedOut = false;
         try
         {
@@ -167,11 +168,12 @@ public static class ProcessRunner
         string? cwd,
         IReadOnlyDictionary<string, string>? environment,
         Action<string> onOutput,
-        Action<int> onExit)
+        Action<int> onExit,
+        IReadOnlyList<string>? sensitiveValues = null)
     {
         ValidateProcessStrings(executable, arguments, cwd, environment);
         var process = StartProcess(executable, arguments, cwd, environment, utf8Output: false);
-        return new ManagedProcess(process, WindowsJob.CreateAndAssign(process), onOutput, onExit);
+        return new ManagedProcess(process, WindowsJob.CreateAndAssign(process), onOutput, onExit, sensitiveValues ?? []);
     }
 
     internal static void KillProcessTree(Process process)
@@ -302,13 +304,16 @@ public sealed class ManagedProcess : IDisposable
     private readonly Action<int> _onExit;
     private readonly CancellationTokenSource _disposeCts = new();
     private int _exitReported;
+    private readonly IReadOnlyList<string> _sensitiveValues;
 
-    internal ManagedProcess(Process process, WindowsJob? job, Action<string> onOutput, Action<int> onExit)
+    internal ManagedProcess(Process process, WindowsJob? job, Action<string> onOutput, Action<int> onExit,
+        IReadOnlyList<string> sensitiveValues)
     {
         _process = process;
         _job = job;
         _onOutput = onOutput;
         _onExit = onExit;
+        _sensitiveValues = sensitiveValues;
         _ = PumpAsync();
     }
 
@@ -384,6 +389,7 @@ public sealed class ManagedProcess : IDisposable
     private async Task PumpReaderAsync(StreamReader reader)
     {
         var chars = new char[4096];
+        var redactor = new StreamingSecretRedactor(_sensitiveValues);
         while (!_disposeCts.IsCancellationRequested)
         {
             int read;
@@ -397,9 +403,12 @@ public sealed class ManagedProcess : IDisposable
             }
             if (read <= 0)
             {
+                var tail = redactor.Append("", final: true);
+                if (tail.Length != 0) _onOutput(tail);
                 return;
             }
-            _onOutput(new string(chars, 0, read));
+            var safe = redactor.Append(new string(chars, 0, read));
+            if (safe.Length != 0) _onOutput(safe);
         }
     }
 

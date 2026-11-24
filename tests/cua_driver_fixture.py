@@ -19,6 +19,10 @@ for line in sys.stdin:
         continue
     if req["method"] == "initialize":
         out = {"protocolVersion":"2025-06-18","serverInfo":{"name":"cua-driver","version":"0.61.0"}}
+    elif req["method"] == "tools/list":
+        out = {"tools":[{"name":name,"inputSchema":{"type":"object","properties":props,"required":required}} for name,props,required in [
+            ("get_window_state",{"pid":{},"window_id":{}},["pid","window_id"]),("hang",{},[]),("oversize",{},[])
+        ]]}
     else:
         params = req["params"]
         if params["name"] == "hang":

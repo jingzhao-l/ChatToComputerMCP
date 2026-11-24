@@ -38,15 +38,18 @@ foreach ($Control in @("OverviewTab", "OverviewConnectionStatus",
         throw "Missing Windows overview UI control: $Control"
     }
 }
-$OverviewIndex = $Markup.IndexOf('<TabItem Header="Overview"')
-$ConnectionIndex = $Markup.IndexOf('<TabItem Header="Connection"')
-$SettingsIndex = $Markup.IndexOf('<TabItem Header="Settings"')
-$TasksIndex = $Markup.IndexOf('<TabItem Header="Tasks"')
-$ActivityIndex = $Markup.IndexOf('<TabItem Header="Activity"')
-if ($OverviewIndex -lt 0 -or $OverviewIndex -ge $ConnectionIndex -or
-    $ConnectionIndex -ge $SettingsIndex -or $SettingsIndex -ge $TasksIndex -or
-    $TasksIndex -ge $ActivityIndex) {
-    throw "Windows navigation tabs are missing or out of order"
+$Sections = @("Overview", "Connection", "Workspaces", "Command center", "Activity", "Security", "Settings")
+$Previous = -1
+foreach ($Section in $Sections) {
+    $Index = $Markup.IndexOf('<TabItem Header="' + $Section + '"')
+    if ($Index -le $Previous) { throw "Windows navigation section missing/out of order: $Section" }
+    $Previous = $Index
+}
+foreach ($Control in @("ThemeButton", "CopyWorkspaceScopeButton", "FollowLogsBox", "CopyLogsButton",
+        "FooterStatus", "ActivateUpdateButton", "PersistLongTasksBox")) {
+    if ($Markup -notmatch ('x:Name="' + [regex]::Escape($Control) + '"')) {
+        throw "Missing Windows parity control: $Control"
+    }
 }
 Write-Host "windows-overview-navigation: ok"
 

@@ -128,6 +128,20 @@ internal static partial class Program
             await AssertThrowsAsync(() => Call(full, "read_command_output", Obj(("session_id", id), ("cursor", 999999))), "cursor", "future cursor refused");
             // One local runtime must admit the same bounded independent worktree
             // parallelism as macOS, not merely advertise the same MCP tool name.
+            // Real running work in one subtree does not block a sibling edit.
+            Directory.CreateDirectory(Path.Combine(root, "mutations", "busy"));
+            Directory.CreateDirectory(Path.Combine(root, "mutations", "free"));
+            var busy = await Call(full, "start_command", Obj(("request_id", "path-lock"),
+                ("cwd", "mutations/busy"), ("command", "Start-Sleep -Seconds 30")));
+            var busyID = busy["session_id"]!.GetValue<string>();
+            await Call(full, "write_file", Obj(("relative_path", "mutations/free/allowed.txt"), ("content", "ok")));
+            Assert(File.ReadAllText(Path.Combine(root, "mutations", "free", "allowed.txt")) == "ok", "sibling mutation admitted");
+            await AssertThrowsAsync(() => Call(full, "write_file", Obj(("relative_path", "mutations/busy/blocked.txt"),
+                ("content", "no"))), "active", "same subtree mutation rejected");
+            await AssertThrowsAsync(() => Call(full, "delete_directory", Obj(("relative_path", "mutations"))),
+                "active", "parent mutation rejected");
+            await Call(full, "cancel_command", Obj(("session_id", busyID)));
+            Assert((await Poll(busyID))["state"]!.GetValue<string>() == "cancelled", "path-lock fixture cancelled");
             var runningSlots = new List<string>();
             for (var n = 0; n < 8; n++)
             {
