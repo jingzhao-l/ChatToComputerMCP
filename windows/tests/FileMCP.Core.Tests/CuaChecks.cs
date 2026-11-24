@@ -80,6 +80,14 @@ internal static partial class Program
             J("""{"properties":{"pid":{},"window_id":{},"delivery_mode":{}},"required":["pid","window_id"]}"""));
         Assert(!normalized.ContainsKey("ui_tree_revision")&&normalized["delivery_mode"]!.GetValue<string>()=="background","Windows revision omission is deliberate; target and mode retained");
         Refuse("unknown safety field",()=>CuaService.Worker.ValidatedDriverArguments("click",J("""{"pid":1,"delivery_mode":"background"}"""),J("""{"properties":{"pid":{}}}""")));
+        long? foreground=101;
+        var continuity=new CuaForegroundContinuity(()=>foreground);
+        Assert(continuity.Permits(),"initial foreground continuity");
+        foreground=102;Assert(!continuity.Permits(),"foreground changed");
+        foreground=101;Assert(!continuity.Permits(),"foreground return does not resume operation");
+        var eventLatch=new CuaForegroundContinuity(()=>foreground);
+        eventLatch.Invalidate();Assert(!eventLatch.Permits(),"activation event latch");
+        foreground=null;Assert(!new CuaForegroundContinuity(()=>foreground).Permits(),"unknown foreground fails closed");
         var exe = Environment.ProcessPath!;
         Assert(!Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase), "CUA fixture requires test apphost");
         using (var worker = new CuaService.Worker(exe,exe))
@@ -103,6 +111,7 @@ internal static partial class Program
 
     private static async Task<int> RunCuaFixtureAsync()
     {
+        if(!Environment.GetCommandLineArgs().Skip(1).SequenceEqual(new[]{"mcp","--direct"}))return 4;
         if (Environment.GetEnvironmentVariable("CUA_DRIVER_PERMISSION_MODE") != "bounded" ||
             Environment.GetEnvironmentVariable("DO_NOT_TRACK") != "1") return 2;
         var path=Environment.GetEnvironmentVariable("CUA_DRIVER_CAPABILITY_MANIFEST_FILE");

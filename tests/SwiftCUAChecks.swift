@@ -85,6 +85,15 @@ import Foundation
             print("PASS pinned actual Mac driver handshake, tools/list and read-only permission probe; no desktop input")
         }
 
+        var front:Int64?=101
+        let continuity=CUAForegroundContinuity(read:{front})
+        precondition(continuity.permits())
+        front=102;precondition(!continuity.permits())
+        front=101;precondition(!continuity.permits())
+        let eventLatch=CUAForegroundContinuity(read:{front})
+        eventLatch.invalidate();precondition(!eventLatch.permits())
+        front=nil;precondition(!CUAForegroundContinuity(read:{front}).permits())
+        print("PASS foreground continuity fails closed and never resumes after interruption")
         let worker = try CUAWorker(driver:fixture,application:"com.example.Fixture")
         let result = try worker.call("get_window_state",["pid":1,"window_id":2],allowed:{true})
         let structured = result["structuredContent"] as! [String:Any]

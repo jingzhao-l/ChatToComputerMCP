@@ -73,6 +73,43 @@ struct CUAPolicy: Decodable {
     }
 }
 
+/// A per-dispatch continuity latch. Never switch or restore user focus.
+final class CUAForegroundContinuity {
+    private let lock=NSLock()
+    private let read: () -> Int64?
+    private let initial: Int64?
+    private var interrupted=false
+    init(read: @escaping () -> Int64?) {
+        self.read=read;self.initial=read()
+    }
+    func permits() -> Bool {
+        lock.lock();defer{lock.unlock()}
+        guard !interrupted,let initial,initial>0,read()==initial else {
+            interrupted=true;return false
+        }
+        return true
+    }
+    func invalidate() {
+        lock.lock();interrupted=true;lock.unlock()
+    }
+}
+/// App activation notifications supplement the transport's periodic checks.
+/// They are observations only: no event taps, cursor moves or focus restoration.
+final class CUAHostFocusGuard {
+    private let continuity:CUAForegroundContinuity
+    private var observer:NSObjectProtocol?
+    init() {
+        continuity=CUAForegroundContinuity(read:{
+            NSWorkspace.shared.frontmostApplication.map{Int64($0.processIdentifier)}
+        })
+        observer=NSWorkspace.shared.notificationCenter.addObserver(forName:NSWorkspace.didActivateApplicationNotification,object:nil,queue:nil){[weak self] _ in
+            self?.continuity.invalidate()
+        }
+    }
+    func permits()->Bool{continuity.permits()}
+    deinit{if let observer{NSWorkspace.shared.notificationCenter.removeObserver(observer)}}
+}
+
 struct CUATarget: Equatable {
     let pid: Int32
     let window: Int64
@@ -839,7 +876,7 @@ final class CUAService {
             let guestEnabled = guestEpoch() != nil
             let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
-            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
+            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
                 "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
         if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
@@ -868,7 +905,8 @@ final class CUAService {
         if name == "cua_launch_app" {
             guard let application = args["application"] as? String, Self.allowedApplication(application),
                   policy.permitsLaunch(application,owner:owner) else { throw CUAFailure("cua_launch_not_approved") }
-            if !guestMode, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == application {
+            let focusGuard=guestMode ? nil : CUAHostFocusGuard()
+            if !guestMode, focusGuard?.permits() != true || NSWorkspace.shared.frontmostApplication?.bundleIdentifier == application {
                 throw CUAFailure("cua_target_in_use_by_user")
             }
             let request = try Self.requestID(args["request_id"])
@@ -882,12 +920,13 @@ final class CUAService {
             launching.insert(application); gate.unlock()
             defer { gate.lock(); launching.remove(application); launchWorkers.removeValue(forKey:application); gate.unlock() }
             try reserveReceipt(receipt,request:request,owner:owner)
+            do {
             let worker = try CUAWorker(driver:driver,application:application,launch:true)
             defer { worker.close() }
             gate.lock(); launchWorkers[application] = (owner,worker); gate.unlock()
             func allowed() -> Bool {
                 gate.lock(); let live = !stopped && !revoked.contains(owner); gate.unlock()
-                return live && requestAlive() && (try? loadPolicy().1) == bytes
+                return live && requestAlive() && (focusGuard?.permits() ?? true) && (try? loadPolicy().1) == bytes
             }
             let result = try worker.call("launch_app",["bundle_id":application],allowed:allowed)
             guard allowed(), result["isError"] as? Bool != true,
@@ -898,6 +937,10 @@ final class CUAService {
             }
             try finishReceipt(receipt,request:request,state:"exited")
             return try output(["pid":pid,"application":application,"windows":windows(pid),"request_id":request,"background_only":true])
+            } catch {
+                try? finishReceipt(receipt,request:request,state:"interrupted")
+                throw error
+            }
         }
         if name == "cua_list_apps" {
             let apps = NSWorkspace.shared.runningApplications.compactMap { app -> [String:Any]? in
@@ -942,7 +985,8 @@ final class CUAService {
         s.busy = true; gate.unlock()
         defer { gate.lock(); s.busy = false; s.last = ProcessInfo.processInfo.systemUptime; gate.unlock() }
         let mutation = name == "cua_act"
-        guard stillAllowed(s,mutation:mutation), requestAlive() else { s.snapshot = nil; throw CUAFailure("cua_target_unavailable_or_user_active") }
+        let focusGuard = mutation && !guestMode ? CUAHostFocusGuard() : nil
+        guard stillAllowed(s,mutation:mutation), requestAlive(), focusGuard?.permits() != false else { s.snapshot = nil; throw CUAFailure("cua_target_unavailable_or_user_active") }
         var driverArgs: [String:Any] = ["pid":s.target.pid,"window_id":s.target.window]
         let driverTool: String
         var actionReceipt: (CommandReceiptLedger,String)?
@@ -986,8 +1030,8 @@ final class CUAService {
             s.snapshot = nil
         }
         do {
-            let reply = try s.worker.call(driverTool,driverArgs,allowed:{ requestAlive() && self.stillAllowed(s,mutation:mutation) })
-            guard requestAlive(), self.stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_action_outcome_unknown") }
+            let reply = try s.worker.call(driverTool,driverArgs,allowed:{ requestAlive() && (focusGuard?.permits() ?? true) && self.stillAllowed(s,mutation:mutation) })
+            guard requestAlive(), focusGuard?.permits() != false, self.stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_action_outcome_unknown: foreground changed or target became unavailable; observe actual state before any new action") }
             guard reply["isError"] as? Bool != true else { throw CUAFailure("cua_driver_rejected: " + ((reply["content"] as? [[String:Any]])?.first?["text"] as? String ?? "background unavailable").prefix(2000)) }
             guard let blocks = reply["content"] as? [[String:Any]], !blocks.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
             var safe: [[String:Any]] = []

@@ -41,6 +41,24 @@ internal static class CuaGuestApproval
     }
 }
 
+/// Per-dispatch foreground continuity latch. It cannot move or restore focus.
+internal sealed class CuaForegroundContinuity
+{
+    private readonly Func<long?> _read;
+    private readonly long? _initial;
+    private readonly object _gate=new();
+    private bool _interrupted;
+    internal CuaForegroundContinuity(Func<long?> read){_read=read;_initial=read();}
+    internal bool Permits()
+    {
+        lock(_gate){
+            if(_interrupted||_initial is null or 0||_read()!=_initial){_interrupted=true;return false;}
+            return true;
+        }
+    }
+    internal void Invalidate(){lock(_gate)_interrupted=true;}
+}
+
 /// Host-level capability. A workspace grant is never a desktop grant.
 /// No remote tool can create or widen the local policy.
 internal sealed class CuaService : IDisposable
@@ -713,7 +731,7 @@ internal sealed class CuaService : IDisposable
             bool extEnabled=false,requiresVerified=false;var guestEnabled=GuestEpoch() is not null;
             try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal)&&(p.kind!="guest"||guestEnabled));
                 enabled=(!requiresVerified||owner!=SharedOwner)&&(extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal))); } catch { }
-            return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",
+            return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",["foreground_continuity_guard"]=true,
                 ["identity"] = _relayOnly?"dedicated_relay_credential":_guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["relay_only"]=_relayOnly,["host_tools_allowed"]=!_guestMode&&!_relayOnly,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
                 ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["guest_enabled"]=guestEnabled,["preferred_execution"]=(_guestMode||_relayOnly)?"explicit_guest":"native_background",["extension_profiles_enabled"]=extEnabled });
@@ -741,6 +759,16 @@ internal sealed class CuaService : IDisposable
         {
             var application=args["application"]?.GetValue<string>() ?? "";
             if(!AllowedApplication(application) || !policy.PermitsLaunch(application,owner)) throw Fail("cua_launch_not_approved");
+            var focusGuard=_guestMode?null:new CuaForegroundContinuity(()=>GetForegroundWindow().ToInt64());
+            if(!_guestMode){
+                if(focusGuard?.Permits()!=true)throw Fail("cua_target_in_use_by_user");
+                _=GetWindowThreadProcessId(GetForegroundWindow(),out uint foregroundPid);
+                try{
+                    using var foreground=Process.GetProcessById((int)foregroundPid);
+                    if(foreground.MainModule?.FileName is not string foregroundExe||foregroundExe.Equals(application,StringComparison.OrdinalIgnoreCase))
+                        throw Fail("cua_target_in_use_by_user");
+                }catch{throw Fail("cua_target_in_use_by_user_or_unknown_foreground");}
+            }
             var request=RequestId(args["request_id"]); var receipt=Ledger(); var driver=CheckedDriver(policy);
             lock(_gate)
             {
@@ -749,15 +777,16 @@ internal sealed class CuaService : IDisposable
                     throw Fail("cua_target_busy_or_capacity");
                 _launching.Add(application);
             }
+            bool reserved=false;
             try
             {
-                ReserveReceipt(receipt,request,owner);
+                ReserveReceipt(receipt,request,owner);reserved=true;
                 using var worker=new Worker(driver,application,true);
                 lock(_gate) _launchWorkers[application]=(owner,worker);
                 bool Allowed()
                 {
                     lock(_gate) if(_stopped || _revoked.Contains(owner))return false;
-                    try {return !cancellation.IsCancellationRequested && LoadPolicy().Item2.AsSpan().SequenceEqual(bytes);}
+                    try {return !cancellation.IsCancellationRequested && (focusGuard?.Permits()??true) && LoadPolicy().Item2.AsSpan().SequenceEqual(bytes);}
                     catch{return false;}
                 }
                 var result=await worker.CallAsync("launch_app",new JsonObject{["path"]=application,["start_minimized"]=true},Allowed,cancellation).ConfigureAwait(false);
@@ -768,6 +797,7 @@ internal sealed class CuaService : IDisposable
                 FinishReceipt(receipt,request,"exited");
                 return Output(new JsonObject {["pid"]=launchedPid,["application"]=application,["windows"]=Windows(launchedPid),["request_id"]=request,["background_only"]=true});
             }
+            catch { if(reserved)try{FinishReceipt(receipt,request,"interrupted");}catch{} throw; }
             finally { lock(_gate){_launching.Remove(application);_launchWorkers.Remove(application);} }
         }
         if (name == "cua_list_apps")
@@ -829,7 +859,8 @@ internal sealed class CuaService : IDisposable
         try
         {
             bool mutation = name == "cua_act";
-            if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested) { s.Snapshot=null; throw Fail("cua_target_unavailable_or_user_active"); }
+            var focusGuard=mutation&&!_guestMode?new CuaForegroundContinuity(()=>GetForegroundWindow().ToInt64()):null;
+            if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested || focusGuard?.Permits()==false) { s.Snapshot=null; throw Fail("cua_target_unavailable_or_user_active"); }
             var driverArgs = new JsonObject { ["pid"] = s.Target.Pid, ["window_id"] = s.Target.Window };
             string driverTool;
             (CommandReceiptLedger Ledger,string Id)? actionReceipt=null;
@@ -878,8 +909,8 @@ internal sealed class CuaService : IDisposable
             }
             try
             {
-                var result = await s.Worker.CallAsync(driverTool, driverArgs, () => StillAllowed(s,mutation), cancellation).ConfigureAwait(false);
-                if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested) throw Fail("cua_action_outcome_unknown");
+                var result = await s.Worker.CallAsync(driverTool, driverArgs, () => (focusGuard?.Permits()??true)&&StillAllowed(s,mutation), cancellation).ConfigureAwait(false);
+                if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested || focusGuard?.Permits()==false) throw Fail("cua_action_outcome_unknown: foreground changed or target became unavailable; observe actual state before any new action");
                 if (result["isError"]?.GetValue<bool>() == true)
                 {
                     var message = (result["content"] as JsonArray)?.FirstOrDefault()?["text"]?.GetValue<string>() ?? "background unavailable";
@@ -942,6 +973,7 @@ internal sealed class CuaService : IDisposable
             _manifestDirectory = Path.Combine(Path.GetTempPath(),"ctcmcp-cua-"+Guid.NewGuid().ToString("N"));
             CommandReceiptLedger.EnsurePrivateFolder(_manifestDirectory);
             var manifestPath = Path.Combine(_manifestDirectory,"capability.json");
+            Process? started=null;
             try
             {
                 var manifest = new {
@@ -955,6 +987,7 @@ internal sealed class CuaService : IDisposable
                     RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true,
                     WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
                 info.ArgumentList.Add(runtime?.worker??"mcp");
+                if(runtime is null)info.ArgumentList.Add("--direct");
                 var keep = new[] {"SYSTEMROOT","WINDIR","SYSTEMDRIVE","USERPROFILE","USERNAME","APPDATA","LOCALAPPDATA","TEMP","TMP","PATH","PATHEXT","COMSPEC","PROGRAMDATA","HOMEDRIVE","HOMEPATH"};
                 foreach (var key in info.Environment.Keys.Where(k => !keep.Contains(k,StringComparer.OrdinalIgnoreCase)).ToArray()) info.Environment.Remove(key);
                 info.Environment["CUA_DRIVER_PERMISSION_MODE"] = "bounded";
@@ -966,13 +999,17 @@ internal sealed class CuaService : IDisposable
                     info.Environment["CTCMCP_CUA_EXTENSION_MANIFEST"]=manifestPath;
                     info.Environment["PLAYWRIGHT_BROWSERS_PATH"]=Path.Combine(Path.GetDirectoryName(runtime.worker)!,"browsers");
                 }
-                _process = Process.Start(info) ?? throw Fail("cua_driver_unavailable");
+                _process = started = Process.Start(info) ?? throw Fail("cua_driver_unavailable");
                 // Attach desktop workers to kill-on-close supervision. One-shot
                 // launch workers must not kill the launched user application.
                 if (!launch) _job=WindowsJob.CreateAndAssign(_process);
             }
             catch
             {
+                if(started is not null){
+                    try{if(!started.HasExited)started.Kill(entireProcessTree:true);started.WaitForExit(2000);}catch{}
+                    started.Dispose();
+                }
                 try { Directory.Delete(_manifestDirectory,true); } catch { }
                 throw;
             }

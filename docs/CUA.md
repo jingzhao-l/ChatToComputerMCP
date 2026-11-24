@@ -97,6 +97,8 @@ foreground input; no escalation is performed. Window verification supports
 bounds with tolerance_px (0–100) and stable_samples (1–5). An action receipt
 whose state is interrupted does not prove that the action was not delivered.
 
+Both native workers explicitly start the pinned driver with `mcp --direct` and never attach to an existing daemon. Host mutations and launches latch foreground continuity: changed or unknown foreground aborts the current dispatch and never restores user focus. macOS additionally watches workspace activation notifications; Windows checks the exact foreground HWND. Sampling/notification delivery can miss short transitions and cannot prevent all app-internal activation, so this is detection and refusal, not a universal no-interference guarantee.
+
 Each native worker verifies the driver's version and advertised tools/list
 contract before sending an action. Unsupported tools/parameters are refused
 rather than guessed; Windows can omit an unavailable upstream revision
