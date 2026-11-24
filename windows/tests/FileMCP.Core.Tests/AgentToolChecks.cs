@@ -206,6 +206,42 @@ internal static partial class Program
             await AssertThrowsAsync(() => Call(full, "start_command", Obj(("request_id", "late"), ("command", "exit 0"))), "stopped", "no jobs after shutdown");
         }
         finally { full.StopCommandSessions(); }
+        var historyRoot = Path.Combine(testRoot, "private-history", "profile");
+        var history = new CommandHistoryStore(historyRoot, true);
+        var historyTools = new LocalTools(root, "Test", "test@example.invalid", true,
+            workspaceScopeID: "history-test", workspaceName: "History test", commandHistory: history);
+        try
+        {
+            await historyTools.CallAsync("run_command", Obj(("command", "Write-Output history-sync")),
+                verifiedOwnerID: "oauth-history");
+            await historyTools.CallAsync("start_command", Obj(("request_id", "history-async"),
+                ("command", "Write-Output history-async; exit 7")), verifiedOwnerID: "oauth-history");
+            var historyWatch = Stopwatch.StartNew();
+            while (!history.Records().Any(r => r.RequestId == "history-async" && r.IsTerminal) &&
+                historyWatch.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(30);
+            var persisted = CommandHistoryStore.Read(historyRoot);
+            Assert(persisted.Count == 2, "both execution paths record history");
+            Assert(persisted.Any(r => r.Kind == "sync" && r.ExitCode == 0 &&
+                r.Output!.Contains("history-sync")), "sync history output");
+            Assert(persisted.Any(r => r.RequestId == "history-async" && r.ExitCode == 7 &&
+                r.Output!.Contains("history-async") && r.ClientId == "oauth-history" &&
+                r.WorkspaceId == "history-test" && r.WorkspaceName == "History test"), "async history owner and output");
+        }
+        finally { historyTools.StopCommandSessions(); }
+        var metadataRoot = Path.Combine(testRoot, "private-history", "metadata");
+        var metadata = new CommandHistoryStore(metadataRoot, false);
+        var metadataId = metadata.Begin("test", "Test", root, "sync", null, null, "SECRET_FIXTURE");
+        metadata.Finish(metadataId, "exited", 0, "SECRET_FIXTURE");
+        var interruptedId = metadata.Begin("test", "Test", root, "async", "interrupted", null, "SECRET_FIXTURE");
+        var reopenedHistory = new CommandHistoryStore(metadataRoot, false);
+        Assert(reopenedHistory.Records().All(r => r.Command is null && r.Output is null), "metadata-only default");
+        Assert(reopenedHistory.Records().Any(r => r.Id == interruptedId && r.State == "interrupted"), "restart interruption");
+        var boundedId = history.Begin("test", "Test", root, "sync", null, null, "bounded");
+        history.Finish(boundedId, "exited", 0, string.Concat(Enumerable.Repeat("🙂", 20_000)));
+        var bounded = history.Records().Single(r => r.Id == boundedId);
+        Assert(bounded.Truncated && Encoding.UTF8.GetByteCount(bounded.Output!) <= CommandHistoryStore.ContentLimit,
+            "bounded Unicode history");
+        Console.WriteLine("local command history: ok");
         Console.WriteLine("agent tools: ok");
     }
 }

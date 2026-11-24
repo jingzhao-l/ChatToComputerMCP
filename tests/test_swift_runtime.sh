@@ -759,7 +759,7 @@ swiftc -framework Network -framework Security -framework SystemConfiguration -o 
     macos/Ripgrep.swift \
     macos/LocalMCPServer.swift \
     macos/CodexHistory.swift \
-    macos/CommandReceiptLedger.swift \
+    macos/CommandReceiptLedger.swift macos/CommandHistoryStore.swift \
     macos/LocalMCPRuntime.swift \
     "$TMP_DIR/main.swift"
 "$TMP_DIR/runtime-test"
@@ -1120,7 +1120,7 @@ swiftc -framework Network -o "$TMP_DIR/server-test" \
     macos/Ripgrep.swift \
     macos/LocalMCPServer.swift \
     macos/CodexHistory.swift \
-    macos/CommandReceiptLedger.swift \
+    macos/CommandReceiptLedger.swift macos/CommandHistoryStore.swift \
     tests/SwiftOAuthChecks.swift \
     "$TMP_DIR/main.swift"
 mkdir -p "$TMP_DIR/git-template"

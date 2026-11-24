@@ -13,5 +13,5 @@ try LocalMCPServer.verifyOAuthRevocationCancelsOwnedJobs()
 SWIFT
 swiftc -j 1 -module-cache-path "$tmp/cache" -framework Network \
   -o "$tmp/check" macos/ProcessRunner.swift macos/Ripgrep.swift \
-  macos/CodexHistory.swift macos/CommandReceiptLedger.swift "$tmp/LocalMCPServer.swift" "$tmp/main.swift"
+  macos/CodexHistory.swift macos/CommandReceiptLedger.swift macos/CommandHistoryStore.swift "$tmp/LocalMCPServer.swift" "$tmp/main.swift"
 "$tmp/check"

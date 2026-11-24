@@ -348,3 +348,7 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), keep changes
 ChatToComputerMCP is derived from [anhnv02/file-mcp](https://github.com/anhnv02/file-mcp) and retains applicable copyright, source notices and the [Apache License 2.0](LICENSE).
 
 **Independent community project.** Not affiliated with or endorsed by OpenAI, Anthropic or the original FileMCP maintainers.
+
+### Local command history
+
+The desktop Tasks tab opens a searchable, exportable history of short and long shell commands, including workspace, directory, status, exit code and timing. Records survive gateway restarts; unfinished records are marked interrupted when that profile restarts, not automatically replayed. Command text and output are omitted by default; enable content capture only for trusted local use. Captured command text and output are each limited to 64 KiB. The history prunes completed records to 200 or 30 days on runtime startup and completion. This local history is separate from the durable retry-prevention ledger and is not an MCP tool. Shared tunnel clients are not individually identified unless verified OAuth identity is available.

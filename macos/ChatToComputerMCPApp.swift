@@ -53,11 +53,12 @@ private enum ConfigKey {
     static let allowCloudflareURLSecret = "allowCloudflareURLSecret"
     static let enableGitPush = "enableGitPush"
     static let enableCodexHistory = "enableCodexHistory"
+    static let captureCommandHistoryContent = "captureCommandHistoryContent"
     static let publicShellCommandsAcknowledged = "publicShellCommandsAcknowledged"
 
     static let all = [
         tunnelID, profile, port, allowedDirectory, healthAddress, gitUserName, gitUserEmail,
-        apiKey, provider, cloudflareHostname, cloudflareTunnelSource, enableCommands, enableGitPush, enableCodexHistory, allowCloudflareURLSecret, publicShellCommandsAcknowledged,
+        apiKey, provider, cloudflareHostname, cloudflareTunnelSource, enableCommands, enableGitPush, enableCodexHistory, captureCommandHistoryContent, allowCloudflareURLSecret, publicShellCommandsAcknowledged,
     ]
 }
 
@@ -554,6 +555,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let enableGitPushCheckbox = NSButton(checkboxWithTitle: "Allow Git push to remote servers", target: nil, action: nil)
     private let enableCodexHistoryCheckbox = NSButton(checkboxWithTitle: "Allow writing to Codex history", target: nil, action: nil)
     private let enableCommandsCheckbox = NSButton(checkboxWithTitle: "Allow shell commands", target: nil, action: nil)
+    private let captureCommandHistoryCheckbox = NSButton(checkboxWithTitle: "Keep command text and output in local history", target: nil, action: nil)
+    private var commandHistoryWindow: NSWindow?
     private let logView = NSTextView()
     private let activityEmptyLabel = NSTextField(wrappingLabelWithString: "No activity yet\nConnect to see tunnel status and MCP requests.")
     private let copyLogsButton = NSButton(title: "Copy logs", target: nil, action: nil)
@@ -1214,6 +1217,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             capacityRow,
             enableCommandsCheckbox,
             commandWarning,
+            captureCommandHistoryCheckbox,
             enableGitPushCheckbox,
             enableCodexHistoryCheckbox,
             extraPermissionsHelp,
@@ -1365,6 +1369,10 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         taskOutputScroll.documentView = taskOutputView
         taskOutputScroll.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         taskOutputScroll.heightAnchor.constraint(equalToConstant: 160).isActive = true
+        captureCommandHistoryCheckbox.toolTip = "Command content and output may contain secrets. Off by default; only local metadata is recorded unless you opt in."
+        captureCommandHistoryCheckbox.setAccessibilityLabel("Keep command text and output in local history")
+        let historyButton = NSButton(title: "Open command history…", target: self, action: #selector(openCommandHistory))
+        historyButton.bezelStyle = .rounded
         let taskActions = NSStackView(views: [
             refreshTasksButton, cancelTaskButton, revealTaskFolderButton,
             copyTaskOutputButton, openTaskActivityButton])
@@ -1372,7 +1380,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         taskActions.spacing = 10
         taskActions.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let taskStack = NSStackView(views: [
-            taskTitle, taskHelp, tasksSummaryLabel, receiptWarningLabel, taskPicker,
+            taskTitle, taskHelp, tasksSummaryLabel, receiptWarningLabel, historyButton, taskPicker,
             taskDetailsLabel, taskActions, taskOutputLabel, taskOutputScroll])
         taskStack.orientation = .vertical
         taskStack.alignment = .leading
@@ -1843,6 +1851,21 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         }
     }
 
+    @objc private func openCommandHistory() {
+        let profile = profileField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let controller = CommandHistoryViewController(profile: profile)
+        let window = NSWindow(contentViewController: controller)
+        window.title = "Command history — ChatToComputerMCP"
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.setContentSize(NSSize(width: 820, height: 640))
+        window.contentMinSize = NSSize(width: 620, height: 440)
+        window.isReleasedWhenClosed = false
+        commandHistoryWindow?.close()
+        commandHistoryWindow = window
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func refreshDesktopTasks() {
         guard !taskRefreshInFlight else { return }
         taskRefreshInFlight = true
@@ -2057,6 +2080,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         gitUserNameField.stringValue = defaults.string(forKey: ConfigKey.gitUserName) ?? ""
         gitUserEmailField.stringValue = defaults.string(forKey: ConfigKey.gitUserEmail) ?? ""
         enableCommandsCheckbox.state = defaults.bool(forKey: ConfigKey.enableCommands) ? .on : .off
+        captureCommandHistoryCheckbox.state = defaults.bool(forKey: ConfigKey.captureCommandHistoryContent) ? .on : .off
         enableGitPushCheckbox.state = defaults.bool(forKey: ConfigKey.enableGitPush) ? .on : .off
         enableCodexHistoryCheckbox.state = defaults.bool(forKey: ConfigKey.enableCodexHistory) ? .on : .off
         let capacity = defaults.integer(forKey: ConfigKey.maxConcurrentCommands)
@@ -2565,6 +2589,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         defaults.set(gitUserNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.gitUserName)
         defaults.set(gitUserEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.gitUserEmail)
         defaults.set(enableCommandsCheckbox.state == .on, forKey: ConfigKey.enableCommands)
+        defaults.set(captureCommandHistoryCheckbox.state == .on, forKey: ConfigKey.captureCommandHistoryContent)
         defaults.set(enableGitPushCheckbox.state == .on, forKey: ConfigKey.enableGitPush)
         defaults.set(enableCodexHistoryCheckbox.state == .on, forKey: ConfigKey.enableCodexHistory)
     }
@@ -2652,7 +2677,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 gitUserEmail: gitUserEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
                 enableCommands: enableCommandsCheckbox.state == .on,
                 enableGitPush: enableGitPushCheckbox.state == .on,
-                enableCodexHistory: enableCodexHistoryCheckbox.state == .on
+                enableCodexHistory: enableCodexHistoryCheckbox.state == .on,
+                captureCommandHistoryContent: captureCommandHistoryCheckbox.state == .on
             ))
         } catch {
             showError(error.localizedDescription)
@@ -3070,6 +3096,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         refreshWorkspaceActionButtons()
         overviewChangeButton.isEnabled = configurationIsEditable
         enableCommandsCheckbox.isEnabled = configurationIsEditable
+        captureCommandHistoryCheckbox.isEnabled = configurationIsEditable
         enableGitPushCheckbox.isEnabled = configurationIsEditable
         enableCodexHistoryCheckbox.isEnabled = configurationIsEditable
         saveConnectionButton.setLoading(false)

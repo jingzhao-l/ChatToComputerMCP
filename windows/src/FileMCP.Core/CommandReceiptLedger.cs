@@ -184,7 +184,7 @@ public sealed class CommandReceiptLedger
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
-    private static void RefuseLinks(string file)
+    internal static void RefuseLinks(string file)
     {
         // File.Exists returns false for dangling junction/symlink targets,
         // so query attributes rather than dereferencing.
@@ -196,7 +196,7 @@ public sealed class CommandReceiptLedger
         catch (FileNotFoundException) { }
     }
 
-    private static void EnsurePrivateFolder(string folder)
+    internal static void EnsurePrivateFolder(string folder)
     {
         // Reject ancestor junctions/reparse points as well as the final
         // receipt directory, never redirect a persistent store unexpectedly.

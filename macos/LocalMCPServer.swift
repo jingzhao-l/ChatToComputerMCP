@@ -264,6 +264,8 @@ private final class LocalTools {
     private let globalBudget: WorkspaceCommandBudget?
     private let receiptLedger: CommandReceiptLedger?
     private let workspaceScopeID: String
+    private let workspaceName: String
+    private let commandHistory: CommandHistoryStore?
     private var globalSynchronousLeases: [UUID: UUID] = [:]
     // Bounded concurrency across independent working directories. These are
     // cooperative collision checks, not a shell sandbox (commands can use
@@ -334,8 +336,12 @@ private final class LocalTools {
         globalBudget: WorkspaceCommandBudget? = nil,
         maxConcurrentCommands: Int? = nil,
         receiptLedger: CommandReceiptLedger? = nil,
-        workspaceScopeID: String = "default"
+        workspaceScopeID: String = "default",
+        workspaceName: String = "Default workspace",
+        commandHistory: CommandHistoryStore? = nil
     ) {
+        self.workspaceName = workspaceName
+        self.commandHistory = commandHistory
         self.globalBudget = globalBudget
         self.receiptLedger = receiptLedger
         self.workspaceScopeID = workspaceScopeID
@@ -754,7 +760,8 @@ private final class LocalTools {
             return stringOutput(try runCommand(
                 command: requiredString(arguments, "command"),
                 cwd: string(arguments, "cwd", default: ""),
-                timeoutSeconds: int(arguments, "timeout_seconds", default: ProcessRunner.defaultCommandTimeoutSeconds)
+                timeoutSeconds: int(arguments, "timeout_seconds", default: ProcessRunner.defaultCommandTimeoutSeconds),
+                ownerID: verifiedOwnerID
             ))
         case "git_init":
             return stringOutput(try gitInit(repoPath: string(arguments, "repo_path", default: "")))
@@ -2222,7 +2229,7 @@ private final class LocalTools {
         ]
     }
 
-    private func runCommand(command: String, cwd: String, timeoutSeconds: Int) throws -> String {
+    private func runCommand(command: String, cwd: String, timeoutSeconds: Int, ownerID: String?) throws -> String {
         guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw MCPServerError.invalidArguments("command must not be empty")
         }
@@ -2237,6 +2244,14 @@ private final class LocalTools {
         let lease = try acquireSynchronousCommandLease(workdir.path)
         defer { releaseSynchronousCommandLease(lease) }
 
+        let historyID = try commandHistory?.begin(workspaceID: workspaceScopeID, workspaceName: workspaceName,
+            cwd: workdir.path, kind: "sync", requestID: nil, clientID: ownerID, command: command)
+        var historyFinished = false
+        defer {
+            if let historyID, !historyFinished {
+                finishHistory(historyID, state: "launch_failed", code: nil)
+            }
+        }
         let shell = preferredShell()
         let result = try ProcessRunner.run(
             executable: shell,
@@ -2246,6 +2261,12 @@ private final class LocalTools {
             outputLimitBytes: maxToolProcessOutputBytes,
             shouldCancel: { [weak self] in self?.runtimeHasStopped ?? true }
         )
+        if let historyID {
+            finishHistory(historyID, state: runtimeHasStopped ? "cancelled" : result.timedOut ? "timed_out" : "exited",
+                code: result.exitCode, output: formatProcessResult(result),
+                truncated: result.stdoutTruncated || result.stderrTruncated)
+            historyFinished = true
+        }
         guard !runtimeHasStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
         if result.timedOut {
             var partial = "Command timed out after \(max(1, min(timeoutSeconds, ProcessRunner.maxCommandTimeoutSeconds))) seconds."
@@ -2254,6 +2275,12 @@ private final class LocalTools {
             throw MCPServerError.operationFailed(partial)
         }
         return formatProcessResult(result)
+    }
+
+    private func finishHistory(_ id: UUID, state: String, code: Int32?, output: String = "",
+                               truncated: Bool = false) {
+        do { try commandHistory?.finish(id: id, state: state, exitCode: code, output: output, truncated: truncated) }
+        catch { NSLog("ChatToComputerMCP local history completion could not persist: %@", error.localizedDescription) }
     }
 
     private func gitInit(repoPath: String) throws -> String {
@@ -3215,6 +3242,7 @@ final class LocalMCPServer {
         additionalWorkspaces: [WorkspaceDefinition] = [],
         maxConcurrentCommands: Int? = nil,
         receiptLedger: CommandReceiptLedger? = nil,
+        commandHistory: CommandHistoryStore? = nil,
         enableGitPush: Bool = false,
         enableCodexHistory: Bool = false,
         localAuthToken: String,
@@ -3267,7 +3295,8 @@ final class LocalMCPServer {
             enableGitPush: enableGitPush,
             enableCodexHistory: enableCodexHistory,
             globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
-            receiptLedger: receiptLedger, workspaceScopeID: "default"
+            receiptLedger: receiptLedger, workspaceScopeID: "default",
+            commandHistory: commandHistory
         )
         // Canonical roots may not overlap, even through symlinks. This rejects
         // accidental cross-workspace access and ambiguous command isolation.
@@ -3301,7 +3330,8 @@ final class LocalMCPServer {
                 enableCommands: enableCommands, enableGitPush: enableGitPush,
                 enableCodexHistory: enableCodexHistory, globalBudget: commandBudget,
                 maxConcurrentCommands: configuredLimit,
-                receiptLedger: receiptLedger, workspaceScopeID: workspace.id
+                receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
+                workspaceName: workspace.name, commandHistory: commandHistory
             )
         }
         self.workspaceDefinitions = additionalWorkspaces
@@ -4353,14 +4383,17 @@ private final class CommandSession {
     private var stopReason: String?
     private var exitCode: Int32?
     private let onFinish: ((String, Int32) -> Void)?
+    private let onHistoryFinish: ((String, Int32, String, Bool) -> Void)?
     private var chunks: [(Int, String)] = []
     private var bytes = 0
     private var sequence = 0
 
     init(requestID: String, command: String, cwd: String, timeout: Int,
-         onFinish: ((String, Int32) -> Void)? = nil) {
+         onFinish: ((String, Int32) -> Void)? = nil,
+         onHistoryFinish: ((String, Int32, String, Bool) -> Void)? = nil) {
         self.requestID = requestID; self.command = command; self.cwd = cwd
         self.timeout = timeout; self.onFinish = onFinish
+        self.onHistoryFinish = onHistoryFinish
     }
 
     var active: Bool {
@@ -4398,10 +4431,13 @@ private final class CommandSession {
         state = stopReason ?? "exited"
         let terminalState = state
         deadline?.cancel(); deadline = nil
+        let historyOutput = onHistoryFinish == nil ? "" : chunks.map { $0.1 }.joined()
+        let historyTruncated = (chunks.first?.0 ?? (sequence + 1)) > 1
         lock.unlock()
         // Do disk I/O outside the per-session lock to avoid blocking output
         // readers and cancellation while persisting a terminal receipt.
         onFinish?(terminalState, code)
+        onHistoryFinish?(terminalState, code, historyOutput, historyTruncated)
     }
 
     func cancel(reason: String = "cancelled", synchronously: Bool = false) {
@@ -4787,6 +4823,7 @@ private extension LocalTools {
         guard usedRequestIDs.count < 4096 else { throw MCPServerError.operationFailed("Runtime command quota reached; reconnect to start a fresh runtime") }
         let ledger = receiptLedger
         let scopeID = workspaceScopeID
+        let historyID = UUID()
         let session = CommandSession(
             requestID: key, command: command, cwd: cwd.path, timeout: timeout,
             onFinish: { [weak ledger] state, code in
@@ -4796,15 +4833,23 @@ private extension LocalTools {
                     NSLog("ChatToComputerMCP command receipt completion could not persist: %@",
                           error.localizedDescription)
                 }
+            }, onHistoryFinish: { [commandHistory] state, code, output, truncated in
+                do { try commandHistory?.finish(id: historyID, state: state, exitCode: code, output: output, truncated: truncated) }
+                catch { NSLog("ChatToComputerMCP local history completion could not persist: %@", error.localizedDescription) }
             })
         try globalBudget?.admit(session, cwd: cwd.path)
         var reserved = false
+        var historyReserved = false
         do {
             try ledger?.reserve(scopeID: scopeID, requestID: key, ownerID: ownerID)
             reserved = ledger != nil
+            try commandHistory?.begin(id: historyID, workspaceID: scopeID, workspaceName: workspaceName,
+                cwd: cwd.path, kind: "async", requestID: key, clientID: ownerID, command: command)
+            historyReserved = commandHistory != nil
             try session.launch(shell: preferredShell())
         } catch {
             globalBudget?.forget(session)
+            if historyReserved { finishHistory(historyID, state: "launch_failed", code: nil) }
             if reserved {
                 // A failed launch is still a durable tombstone: the caller
                 // must use an intentional new request ID, never auto-retry.

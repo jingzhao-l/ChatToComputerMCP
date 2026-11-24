@@ -124,13 +124,15 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                         "File and Git access; shell commands "+(configuration.EnableCommands ? "enabled" : "disabled"),
                         approved);
                 }
+                var history = configuration.EnableCommands ? new CommandHistoryStore(
+                    CommandHistoryStore.DirectoryFor(configuration.Profile), configuration.CaptureCommandHistoryContent) : null;
                 _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
                     configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
                     receiptLedger: receipts, oauth: oauth,
                     publicHost: isCloudflare ? configuration.CloudflareHostname : null,
                     enableGitPush: configuration.EnableGitPush,
-                    enableCodexHistory: configuration.EnableCodexHistory);
+                    enableCodexHistory: configuration.EnableCodexHistory, commandHistory: history);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
 
                 if (isCloudflare)

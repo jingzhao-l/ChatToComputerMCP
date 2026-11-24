@@ -231,6 +231,9 @@
                                   ToolTip="Allow ChatToComputerMCP to run PowerShell/CLI commands with the current Windows user's permissions."/>
                         <TextBlock Margin="120,5,0,0" Foreground="Gray" TextWrapping="Wrap"
                                    Text="Allows ChatGPT to run PowerShell/CLI commands with the current Windows user's permissions. Enable only for workspaces you trust."/>
+                        <CheckBox x:Name="CaptureCommandHistoryBox" Margin="120,10,0,0"
+                                  Content="Keep command text and output in local history"
+                                  ToolTip="May contain secrets. Off by default; only local metadata is recorded unless you opt in."/>
                         <CheckBox x:Name="EnableGitPushBox" Content="Allow Git push to remote servers"
                                   Margin="120,12,0,0"
                                   ToolTip="Sends repository contents to configured remote servers and may use existing credentials. Disabled by default."/>
@@ -329,6 +332,7 @@
                     </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,9">
                         <Button Content="Refresh" Click="RefreshTasks_Click" Margin="0,0,8,0"/>
+                        <Button Content="History…" Click="OpenCommandHistory_Click" Margin="0,0,8,0"/>
                         <Button x:Name="CancelTaskButton" Content="Cancel selected" Click="CancelTask_Click"
                                 IsEnabled="False" Margin="0,0,8,0"/>
                         <Button x:Name="RevealTaskButton" Content="Open folder" Click="RevealTask_Click"

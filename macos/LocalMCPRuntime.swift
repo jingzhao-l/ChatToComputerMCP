@@ -30,6 +30,7 @@ struct LocalMCPConfiguration {
     let enableCommands: Bool
     var enableGitPush: Bool = false
     var enableCodexHistory: Bool = false
+    var captureCommandHistoryContent: Bool = false
 }
 
 enum LocalMCPRuntimeState: Equatable {
@@ -392,6 +393,9 @@ final class LocalMCPRuntime {
             let commandReceiptLedger = configuration.enableCommands
                 ? try CommandReceiptLedger(fileURL: CommandReceiptLedger.applicationStoreURL())
                 : nil
+            let history = configuration.enableCommands ? try CommandHistoryStore(
+                directory: CommandHistoryStore.directory(for: configuration.profile),
+                captureContent: configuration.captureCommandHistoryContent) : nil
             let server = try LocalMCPServer(
                 port: configuration.port,
                 allowedDirectory: configuration.allowedDirectory,
@@ -401,6 +405,7 @@ final class LocalMCPRuntime {
                 additionalWorkspaces: configuration.additionalWorkspaces,
                 maxConcurrentCommands: configuration.maxConcurrentCommands,
                 receiptLedger: commandReceiptLedger,
+                commandHistory: history,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
                 localAuthToken: localAuthToken,

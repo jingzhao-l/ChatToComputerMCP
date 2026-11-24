@@ -115,6 +115,7 @@ public partial class MainWindow : Window
         GitNameBox.Text = settings.GitUserName;
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
+        CaptureCommandHistoryBox.IsChecked = settings.CaptureCommandHistoryContent;
         EnableGitPushBox.IsChecked = settings.EnableGitPush;
         EnableCodexHistoryBox.IsChecked = settings.EnableCodexHistory;
         ApplyProviderSelection();
@@ -232,6 +233,12 @@ public partial class MainWindow : Window
         }
         // The server independently checks canonical paths including junctions.
         return true;
+    }
+
+    private void OpenCommandHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var history = new CommandHistoryWindow(ProfileBox.Text.Trim()) { Owner = this };
+        history.ShowDialog();
     }
 
     private void RefreshTasks_Click(object sender, RoutedEventArgs e) => RefreshTasks();
@@ -1105,7 +1112,8 @@ public partial class MainWindow : Window
             saved.CloudflareMode,
             saved.CloudflareTunnelName,
             saved.EnableGitPush,
-            saved.EnableCodexHistory);
+            saved.EnableCodexHistory,
+            saved.CaptureCommandHistoryContent);
     }
 
     private void SaveAllSettings()
@@ -1128,6 +1136,7 @@ public partial class MainWindow : Window
         _settings.GitUserName = GitNameBox.Text.Trim();
         _settings.GitUserEmail = GitEmailBox.Text.Trim();
         _settings.EnableCommands = EnableCommandsCheckBox.IsChecked == true;
+        _settings.CaptureCommandHistoryContent = CaptureCommandHistoryBox.IsChecked == true;
         _settings.EnableGitPush = EnableGitPushBox.IsChecked == true;
         _settings.EnableCodexHistory = EnableCodexHistoryBox.IsChecked == true;
         _settings.AdditionalWorkspaces = _workspaces.ToList();
@@ -1165,6 +1174,7 @@ public partial class MainWindow : Window
             _cloudflareCredentialStore.HasSavedApiKey;
         EnableGitPushBox.IsEnabled = editable;
         EnableCodexHistoryBox.IsEnabled = editable;
+        CaptureCommandHistoryBox.IsEnabled = editable;
         AddWorkspaceButton.IsEnabled = editable;
         RenameWorkspaceButton.IsEnabled = editable;
         RemoveWorkspaceButton.IsEnabled = editable;

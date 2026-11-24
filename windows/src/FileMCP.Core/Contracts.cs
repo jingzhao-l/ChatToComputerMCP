@@ -67,7 +67,8 @@ public sealed record LocalMcpConfiguration(
     string CloudflareMode = "token",
     string CloudflareTunnelName = "",
     bool EnableGitPush = false,
-    bool EnableCodexHistory = false);
+    bool EnableCodexHistory = false,
+    bool CaptureCommandHistoryContent = false);
 
 public enum LocalMcpRuntimeStatus
 {
@@ -104,6 +105,7 @@ public sealed class FileMcpSettings
     public bool EnableCommands { get; set; }
     public bool EnableGitPush { get; set; }
     public bool EnableCodexHistory { get; set; }
+    public bool CaptureCommandHistoryContent { get; set; }
     public int MaxConcurrentCommands { get; set; } = 8;
     public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];
     public string Provider { get; set; } = "openai";
