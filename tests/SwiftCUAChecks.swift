@@ -151,6 +151,23 @@ import Foundation
         precondition(evidence["effect"] as? String=="unverifiable" && evidence["verified"] as? Bool==false)
         precondition(evidence["escalation"]==nil && evidence["reason"]==nil && evidence["image"]==nil && evidence["code"]==nil)
         precondition(evidence["cell_value"] as? String=="fixture value")
+        let post=try CUAService.postObservationParameters([:])!
+        precondition(post["include_screenshot"] as? Bool==false && post["max_elements"] as? Int==150)
+        let absentPost=try CUAService.postObservationParameters(nil)
+        precondition(absentPost==nil)
+        expectFailure("post observe cannot override window"){_ = try CUAService.postObservationParameters(["window_id":1])}
+        expectFailure("post observe cannot override delivery"){_ = try CUAService.postObservationParameters(["delivery_mode":"foreground"])}
+        expectFailure("post observe empty modalities"){_ = try CUAService.postObservationParameters(["include_accessibility_tree":false])}
+        expectFailure("post observe invalid boolean"){_ = try CUAService.postObservationParameters(["include_accessibility_tree":1])}
+        let pixelPost=try CUAService.postObservationParameters(["include_accessibility_tree":false,"include_screenshot":true])!
+        precondition(pixelPost["include_accessibility_tree"] as? Bool==false)
+        let reply:[String:Any]=["content":[["type":"text","text":"updated"]],"structuredContent":["snapshot_id":"s00000004","elements":[["element_token":"s00000004:1"]],"escalation":["recommended":"foreground"]]]
+        let (postBlocks,postMetadata)=try CUAService.observationContent(reply)
+        let newObservation=try CUASnapshot(structured:postMetadata,blocks:postBlocks)
+        precondition(newObservation.actionable && postMetadata["escalation"]==nil)
+        expectFailure("post observation cannot reuse previous token"){try newObservation.validateObservationID(snap.observationID)}
+        expectFailure("post observation failure is not evidence"){_ = try CUAService.observationContent(["isError":true])}
+        print("PASS bounded post-action observation options and fresh observation identity")
         var front:Int64?=101
         let continuity=CUAForegroundContinuity(read:{front})
         precondition(continuity.permits())

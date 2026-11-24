@@ -272,9 +272,9 @@ final class CUAWorker {
         }
         return args
     }
-    func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool, beforeDispatch: () throws -> Void = {}) throws -> [String: Any] {
+    func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool, beforeDispatch: () throws -> Void = {}, timeoutSeconds:Double=10) throws -> [String: Any] {
         let started=ProcessInfo.processInfo.systemUptime
-        let deadline = started + 10
+        let deadline = started + min(10,max(0,timeoutSeconds))
         var handshakeMs=0
         defer {lastCallTiming=["worker_call_ms":Int((ProcessInfo.processInfo.systemUptime-started)*1000),"handshake_ms":handshakeMs]}
         if !initialized {
@@ -507,8 +507,8 @@ final class CUAService {
             ("cua_create_session","Acquire an exclusive background window session, or explicitly transfer an idle owned session to another window in the same process using previous_session_id. Re-observe before input.",["pid":integer,"window_id":integer,"previous_session_id":string],["pid","window_id"],false),
             ("cua_list_sessions","List own session status. Shared connections cannot enumerate session IDs.",[:],[],true),
             ("cua_observe","Observe the exact leased window: accessibility tree, image, or both. Only a returned observation_id can ground input.",["session_id":string,"include_screenshot":boolean,"include_accessibility_tree":boolean,"query":string,"max_elements":integer,"max_depth":integer,"max_image_dimension":integer,"timeout_ms":integer],["session_id"],false),
-            ("cua_act","Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
-                ["session_id":string,"request_id":string,"observation_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true]],["session_id","request_id","observation_id","operation","parameters"],false),
+            ("cua_act","Perform one background-only action; optional post_observe requests a fresh same-window observation in the remaining time budget. No foreground fallback.",
+                ["session_id":string,"request_id":string,"observation_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true],"post_observe":["type":"object","properties":["include_screenshot":boolean,"include_accessibility_tree":boolean,"query":string,"max_elements":integer,"max_depth":integer,"max_image_dimension":integer,"timeout_ms":integer],"additionalProperties":false]],["session_id","request_id","observation_id","operation","parameters"],false),
             ("cua_verify","Verify bounded element predicates in the leased window; unknown is not success.",["session_id":string,"expect":["type":"array","minItems":1,"maxItems":8,"items":["type":"object"]],"timeout_ms":["type":"integer","minimum":0,"maximum":6000],"stable_samples":integer],["session_id","expect"],true),
             ("cua_stop_session","Revoke a leased session; interrupted action outcomes may be unknown.",["session_id":string],["session_id"],false)
         ]
@@ -823,6 +823,37 @@ final class CUAService {
         return out
     }
 
+    static func postObservationParameters(_ raw:Any?) throws -> [String:Any]? {
+        guard let raw else{return nil}
+        guard var options=raw as? [String:Any],
+              Set(options.keys).isSubset(of:["include_screenshot","include_accessibility_tree","query","max_elements","max_depth","max_image_dimension","timeout_ms"]) else{throw CUAFailure("cua_invalid_post_observe")}
+        // Small semantic tree by default. Explicit screenshots remain available.
+        if options["include_screenshot"]==nil {options["include_screenshot"]=false}
+        if options["include_accessibility_tree"] as? Bool != false {
+            if options["max_elements"]==nil {options["max_elements"]=150}
+            if options["timeout_ms"]==nil {options["timeout_ms"]=750}
+        }
+        if options["max_image_dimension"]==nil {options["max_image_dimension"]=1280}
+        return try observationParameters(options)
+    }
+    static func observationContent(_ reply:[String:Any]) throws -> ([[String:Any]],[String:Any]) {
+        guard reply["isError"] as? Bool != true,
+              let blocks=reply["content"] as? [[String:Any]],!blocks.isEmpty,
+              let structured=reply["structuredContent"] as? [String:Any],structured["foreground_step"]==nil else{throw CUAFailure("cua_post_observation_unavailable")}
+        var safe:[[String:Any]]=[]
+        for block in blocks {
+            if block["type"] as? String=="text",let text=block["text"] as? String,text.utf8.count<=2_000_000 {
+                safe.append(["type":"text","text":text])
+            }else if block["type"] as? String=="image",let mime=block["mimeType"] as? String,["image/png","image/jpeg"].contains(mime),
+                     let data=block["data"] as? String,data.utf8.count<=8_000_000,Data(base64Encoded:data) != nil {
+                safe.append(["type":"image","mimeType":mime,"data":data])
+            }
+        }
+        guard !safe.isEmpty else{throw CUAFailure("cua_post_observation_unavailable")}
+        let metadata=structured.filter{!["screenshot","screenshot_base64","image","image_data","screenshot_file_path","escalation"].contains($0.key)}
+        guard try JSONSerialization.data(withJSONObject:metadata).count<=2_000_000 else{throw CUAFailure("cua_driver_metadata_too_large")}
+        return (safe,metadata)
+    }
     static func verifyPredicates(_ raw: Any?) throws -> [[String:Any]] {
         guard let predicates = raw as? [[String:Any]], (1...8).contains(predicates.count) else { throw CUAFailure("cua_invalid_verify_predicates") }
         for predicate in predicates {
@@ -997,7 +1028,7 @@ final class CUAService {
             let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
             return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"same_process_window_transfer":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
-                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"native_worker_max_age_seconds":6900,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
+                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"native_worker_max_age_seconds":6900,"post_action_observation":true,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
         if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
         if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {
@@ -1128,6 +1159,8 @@ final class CUAService {
         var coordinateSnapshot:CUASnapshot?
         var observedGeometry:CUAWindowGeometry?
         var priorWindows=Set<Int64>()
+        let postOptions=mutation ? try Self.postObservationParameters(args["post_observe"]) : nil
+        let combinedDeadline=ProcessInfo.processInfo.systemUptime+9
         if mutation {
             guard let snapshot = s.snapshot, let operation = args["operation"] as? String,
                   let parameters = args["parameters"] as? [String:Any] else { throw CUAFailure("cua_observe_before_action") }
@@ -1224,7 +1257,7 @@ final class CUAService {
             // Images are only returned as MCP image blocks, not duplicated in JSON.
             let metadata = mutation ? Self.nativeActionEvidence(structured) : structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path","escalation"].contains($0.key) }
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
-            if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited") }
+            if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited");actionReceipt=nil }
             var header:[String:Any] = ["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation,
                 "timing_ms":s.worker.lastCallTiming,"worker_age_seconds":s.worker.ageSeconds]
             if mutation {
@@ -1243,7 +1276,38 @@ final class CUAService {
                 header["observation_only"]=s.snapshot == nil
                 if let snapshot=s.snapshot {header["observation_id"]=snapshot.observationID}
             }
+            var postMetadata:[String:Any]?
+            if var options=postOptions {
+                header["post_observe_status"]="not_started"
+                let remaining=combinedDeadline-ProcessInfo.processInfo.systemUptime
+                if remaining>=1.25 && requestAlive() && focusGuard?.permits() != false && stillAllowed(s,mutation:false) {
+                    do {
+                        options["pid"]=s.target.pid;options["window_id"]=s.target.window
+                        let geometryBefore=windowGeometry(s.target)
+                        let observationReply=try s.worker.call("get_window_state",options,allowed:{
+                            requestAlive() && (focusGuard?.permits() ?? true) && self.stillAllowed(s,mutation:false)
+                        },timeoutSeconds:remaining)
+                        guard requestAlive(),focusGuard?.permits() != false,stillAllowed(s,mutation:false) else{throw CUAFailure("cua_post_observation_revoked")}
+                        let (content,details)=try Self.observationContent(observationReply)
+                        let geometry=geometryBefore==windowGeometry(s.target) ? geometryBefore : nil
+                        let next=try CUASnapshot(structured:details,blocks:content,geometry:options["include_screenshot"] as? Bool == true ? geometry:nil,includeElements:options["include_accessibility_tree"] as? Bool == true)
+                        s.snapshot=next.actionable ? next:nil
+                        header["post_observe_status"]="observed"
+                        header["post_observe_timing_ms"]=s.worker.lastCallTiming
+                        header["observation_only"]=s.snapshot==nil
+                        header["pixel_actions_available"]=s.snapshot?.pixelGrounded ?? false
+                        header["element_actions_available"]=s.snapshot?.tokens.isEmpty == false
+                        if let snapshot=s.snapshot {header["observation_id"]=snapshot.observationID;header["observation_required"]=false}
+                        postMetadata=details
+                        safe += content
+                    }catch{
+                        s.snapshot=nil;retire(id)
+                        header["post_observe_status"]="unavailable_session_retired"
+                    }
+                }else{header["post_observe_status"]="skipped_budget_or_target_unavailable"}
+            }
             var summary=header;summary["driver_result"]=metadata
+            if let postMetadata {summary["post_observation"]=postMetadata}
             return ([[ "type":"text","text":String(decoding:try JSONSerialization.data(withJSONObject:header),as:UTF8.self) ]] + safe,summary)
         } catch {
             // Do not replay actions after timeout, loss of transport or

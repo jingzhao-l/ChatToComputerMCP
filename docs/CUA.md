@@ -162,6 +162,25 @@ because the pinned direct driver can invoke AppleEvents and request an OS
 Automation consent prompt; use the independently approved file tools for
 file renames. No automatic OS permission request is introduced.
 
+### Optional post-action observation
+
+For a continuous task, pass post_observe:{} on cua_act to request one new
+same-window tree observation after the action, or set include_screenshot:true
+when visual evidence is needed. The options use the same bounded observation
+schema; target, delivery and action overrides are not accepted. Defaults are
+a tree of at most 150 elements, a 750 ms tree budget and no screenshot.
+Only one mutation is dispatched, under the original request ID. The action
+receipt is finalized before the optional read. A fresh observation_id in the
+response may ground the next action; the previous observation is invalid.
+The separate post_observe_status reports observed,
+skipped_budget_or_target_unavailable, or unavailable_session_retired.
+The read uses the remaining nine-second combined budget, with at least
+1.25 seconds left before it begins. A failed or skipped read does not undo
+or replay the prior action, and does not change a completed dispatch receipt.
+A new observation is not proof of the intended UI effect: compare its state
+or use cua_verify. This reduces a client round trip, not the required
+native observations or policy checks.
+
 ### Native performance and reliability
 
 The gateway now checks the exact native window identity during input polling
