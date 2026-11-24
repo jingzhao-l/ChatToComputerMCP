@@ -31,7 +31,7 @@ No background service is enabled implicitly by local npm compile or manual GUI
 launch. The CLI can enable/disable the dedicated local.chat-to-computer-mcp
 LaunchAgent without touching local.filemcp.
 
-Windows Settings now includes additional named folder approvals and a shared
+Windows Workspaces includes additional named folder approvals and a shared
 4–16 command cap. Windows Tasks lists scoped sessions and supports targeted
 cancellation. Windows x64 integration and WPF smoke have now passed on a GitHub-hosted
 Windows runner (run 45028574644). Native ARM64 execution and complete upgrade
@@ -46,7 +46,7 @@ and restart scenarios remain unverified; ARM64 packages build successfully.
   a subprocess reattachment mechanism.
 - Windows Tasks: inspect bounded stdout/stderr and exit codes, reveal folder
   in Explorer, copy output and cancel only the selected long-running session.
-- macOS Connection (Cloudflare OAuth): list server-verified client registrations,
+- Both native Connection pages (Cloudflare OAuth): list server-verified client registrations,
   show user-approved scopes and revoke a client and its refresh-token family.
   Display names are self-reported labels, never security identities.
 - Additional non-shell MCP tools on Mac and Windows: file_info,
@@ -69,8 +69,8 @@ The native GUIs and CLI share Boolean update preferences. See
 ## Windows interrupted-command receipts
 
 Windows Tasks now displays the count of previous commands whose terminal
-state could not be established after restart. The local encrypted-user-context
-store records only hashed request IDs and state; the GUI warns the user to
+state could not be established after restart. The private ACL-protected local receipt
+store records only hashed request IDs and minimal metadata; the GUI warns the user to
 inspect effects rather than blindly rerun. This mirrors the Mac receipt
 warning and does not claim to reattach an orphaned process.
 
@@ -93,8 +93,7 @@ without restarting the local MCP server. Both desktop apps support copying
 workspace invocation instructions and configuration locking during connection
 or account changes. Windows Cloudflare login can be cancelled; switching
 accounts retains a backup of the previous certificate and restores it when
-a failed login leaves no replacement. These operations still require actual
-native Windows and provider acceptance.
+a failed login leaves no replacement. Native Windows x64 fixtures have executed; full physical-device and live provider acceptance remain separate.
 
 ## Optional CUA (0.6.0+)
 

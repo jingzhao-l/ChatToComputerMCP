@@ -73,11 +73,11 @@ npm 包在你的电脑上编译应用。需要 Node.js 24+；Mac 需安装 Swift
 
 之后才逐步尝试经你批准的文件编辑、Git 或 Shell 工作。使用过程中保持本机程序在线；如果改了工具或权限，应重新连接并在 ChatGPT 的插件设置中刷新工具元数据。
 
-## 备选方式：Cloudflare Tunnel（目前仅 Mac）
+## 备选方式：Cloudflare Tunnel（Mac 与 Windows）
 
 如果不使用 OpenAI 私有 Tunnel，也可以通过你自己的 Cloudflare Tunnel 公网 HTTPS 域名接入：
 
-1. 安装 `cloudflared`（例如 `brew install cloudflared`），它不包含在本项目安装包中。
+1. 安装对应系统的官方 `cloudflared`（Mac 可使用 `brew install cloudflared`，Windows 使用官方可执行文件并加入 PATH），它不包含在本项目安装包中。
 2. 在 Cloudflare 配置 Tunnel，把整个域名转发至本地 MCP 服务（通常为 `http://127.0.0.1:8008`），需覆盖 `/mcp`、`/oauth/*`、`/.well-known/*` 等路径，**不能只代理 `/mcp`**。
 3. 在应用 **Connection** 里选择 Cloudflare 连接方式，设置 Tunnel/令牌和公网 Hostname。
 4. 连接成功后复制应用显示的 `https://your-hostname.example/mcp`。
@@ -87,7 +87,7 @@ npm 包在你的电脑上编译应用。需要 Node.js 24+；Mac 需安装 Swift
 Cloudflare 方式**不需要 OpenAI Tunnel ID 和对应运行时 API Key**。不推荐启用“把密钥放进 MCP URL”的兼容模式：获得完整 URL 的人可能直接调用已开放工具。
 
 **客户端独立授权：**Cloudflare OAuth 授权页现在会让用户选择该客户端
-能够访问的已批准工作区，默认仅授权默认工作区。Mac Connection 界面
+能够访问的已批准工作区，默认仅授权默认工作区。Mac 和 Windows 的 Connection 界面
 可以查看或撤销客户端的 OAuth 令牌。OpenAI Secure MCP Tunnel 的共享
 连接认证头仍不能独立认证每个 ChatGPT 对话。
 
@@ -105,7 +105,7 @@ Cloudflare 方式**不需要 OpenAI Tunnel ID 和对应运行时 API Key**。不
 | Connected 但调用失败 | ChatGPT 插件 Tunnel ID 是否相同、权限是否已批准、是否真的触发工具调用 |
 | 本地端口冲突 | 不要让旧 FileMCP 和新应用共用 MCP 端口/Profile |
 | 目录被其他命令占用 | 为并发会话使用不同目录或 Git worktree；默认 8，最大 16 个命令槽 |
-| Mac 登录后想自动连接 | 需要主动启用**独立的可选 LaunchAgent**，自动连接默认关闭 |
+| 登录后想自动连接 | 在 Settings 主动启用 Mac LaunchAgent 或 Windows 登录监督器，自动连接默认关闭 |
 
 **网络要求：** 本机 `tunnel-client` 需要连接到 `api.openai.com:443`（使用 mTLS 时可能为 `mtls.api.openai.com:443`）的**出站 HTTPS**；无需路由器的入站端口转发。
 

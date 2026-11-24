@@ -1,0 +1,2534 @@
+{
+  "profiles": {
+    "default": [
+      "apply_patch",
+      "batch_read",
+      "connection_identity",
+      "copy_file",
+      "create_directory",
+      "delete_directory",
+      "delete_file",
+      "edit_file",
+      "file_info",
+      "git_add",
+      "git_commit",
+      "git_diff",
+      "git_init",
+      "git_log",
+      "git_status",
+      "glob",
+      "grep",
+      "list_files",
+      "list_workspaces",
+      "move_file",
+      "read_file",
+      "read_file_range",
+      "repo_overview",
+      "search_code",
+      "workspace_call",
+      "workspace_context",
+      "write_file"
+    ],
+    "full": [
+      "apply_patch",
+      "batch_read",
+      "cancel_command",
+      "command_capacity_status",
+      "command_receipt_status",
+      "connection_identity",
+      "copy_file",
+      "create_directory",
+      "delete_directory",
+      "delete_file",
+      "edit_file",
+      "file_info",
+      "git_add",
+      "git_commit",
+      "git_diff",
+      "git_init",
+      "git_log",
+      "git_push",
+      "git_status",
+      "glob",
+      "grep",
+      "list_files",
+      "list_my_commands",
+      "list_workspaces",
+      "move_file",
+      "read_command_output",
+      "read_file",
+      "read_file_range",
+      "repo_overview",
+      "run_command",
+      "save_conversation_to_codex",
+      "search_code",
+      "start_command",
+      "workspace_call",
+      "workspace_context",
+      "write_file"
+    ],
+    "read_only": [
+      "batch_read",
+      "connection_identity",
+      "file_info",
+      "git_diff",
+      "git_log",
+      "git_status",
+      "glob",
+      "grep",
+      "list_files",
+      "list_workspaces",
+      "read_file",
+      "read_file_range",
+      "repo_overview",
+      "search_code",
+      "workspace_call",
+      "workspace_context"
+    ]
+  },
+  "schema_version": 1,
+  "scope": "base MCP tools (CUA maintained separately)",
+  "tools": {
+    "apply_patch": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "expected_sha256": {
+                  "type": "string"
+                },
+                "new_text": {
+                  "type": "string"
+                },
+                "old_text": {
+                  "type": "string"
+                },
+                "relative_path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "new_text",
+                "old_text",
+                "relative_path"
+              ],
+              "type": "object"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "type": "object"
+      },
+      "name": "apply_patch",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "change_count": {
+            "type": "integer"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "file_count": {
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "after_bytes": {
+                  "type": "integer"
+                },
+                "after_sha256": {
+                  "type": "string"
+                },
+                "before_bytes": {
+                  "type": "integer"
+                },
+                "before_sha256": {
+                  "type": "string"
+                },
+                "change_count": {
+                  "type": "integer"
+                },
+                "changed": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "after_bytes",
+                "after_sha256",
+                "before_bytes",
+                "before_sha256",
+                "change_count",
+                "changed",
+                "path"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "applied",
+          "change_count",
+          "changed",
+          "file_count",
+          "files"
+        ],
+        "type": "object"
+      }
+    },
+    "batch_read": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "operations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "arguments": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "tool": {
+                  "enum": [
+                    "file_info",
+                    "git_diff",
+                    "git_log",
+                    "git_status",
+                    "glob",
+                    "grep",
+                    "list_files",
+                    "read_file",
+                    "read_file_range",
+                    "repo_overview",
+                    "search_code"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          },
+          "stop_on_error": {
+            "default": false,
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "type": "object"
+      },
+      "name": "batch_read",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "requested": {
+            "type": "integer"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "integer"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "structured_content": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "ok",
+                "tool"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stopped_on_error": {
+            "type": "boolean"
+          },
+          "succeeded": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "completed",
+          "failed",
+          "requested",
+          "results",
+          "stopped_on_error",
+          "succeeded"
+        ],
+        "type": "object"
+      }
+    },
+    "cancel_command": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "cancel_command",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "last_cursor": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "cancelled",
+              "exited",
+              "interrupted",
+              "launch_failed",
+              "queued",
+              "running",
+              "stopping",
+              "timed_out"
+            ],
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exit_code",
+          "has_more",
+          "last_cursor",
+          "next_cursor",
+          "output",
+          "request_id",
+          "session_id",
+          "state",
+          "timeout_seconds",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "command_capacity_status": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "command_capacity_status",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "accepting_new_commands": {
+            "type": "boolean"
+          },
+          "active_long_running": {
+            "type": "integer"
+          },
+          "active_synchronous": {
+            "type": "integer"
+          },
+          "active_total": {
+            "type": "integer"
+          },
+          "available_slots": {
+            "type": "integer"
+          },
+          "max_concurrent_commands": {
+            "type": "integer"
+          },
+          "queued_total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accepting_new_commands",
+          "active_long_running",
+          "active_synchronous",
+          "active_total",
+          "available_slots",
+          "max_concurrent_commands",
+          "queued_total"
+        ],
+        "type": "object"
+      }
+    },
+    "command_receipt_status": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "command_receipt_status",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reattachable": {
+            "type": "boolean"
+          },
+          "started_at_unix_ms": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at_unix_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exit_code",
+          "reattachable",
+          "started_at_unix_ms",
+          "state",
+          "updated_at_unix_ms"
+        ],
+        "type": "object"
+      }
+    },
+    "connection_identity": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "connection_identity",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_workspace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "authentication_mode": {
+            "enum": [
+              "shared_connection",
+              "verified_oauth_client"
+            ],
+            "type": "string"
+          },
+          "conversation_authenticated": {
+            "type": "boolean"
+          },
+          "task_ownership": {
+            "type": "string"
+          },
+          "verified_client_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "allowed_workspace_ids",
+          "authentication_mode",
+          "conversation_authenticated",
+          "task_ownership",
+          "verified_client_id"
+        ],
+        "type": "object"
+      }
+    },
+    "copy_file": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "destination_path": {
+            "type": "string"
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination_path",
+          "source_path"
+        ],
+        "type": "object"
+      },
+      "name": "copy_file",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "create_directory": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "create_directory",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "delete_directory": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "delete_directory",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "delete_file": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "delete_file",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "edit_file": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "expected_sha256": {
+            "type": "string"
+          },
+          "new_text": {
+            "type": "string"
+          },
+          "old_text": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "new_text",
+          "old_text",
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "edit_file",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after_bytes": {
+            "type": "integer"
+          },
+          "after_sha256": {
+            "type": "string"
+          },
+          "applied": {
+            "type": "boolean"
+          },
+          "before_bytes": {
+            "type": "integer"
+          },
+          "before_sha256": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "after_bytes",
+          "after_sha256",
+          "applied",
+          "before_bytes",
+          "before_sha256",
+          "changed",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "file_info": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "file_info",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "modified_at_unix": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "modified_at_unix",
+          "path",
+          "size_bytes"
+        ],
+        "type": "object"
+      }
+    },
+    "git_add": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "paths": {
+            "default": ".",
+            "type": "string"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_add",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "git_commit": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "default": "update",
+            "type": "string"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_commit",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "git_diff": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "paths": {
+            "type": "string"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_diff",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "git_init": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_init",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "git_log": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_log",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "git_push": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_push",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "git_status": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "git_status",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "glob": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "head_limit": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "include_ignored": {
+            "default": false,
+            "type": "boolean"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 1000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "name": "glob",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "default_excluded_directory_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "include_ignored": {
+            "type": "boolean"
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "returned": {
+            "type": "integer"
+          },
+          "search_errors": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "truncation_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unsafe_paths_skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "default_excluded_directory_names",
+          "files",
+          "include_ignored",
+          "next_offset",
+          "offset",
+          "path",
+          "pattern",
+          "returned",
+          "search_errors",
+          "total",
+          "truncated",
+          "truncation_reasons",
+          "unsafe_paths_skipped"
+        ],
+        "type": "object"
+      }
+    },
+    "grep": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "case_insensitive": {
+            "default": false,
+            "type": "boolean"
+          },
+          "context": {
+            "default": 0,
+            "maximum": 10,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "context_after": {
+            "maximum": 10,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "context_before": {
+            "maximum": 10,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fixed_strings": {
+            "default": false,
+            "type": "boolean"
+          },
+          "glob": {
+            "type": "string"
+          },
+          "head_limit": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "include_ignored": {
+            "default": false,
+            "type": "boolean"
+          },
+          "multiline": {
+            "default": false,
+            "type": "boolean"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 1000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_mode": {
+            "default": "files_with_matches",
+            "enum": [
+              "content",
+              "count",
+              "files_with_matches"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "name": "grep",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "counts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "count",
+                "path"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "default_excluded_directory_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "include_ignored": {
+            "type": "boolean"
+          },
+          "matches": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "after": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "line": {
+                        "type": "integer"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "line",
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "before": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "line": {
+                        "type": "integer"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "line",
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "line": {
+                  "type": "integer"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "after",
+                "before",
+                "line",
+                "path",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "output_mode": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "returned": {
+            "type": "integer"
+          },
+          "search_errors": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "truncation_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unsafe_paths_skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "counts",
+          "default_excluded_directory_names",
+          "files",
+          "include_ignored",
+          "matches",
+          "next_offset",
+          "offset",
+          "output_mode",
+          "path",
+          "pattern",
+          "returned",
+          "search_errors",
+          "total",
+          "truncated",
+          "truncation_reasons",
+          "unsafe_paths_skipped"
+        ],
+        "type": "object"
+      }
+    },
+    "list_files": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "subpath": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_files",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "result",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "list_my_commands": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_my_commands",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "exit_code": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "exit_code",
+                "request_id",
+                "session_id",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "commands"
+        ],
+        "type": "object"
+      }
+    },
+    "list_workspaces": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_workspaces",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspaces": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "allowed_tools": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "shell_execution": {
+                  "enum": [
+                    "disabled",
+                    "host",
+                    "isolated_linux"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "allowed_tools",
+                "id",
+                "name",
+                "path",
+                "shell_execution"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "workspaces"
+        ],
+        "type": "object"
+      }
+    },
+    "move_file": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "destination_path": {
+            "type": "string"
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination_path",
+          "source_path"
+        ],
+        "type": "object"
+      },
+      "name": "move_file",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "read_command_output": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "read_command_output",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "last_cursor": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "cancelled",
+              "exited",
+              "interrupted",
+              "launch_failed",
+              "queued",
+              "running",
+              "stopping",
+              "timed_out"
+            ],
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exit_code",
+          "has_more",
+          "last_cursor",
+          "next_cursor",
+          "output",
+          "request_id",
+          "session_id",
+          "state",
+          "timeout_seconds",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "read_file": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "read_file",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "read_file_range": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "end_line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "start_line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "end_line",
+          "relative_path",
+          "start_line"
+        ],
+        "type": "object"
+      },
+      "name": "read_file_range",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "end_line": {
+            "type": "integer"
+          },
+          "has_after": {
+            "type": "boolean"
+          },
+          "has_before": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "requested_end_line": {
+            "type": "integer"
+          },
+          "start_line": {
+            "type": "integer"
+          },
+          "total_lines": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "end_line",
+          "has_after",
+          "has_before",
+          "path",
+          "requested_end_line",
+          "start_line",
+          "total_lines",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "repo_overview": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_ignored": {
+            "default": false,
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "repo_overview",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "default_excluded_directory_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "directories_seen": {
+            "type": "integer"
+          },
+          "extension_counts_limited": {
+            "type": "boolean"
+          },
+          "file_extensions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "type": "integer"
+                },
+                "extension": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "count",
+                "extension"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "files_seen": {
+            "type": "integer"
+          },
+          "include_ignored": {
+            "type": "boolean"
+          },
+          "manifest_results_limited": {
+            "type": "boolean"
+          },
+          "manifests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "search_errors": {
+            "type": "integer"
+          },
+          "top_level_entries": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "top_level_truncated": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "truncation_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unsafe_paths_skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "default_excluded_directory_names",
+          "directories_seen",
+          "extension_counts_limited",
+          "file_extensions",
+          "files_seen",
+          "include_ignored",
+          "manifest_results_limited",
+          "manifests",
+          "path",
+          "search_errors",
+          "top_level_entries",
+          "top_level_truncated",
+          "truncated",
+          "truncation_reasons",
+          "unsafe_paths_skipped"
+        ],
+        "type": "object"
+      }
+    },
+    "run_command": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 30,
+            "maximum": 120,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "run_command",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "save_conversation_to_codex": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "assistant",
+                    "user"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "role"
+              ],
+              "type": "object"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "type": "array"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messages",
+          "title"
+        ],
+        "type": "object"
+      },
+      "name": "save_conversation_to_codex",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "message_count": {
+            "type": "integer"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "turn_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_count",
+          "repo_path",
+          "thread_id",
+          "title",
+          "turn_count"
+        ],
+        "type": "object"
+      }
+    },
+    "search_code": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "case_sensitive": {
+            "default": false,
+            "type": "boolean"
+          },
+          "include_ignored": {
+            "default": false,
+            "type": "boolean"
+          },
+          "max_results_per_query": {
+            "default": 6,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "queries": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "minItems": 1,
+            "type": "array"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "queries"
+        ],
+        "type": "object"
+      },
+      "name": "search_code",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "case_sensitive": {
+            "type": "boolean"
+          },
+          "default_excluded_directory_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files_matched": {
+            "type": "integer"
+          },
+          "files_ranked": {
+            "type": "integer"
+          },
+          "include_ignored": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "query_results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "matches": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "line": {
+                        "type": "integer"
+                      },
+                      "line_text": {
+                        "type": "string"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "score": {
+                        "type": "integer"
+                      },
+                      "signals": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "line",
+                      "line_text",
+                      "path",
+                      "score",
+                      "signals"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "observed_matching_lines": {
+                  "type": "integer"
+                },
+                "query": {
+                  "type": "string"
+                },
+                "result_limit_reached": {
+                  "type": "boolean"
+                },
+                "returned_matches": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "matches",
+                "observed_matching_lines",
+                "query",
+                "result_limit_reached",
+                "returned_matches"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "search_errors": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "truncation_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unsafe_paths_skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_sensitive",
+          "default_excluded_directory_names",
+          "files_matched",
+          "files_ranked",
+          "include_ignored",
+          "path",
+          "query_results",
+          "search_errors",
+          "truncated",
+          "truncation_reasons",
+          "unsafe_paths_skipped"
+        ],
+        "type": "object"
+      }
+    },
+    "start_command": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "queue_if_busy": {
+            "default": false,
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 600,
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "start_command",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "last_cursor": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "cancelled",
+              "exited",
+              "interrupted",
+              "launch_failed",
+              "queued",
+              "running",
+              "stopping",
+              "timed_out"
+            ],
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exit_code",
+          "has_more",
+          "last_cursor",
+          "next_cursor",
+          "output",
+          "request_id",
+          "session_id",
+          "state",
+          "timeout_seconds",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "workspace_call": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "tool_name": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "arguments",
+          "tool_name",
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "name": "workspace_call",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result",
+          "workspace_id"
+        ],
+        "type": "object"
+      }
+    },
+    "workspace_context": {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "workspace_context",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "content",
+                "kind",
+                "path",
+                "truncated"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "git_status": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "scope": {
+            "type": "string"
+          },
+          "shell_commands_enabled": {
+            "type": "boolean"
+          },
+          "shell_execution": {
+            "type": "string"
+          },
+          "top_level": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "top_level_truncated": {
+            "type": "boolean"
+          },
+          "workspace_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cwd",
+          "errors",
+          "files",
+          "git_status",
+          "scope",
+          "shell_commands_enabled",
+          "shell_execution",
+          "top_level",
+          "top_level_truncated",
+          "workspace_root"
+        ],
+        "type": "object"
+      }
+    },
+    "write_file": {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "append": {
+            "default": false,
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "relative_path"
+        ],
+        "type": "object"
+      },
+      "name": "write_file",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

@@ -69,7 +69,7 @@ Check whether the original `local.filemcp` LaunchAgent is loaded. The new instal
 
 **`workspace_call` says a workspace is unknown**
 
-The user must approve that exact folder in Workspaces, save configuration and reconnect. The default workspace remains accessible via direct tools.
+The user must approve that exact folder in Workspaces. An idle additional root can be granted live; default/global settings require reconnect and OAuth grant changes require renewed authorization. The default workspace remains accessible via direct tools.
 
 **A command is rejected because a directory is occupied**
 
@@ -81,7 +81,7 @@ A shell is not sandboxed. Disable Shell permission for clients you do not trust;
 
 **A command session is “unknown or expired”**
 
-The runtime retains bounded history; a restart or session retention limit may expire older IDs. Do not blindly repeat a non-idempotent command because a receipt is missing—check the actual files and processes first.
+The runtime retains bounded session/history data. Durable receipt status is separate, and opted-in live workers can reattach after gateway restart; a missing session does not establish absence of side effects. Do not blindly repeat a non-idempotent command because a receipt is missing—check the actual files and processes first.
 
 ## Background service on Mac
 
@@ -119,3 +119,11 @@ A known GitHub Actions account/billing condition can reject all hosted runners b
 **npm version already exists**
 
 npm versions are immutable. Do not force overwrite or unpublish to reuse a version. Update `package.json`, test and publish a new version/tag instead.
+
+## Windows connection recovery and HTTP capacity
+
+Check the current provider, poll freshness and redacted Activity diagnostics. A spawned tunnel is not yet a connected cloud transport. Both platforms have a 32 accepted-socket ceiling, absolute 15-second request-read and separate response-write deadlines; these are not command execution timeouts. Windows uses its own per-user startup supervisor and checks on system resume. Allow automatic transport recovery only when explicitly configured; inspect task state before forcing reconnect. See [platform parity](PLATFORM_PARITY.md).
+
+## Optional CUA
+
+Check the locally installed package version and `chat-to-computer-mcp cua status`. The driver and browser runtime are separate installs; native OS permissions and app/origin grants are separate from workspace approval. Do not use foreground or Guest as an automatic fallback. See [CUA](CUA.md) for exact grant syntax, observation/receipt recovery and Guest opt-in.

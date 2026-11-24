@@ -51,6 +51,14 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
+    private readonly object _connectionGate = new();
+    private readonly HashSet<TcpClient> _activeConnections = [];
+    private readonly TimeSpan _requestTimeout;
+    private readonly TimeSpan _responseTimeout;
+    private readonly int _maxConnections;
+    private bool _acceptingConnections;
+
+    internal int ActiveConnectionCount { get { lock (_connectionGate) return _activeConnections.Count; } }
 
     public LocalMcpServer(ushort port, string allowedDirectory, string gitUserName, string gitUserEmail,
         bool enableCommands, string localAuthToken, Action<string> log,
@@ -60,8 +68,15 @@ public sealed class LocalMcpServer : IAsyncDisposable
         bool enableGitPush = false, bool enableCodexHistory = false,
         CommandHistoryStore? commandHistory = null,
         WorkspacePermissions? defaultWorkspacePermissions = null,
-        ActivityAuditStore? activityAudit = null, CommandSupervisor? commandSupervisor = null, bool cuaGuest = false, string? cuaPolicyPath = null, bool cuaRelayOnly = false, string? cuaGuestApprovalPath = null)
+        ActivityAuditStore? activityAudit = null, CommandSupervisor? commandSupervisor = null, bool cuaGuest = false, string? cuaPolicyPath = null, bool cuaRelayOnly = false, string? cuaGuestApprovalPath = null,
+        TimeSpan? requestTimeout = null, TimeSpan? responseTimeout = null, int maxConnections = 32)
     {
+        _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(15);
+        _responseTimeout = responseTimeout ?? TimeSpan.FromSeconds(15);
+        _maxConnections = maxConnections;
+        if (_maxConnections <= 0 || _requestTimeout <= TimeSpan.Zero || _responseTimeout <= TimeSpan.Zero ||
+            _requestTimeout.TotalMilliseconds > int.MaxValue || _responseTimeout.TotalMilliseconds > int.MaxValue)
+            throw new FileMcpException("HTTP resource limits must be positive and finite");
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         if((cuaGuest||cuaRelayOnly)&&(enableCommands||enableGitPush||enableCodexHistory||additionalWorkspaces?.Count>0||oauth is not null||publicHost is not null||commandSupervisor is not null||(cuaGuest&&cuaRelayOnly)))
             throw new FileMcpException("Isolated guest gateway is CUA-only and loopback-only");
@@ -206,7 +221,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         }
     }
 
-    private JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
+    internal JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
     {
         lock (_workspaceGate)
         {
@@ -287,6 +302,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
             ["annotations"] = new JsonObject { ["readOnlyHint"] = false, ["destructiveHint"] = true,
                 ["openWorldHint"] = true }
         });
+        if (_oauth is not null)
+            foreach (var tool in tools.OfType<JsonObject>())
+                tool["securitySchemes"] = new JsonArray(new JsonObject
+                    { ["type"] = "oauth2", ["scopes"] = new JsonArray("mcp") });
         return tools;
     }
 
@@ -365,8 +384,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
             _listener = new TcpListener(IPAddress.Loopback, _port) { ExclusiveAddressUse = true };
             _listener.Start();
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            IsReady = true;
-            _acceptLoop = AcceptLoopAsync(_cts.Token);
+            lock (_connectionGate) { _acceptingConnections = true; IsReady = true; }
+            _acceptLoop = AcceptLoopAsync(_listener, _cts.Token);
             _log($"MCP server listening on http://127.0.0.1:{_port}/mcp\n");
             return Task.CompletedTask;
         }
@@ -379,45 +398,112 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     public void Stop(bool preserveSupervised = false)
     {
+        TcpClient[] connections;
+        lock (_connectionGate)
+        {
+            _acceptingConnections = false;
+            IsReady = false;
+            connections = _activeConnections.ToArray();
+            _activeConnections.Clear();
+        }
+        try { _cts?.Cancel(); } catch { }
+        try { _listener?.Stop(); } catch { }
+        foreach (var client in connections) client.Dispose();
         _cua.Stop();
         LocalTools[] scopes;
         lock (_workspaceGate) { _catalogStopped = true; scopes = _catalog.Values.Select(item => item.Tools).ToArray(); }
         _tools.StopCommandSessions(preserveSupervised);
         foreach (var scoped in scopes) scoped.StopCommandSessions(preserveSupervised);
-        IsReady = false;
-        try { _cts?.Cancel(); } catch { }
-        try { _listener?.Stop(); } catch { }
         _listener = null;
     }
 
-    private async Task AcceptLoopAsync(CancellationToken cancellationToken)
+    private async Task AcceptLoopAsync(TcpListener listener, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             TcpClient client;
-            try { client = await _listener!.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false); }
+            try { client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             catch (ObjectDisposedException) { return; }
             catch (SocketException) when (cancellationToken.IsCancellationRequested) { return; }
-            _ = Task.Run(() => HandleClientAsync(client, cancellationToken), CancellationToken.None);
+            lock (_connectionGate)
+            {
+                if (!_acceptingConnections || cancellationToken.IsCancellationRequested || _activeConnections.Count >= _maxConnections)
+                {
+                    client.Dispose();
+                    continue;
+                }
+                _activeConnections.Add(client);
+            }
+            var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(_requestTimeout);
+            _ = Task.Run(() => HandleTrackedClientAsync(client, cancellationToken, deadline), CancellationToken.None);
         }
     }
 
-    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
+    private async Task HandleTrackedClientAsync(TcpClient client, CancellationToken cancellationToken, CancellationTokenSource deadline)
+    {
+        using var readDeadline = deadline;
+        try { await HandleClientAsync(client, cancellationToken, readDeadline).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException or ObjectDisposedException)
+        { /* Timeout, disconnect or shutdown: close without retrying the request. */ }
+        finally
+        {
+            client.Dispose();
+            lock (_connectionGate) _activeConnections.Remove(client);
+        }
+    }
+
+    internal async Task WriteResponseAsync(Stream stream, byte[] response, CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_responseTimeout);
+        await stream.WriteAsync(response, deadline.Token).ConfigureAwait(false);
+    }
+
+    private async Task WriteRejectionAsync(TcpClient client, NetworkStream stream, byte[] response,
+        CancellationToken cancellationToken, CancellationToken requestDeadline)
+    {
+        await WriteResponseAsync(stream, response, cancellationToken).ConfigureAwait(false);
+        // Send the rejection before accepting/processing the unauthorized body.
+        // A full TCP close while the peer is still sending can reset the
+        // connection and discard the already-written response on Windows.
+        // Half-close the response, then discard a small bounded amount of raw
+        // input; neither the request deadline nor admission cap is extended.
+        try { client.Client.Shutdown(SocketShutdown.Send); }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException) { return; }
+        using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, requestDeadline);
+        drain.CancelAfter(TimeSpan.FromMilliseconds(250));
+        var scratch = new byte[4096];
+        int remaining = 65_536;
+        while (remaining > 0 && !drain.IsCancellationRequested)
+        {
+            int read = await stream.ReadAsync(scratch.AsMemory(0, Math.Min(scratch.Length, remaining)),
+                drain.Token).ConfigureAwait(false);
+            if (read == 0) break;
+            remaining -= read;
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken, CancellationTokenSource deadline)
     {
         using (client)
         {
             client.NoDelay = true;
             var stream = client.GetStream();
-            var buffer = new MemoryStream();
+            using var buffer = new MemoryStream();
             var readBuffer = new byte[65_536];
-            while (!cancellationToken.IsCancellationRequested)
+            while (!deadline.IsCancellationRequested)
             {
                 HttpParseResult parsed;
                 try { parsed = ParseHttpRequest(buffer.ToArray()); }
                 catch { parsed = new HttpParseResult(HttpParseStatus.Failure, FailureStatus: 400, FailureMessage: "Malformed request"); }
+                if (deadline.IsCancellationRequested) return;
                 if (parsed.Status == HttpParseStatus.Request)
                 {
+                    // Parsing has its own absolute deadline; it is not an execution timeout.
+                    deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                    if (deadline.IsCancellationRequested) return;
                     byte[] response;
                     try
                     {
@@ -438,23 +524,23 @@ public sealed class LocalMcpServer : IAsyncDisposable
                         _log("ERROR: MCP request processing failed.\n");
                         response = JsonRpcError(null, -32603, "Internal error", status: 500);
                     }
-                    await stream.WriteAsync(response, cancellationToken).ConfigureAwait(false);
+                    await WriteResponseAsync(stream, response, cancellationToken).ConfigureAwait(false);
                     return;
                 }
                 if (parsed.Status == HttpParseStatus.Failure)
                 {
-                    var response = HttpResponse(parsed.FailureStatus, Encoding.UTF8.GetBytes(parsed.FailureMessage ?? "Error"), "text/plain");
-                    await stream.WriteAsync(response, cancellationToken).ConfigureAwait(false);
+                    var response = HttpErrorResponse(parsed.FailureStatus, parsed.FailureMessage ?? "Error");
+                    await WriteRejectionAsync(client, stream, response, cancellationToken, deadline.Token).ConfigureAwait(false);
                     return;
                 }
                 if (buffer.Length > FileMcpConstants.MaxHttpRequestHeaderBytes + FileMcpConstants.MaxHttpRequestBodyBytes)
                 {
                     var response = HttpResponse(413, Encoding.UTF8.GetBytes("Payload too large"), "text/plain");
-                    await stream.WriteAsync(response, cancellationToken).ConfigureAwait(false);
+                    await WriteRejectionAsync(client, stream, response, cancellationToken, deadline.Token).ConfigureAwait(false);
                     return;
                 }
                 int read;
-                try { read = await stream.ReadAsync(readBuffer, cancellationToken).ConfigureAwait(false); }
+                try { read = await stream.ReadAsync(readBuffer, deadline.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
                 if (read <= 0) return;
                 buffer.Write(readBuffer, 0, read);
@@ -543,7 +629,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (request.Path == "/mcp" &&
                 !HasValidLocalAdmin(request.Headers) &&
                 _oauth.VerifyBearer(request.Headers.GetValueOrDefault("authorization")) is null)
-                return HttpResponse(401, Encoding.UTF8.GetBytes("Unauthorized"), "text/plain");
+                return HttpErrorResponse(401, "Unauthorized");
         }
         if (request.Method == "OPTIONS") return HttpResponse(204, [], "text/plain");
         if (request.Path != "/mcp") return HttpResponse(404, Encoding.UTF8.GetBytes("Not found"), "text/plain");
@@ -562,7 +648,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             request.Headers.GetValueOrDefault("authorization"));
         if (_oauth is not null && verified is null &&
             (!HasValidLocalAdmin(request.Headers) || (IsCuaRequest(request) && request.Headers.ContainsKey("authorization"))))
-            return HttpResponse(401, Encoding.UTF8.GetBytes("Unauthorized"), "text/plain");
+            return HttpErrorResponse(401, "Unauthorized");
         var headerVersion = request.Headers.GetValueOrDefault("mcp-protocol-version");
         var headerModern = headerVersion is not null && !FileMcpConstants.LegacySupportedVersions.Contains(headerVersion);
         JsonObject parameters;
@@ -878,18 +964,31 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private static byte[] JsonRpcError(JsonNode? id, int code, string message, JsonNode? data = null, int status = 200) { var error = new JsonObject { ["code"] = code, ["message"] = message }; if (data is not null) error["data"] = data; return JsonResponse(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id?.DeepClone(), ["error"] = error }, status); }
     private static byte[] JsonResponse(JsonNode node, int status = 200) => HttpResponse(status, Encoding.UTF8.GetBytes(node.ToJsonString()), "application/json");
 
+    private byte[] HttpErrorResponse(int status, string message)
+    {
+        IReadOnlyDictionary<string, string>? headers = status == 401 && _oauth is not null
+            ? new Dictionary<string, string>
+            {
+                ["WWW-Authenticate"] = $"Bearer resource_metadata=\"{_oauth.Issuer}/.well-known/oauth-protected-resource/mcp\", scope=\"mcp\""
+            }
+            : null;
+        return HttpResponse(status, Encoding.UTF8.GetBytes(message), "text/plain", headers);
+    }
+
     private static byte[] HttpResponse(int status, byte[] body, string contentType,
         IReadOnlyDictionary<string, string>? extraHeaders = null)
     {
         var reason = status switch { 200 => "OK", 202 => "Accepted", 204 => "No Content", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed",
             302 => "Found", 429 => "Too Many Requests", 413 => "Payload Too Large", 415 => "Unsupported Media Type", 431 => "Request Header Fields Too Large", 500 => "Internal Server Error", _ => "Error" };
-        var optional = new StringBuilder();
+        var optional = new StringBuilder("Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n");
+        if (extraHeaders?.ContainsKey("Referrer-Policy") != true)
+            optional.Append("Referrer-Policy: no-referrer\r\n");
         if (extraHeaders is not null)
         {
             foreach (var item in extraHeaders)
             {
                 if (item.Key is not ("Location" or "Content-Security-Policy" or
-                    "Referrer-Policy" or "X-Frame-Options") ||
+                    "Referrer-Policy" or "X-Frame-Options" or "WWW-Authenticate") ||
                     item.Value.Contains('\r') || item.Value.Contains('\n') ||
                     item.Value.Length > 4096)
                     throw new FileMcpException("Unsafe OAuth response header");

@@ -11,6 +11,7 @@ This directory contains official `ripgrep` (`rg`) binaries bundled with FileMCP.
 | Target | Official release archive | Archive SHA-256 | Bundled executable SHA-256 |
 | --- | --- | --- | --- |
 | `darwin-arm64` | `ripgrep-15.2.0-aarch64-apple-darwin.tar.gz` | `3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4` | `a326a1fb48074202e9ad41e4cd1e389eeea372c8c6f7d7e80da81176d5d9430e` |
+| `darwin-amd64` | `ripgrep-15.2.0-x86_64-apple-darwin.tar.gz` | `af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1` | `0c9a0066db0d26b640777db88045b0ccdd58509a746700e43e1c4ff8707a5ed0` |
 | `windows-amd64` | `ripgrep-15.2.0-x86_64-pc-windows-msvc.zip` | `71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5` | `14231169855ec5205cf5a1b6f1db358ff4aed4247c86b69ce8aae647c77f6680` |
 | `windows-arm64` | `ripgrep-15.2.0-aarch64-pc-windows-msvc.zip` | `e4abca10c3a64ebea742667dd7009449d49403db5460dd6873e389fa2945360f` | `d33a29a9ef03c9f4c03be9e8d88498e6e2d2e566d64cdbdef97f9afc8f13120c` |
 

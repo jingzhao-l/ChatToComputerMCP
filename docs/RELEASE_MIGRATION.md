@@ -1,38 +1,51 @@
-# Compatibility-safe release plan
+# Compatibility-safe installation and migration
 
-Current production service on the user's Mac is a separate existing FileMCP
-instance managed by local.filemcp launchd. It must not be moved or mutated
-as part of source repository restructuring.
+ChatToComputerMCP uses a separate versioned installation directory, executable
+and user-login service. Do not overwrite or silently take over a working
+FileMCP deployment.
 
-This initial ChatToComputerMCP rebrand changes only visible product identifiers.
-The inherited macOS Bundle Identifier com.localfilesmcp.app, binary name,
-UserDefaults, Keychain service, Secure MCP Tunnel, tunnel profile and proxy
-paths remain until a tested migration exists.
+## Current boundaries
 
-To migrate future releases:
-1. Preserve old signed bundle and original credentials, verify source hashes.
-2. Stage a new signed bundle separately; show UI before Keychain access.
-3. Require authorized Keychain prompts; never export tokens or modify ACLs.
-4. Check live command sessions before replacing the production symlink.
-5. Use independent one-shot launchd helper with atomic update and rollback.
-6. Verify healthz/readyz HTTP200, control-plane polling, client/cwd concurrency,
-   and sibling cancellation isolation before claiming production completion.
+| Resource | macOS | Windows |
+| --- | --- | --- |
+| Product-facing name | ChatToComputerMCP | ChatToComputerMCP |
+| Native startup | local.chat-to-computer-mcp LaunchAgent | dedicated user startup supervisor |
+| Credential identity | legacy com.localfilesmcp.app for compatibility | ChatToComputerMCP/runtime-api-key |
+| Settings/profile | macOS retains legacy bundle defaults and tunnel profile path for continuity | separate ChatToComputerMCP settings and tunnel profiles |
+| Update | versioned builds, validated current pointer | versioned builds and verified newest release |
 
-No new ChatToComputerMCP LaunchAgent is installed by this source import.
+Windows internal FileMCP .NET namespaces do not imply shared runtime
+credentials. On Mac, the retained Bundle ID and profile directory do imply
+a compatibility boundary: do not run the original and new apps against the
+same profile. Independent startup guards are not full credential separation.
 
+## Normal upgrades
 
-## Current independent development release
+Use the official npm channel and [idle activation](UPDATES.md). Preserve the
+currently running bundle and OS credential store. The installer does not
+export credentials or change ACLs. If a Mac release is signed by an Apple
+team, updates must use the same locally available team identity. A failed
+build or incompatible signing identity does not activate an upgrade.
 
-The macOS source builds a separate dist/ChatToComputerMCP.app with new visible
-product name, icon and OAuth UI. The internal bundle ID com.localfilesmcp.app,
-existing Keychain targets and OpenAI local auth headers remain for credential
-and tunnel compatibility until a tested migration is explicitly authorized.
-Windows source still contains internal FileMCP namespaces/legacy credential key
-as non-public compatibility layers; do not reinterpret those as product branding.
+## Future independent Mac identity cutover
 
-Never install this development build over a live FileMCP service without a
-signed staged rollout, real tunnel health acceptance and automatic rollback.
+A separate product Bundle ID and Keychain namespace must be staged and tested
+before becoming the default for existing installations. Migration requires
+local explicit consent, clear ownership of the legacy configuration, secure
+OS-authorized credential access (never credential export), validated new
+settings/profile storage and proof that old settings remain intact. Refuse
+automatic connection until authorization and the new runtime profile are
+verified. Do not move the existing production symlink or launch agent while
+tasks are active. A rejected Keychain prompt, failed migration or health check
+must leave the old installed version and working connection available.
 
-## 0.6.0 optional CUA migration
+Acceptance requires signed identity continuity, actual Keychain access,
+verified tunnel health and a real client call, workspace and task ownership
+checks, and rollback. A namespace rename alone is not a migration.
 
-Normal users retain existing workspace, command and connection configuration. CUA app permissions remain separate from workspace access. No driver/Chromium download, Guest activation, or VM startup is triggered by an upgrade. Existing experimental Guest profiles are inert until explicit local `cua guest-enable`. Close active CUA leases before activating an update.
+## Optional CUA upgrades
+
+Normal installs/updates do not automatically download driver or Chromium,
+grant application permissions, enable independent Guest, or start a VM.
+Existing experimental Guest profiles remain inert until local guest-enable.
+Close active leases before activating an update. See [CUA](CUA.md).

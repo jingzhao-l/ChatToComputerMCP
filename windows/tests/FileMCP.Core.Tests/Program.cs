@@ -48,12 +48,23 @@ internal static partial class Program
         }
         if (args.Length > 0 && args[0] == "mcp") return await RunCuaFixtureAsync();
 
+        if (args.Length == 1 && args[0] == "--dump-base-tool-contract") { await DumpBaseToolContractAsync(); return 0; }
+        if (args.Length == 1 && args[0] == "--http-resource-check")
+        {
+            var isolated = Path.Combine(Path.GetTempPath(), "ctcmcp-http-limit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(isolated);
+            try { await TestHttpResourceLimitsAsync(isolated); return 0; }
+            finally { Directory.Delete(isolated, true); }
+        }
+
         if (!OperatingSystem.IsWindows())
         {
             Console.WriteLine("windows-tests: skipped (Windows required)");
             return 0;
         }
 
+        var baseOnly = args.Length == 1 && args[0] == "--base-only";
+        Console.WriteLine($"windows-test-architecture: {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
         var root = Path.Combine(Path.GetTempPath(), "filemcp-windows-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
@@ -62,12 +73,13 @@ internal static partial class Program
             await TestProcessRunnerAsync(root);
             await TestFilesystemAndToolsAsync(root);
             await TestAgentToolsAsync(root);
-            await TestCuaAsync(root);
+            if (!baseOnly) await TestCuaAsync(root);
             await TestSupervisedRecoveryAsync(root);
             await TestWindowsReceiptLedgerAsync(root);
             await TestCodexHistoryAsync(root);
             await TestGitSafetyAsync(root);
             await TestHttpAndMcpAsync(root);
+            await TestHttpResourceLimitsAsync(root);
             await TestWorkspaceScopeAsync(root);
             await TestWindowsOAuthAsync(root);
             CheckTunnelHealthPolicy();

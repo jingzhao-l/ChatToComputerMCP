@@ -25,6 +25,12 @@ internal static partial class Program
             "{}",host:"example.test");
         Assert(denied.StartsWith("HTTP/1.1 401",StringComparison.Ordinal),
             "Cloudflare OAuth mode refuses unauthenticated tool access");
+        Assert(denied.Contains("WWW-Authenticate: Bearer resource_metadata=\"https://example.test/.well-known/oauth-protected-resource/mcp\", scope=\"mcp\"\r\n", StringComparison.Ordinal),
+            "OAuth 401 exposes the protected-resource discovery challenge");
+        Assert(denied.Contains("Cache-Control: no-store\r\n", StringComparison.Ordinal) &&
+            denied.Contains("X-Content-Type-Options: nosniff\r\n", StringComparison.Ordinal) &&
+            denied.Contains("Referrer-Policy: no-referrer\r\n", StringComparison.Ordinal),
+            "OAuth responses use no-store, nosniff and safe referrer defaults");
 
         async Task<JsonObject> Call(string access,string tool,JsonObject? args=null)
         {
@@ -44,6 +50,15 @@ internal static partial class Program
                 "Verified client reaches MCP");
             return JsonNode.Parse(HttpBody(result))!["result"]!.AsObject();
         }
+        var listed = await SendHttpAsync(port, "POST", "/mcp",
+            new Dictionary<string, string> { ["Content-Type"] = "application/json", ["Authorization"] = "Bearer " + first },
+            """{"jsonrpc":"2.0","id":52,"method":"tools/list","params":{}}""", host: "example.test");
+        var definitions = JsonNode.Parse(HttpBody(listed))!["result"]!["tools"]!.AsArray();
+        Assert(definitions.Count > 0 && definitions.All(tool =>
+            tool!["securitySchemes"] is JsonArray schemes && schemes.Count == 1 &&
+            schemes[0]!["type"]!.GetValue<string>() == "oauth2" &&
+            schemes[0]!["scopes"]!.AsArray().Count == 1 && schemes[0]!["scopes"]![0]!.GetValue<string>() == "mcp"),
+            "OAuth discovery advertises the same MCP OAuth security scheme as Mac");
         var identity = (await Call(first, "connection_identity"))["structuredContent"]!;
         Assert(identity["authentication_mode"]!.GetValue<string>() == "verified_oauth_client" &&
             !identity["conversation_authenticated"]!.GetValue<bool>() &&

@@ -25,7 +25,7 @@ The MCP server enforces the following for **verified OAuth requests**:
 - Expired, invalid and revoked OAuth tokens are rejected.
 - Approved client workspace grants persist with the hashed OAuth token store.
   Old stores without per-client grants migrate to default-only access.
-- macOS Connection includes **Authorized OAuth clients**: inspect self-reported
+- macOS and Windows Connection include **Authorized OAuth clients**: inspect self-reported
   names, current scopes and revoke access/refresh tokens and stop that client's active commands.
 
 ## Critical exception: OpenAI Secure MCP Tunnel
@@ -63,10 +63,10 @@ CUA offers a local fail-closed option, `chat-to-computer-mcp cua require-verifie
 
 ## Testing
 
-The Mac suite checks OAuth registration, PKCE, token issuance and persistence,
+The Mac and Windows suites check OAuth registration, PKCE, token issuance and persistence,
 default-only backward compatibility, scope forgery rejection, independent
 workspace routing, cross-client output/cancel denial, request-ID collision
-refusal, and revocation. A deployment still needs real authenticated client
+refusal, and revocation. Both advertise the OAuth MCP security scheme on verified OAuth transports. A deployment still needs real authenticated client
 end-to-end verification before claiming production isolation.
 
 ### Dedicated execution domains

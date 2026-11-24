@@ -1,5 +1,5 @@
 # Real, offline-source npm tarball installation on a clean Windows user profile.
-# Run on native Windows x64 with Node 24 and the .NET 8 SDK available.
+# Run on native Windows x64 or ARM64 with Node 24 and the .NET 8 SDK available.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -11,6 +11,11 @@ function Get-LoginRunValue {
     $Entry = $RunKey.PSObject.Properties["ChatToComputerMCP"]
     if ($null -eq $Entry) { return $null }
     return [string]$Entry.Value
+}
+$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+$NodeArchitecture = (& node -p "process.arch").Trim()
+if ($LASTEXITCODE -ne 0 -or $Architecture -notin @("x64", "arm64") -or $NodeArchitecture -ne $Architecture) {
+    throw "Native Node architecture mismatch: OS=$Architecture Node=$NodeArchitecture"
 }
 $PreviousLoginRunValue = Get-LoginRunValue
 $Version = (& node -p "require('./package.json').version").Trim()
@@ -80,7 +85,7 @@ try {
     if (-not $PreviousLoginRunValue -and (Get-LoginRunValue)) {
         throw "Installing a source tarball silently enabled login startup"
     }
-    Write-Host "windows-npm-clean-install: ok ($Version, native Windows x64)"
+    Write-Host "windows-npm-clean-install: ok ($Version, native Windows $Architecture)"
     $Success = $true
 } finally {
     foreach ($key in $Before.Keys) {
