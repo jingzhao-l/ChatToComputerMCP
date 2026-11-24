@@ -122,9 +122,9 @@ internal static partial class Program
         Refuse("custom action unavailable",()=>CuaService.ValidateAction("click",J("""{"element_token":"s00000003:1","custom_action":"Move Down"}""")));
         Refuse("ambiguous semantic click",()=>CuaService.ValidateAction("click",J("""{"element_token":"s00000003:1","action":"expand","button":"left"}""")));
         Refuse("semantic action without element",()=>CuaService.ValidateAction("click",J("""{"x":1,"y":1,"capture_id":"cap","action":"expand"}""")));
-        CuaService.ValidateAction("type_text",new JsonObject{["element_token"]="s00000003:1",["text"]="a\n多行😀",["delay_ms"]=10});
-        Refuse("paced input budget",()=>CuaService.ValidateAction("type_text",new JsonObject{["element_token"]="s00000003:1",["text"]=new string('a',31),["delay_ms"]=100}));
-        Refuse("NUL input",()=>CuaService.ValidateAction("type_text",new JsonObject{["element_token"]="s00000003:1",["text"]="a\0b"}));
+        CuaService.ValidateAction("type_text",J("""{"element_token":"s00000003:1","text":"a\n多行😀","delay_ms":10}"""));
+        Refuse("paced input budget",()=>CuaService.ValidateAction("type_text",J("""{"element_token":"s00000003:1","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","delay_ms":100}""")));
+        Refuse("NUL input",()=>CuaService.ValidateAction("type_text",J("""{"element_token":"s00000003:1","text":"a\u0000b"}""")));
         long? foreground=101;
         var continuity=new CuaForegroundContinuity(()=>foreground);
         Assert(continuity.Permits(),"initial foreground continuity");
