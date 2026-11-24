@@ -122,6 +122,29 @@ import Foundation
         let transferSchema=CUAService.definitions().first{$0["name"] as? String=="cua_create_session"}!["inputSchema"] as! [String:Any]
         precondition((transferSchema["properties"] as! [String:Any])["previous_session_id"] != nil)
         print("PASS same-process transfer identity and strict typed background refusal classification")
+        let controls=try CUASnapshot(structured:["snapshot_id":"s00000003","elements":[
+            ["element_token":"s00000003:1","enabled":true,"custom_actions":[["name":"Move Down","raw":"Name:Move Down\nTarget:fixture"]]],
+            ["element_token":"s00000003:2","enabled":false],
+            ["element_token":"s00000003:3","custom_actions":[["name":"Duplicate"],["name":"Duplicate"]]],
+            ["element_token":"s00000003:4"],["element_token":"s00000003:4"]
+        ]],blocks:[])
+        let custom:[String:Any]=["element_token":"s00000003:1","custom_action":"Move Down"]
+        try CUAService.validateAction("click",custom)
+        let normalized=controls.validatedControlArguments("click",custom)
+        precondition(normalized?["action"] as? String=="Move Down" && normalized?["custom_action"]==nil)
+        precondition(controls.validatedControlArguments("click",["element_token":"s00000003:1","custom_action":"Invented"])==nil)
+        precondition(controls.validatedControlArguments("click",["element_token":"s00000003:2"])==nil)
+        precondition(controls.validatedControlArguments("click",["element_token":"s00000003:3","custom_action":"Duplicate"])==nil)
+        precondition(!controls.tokens.contains("s00000003:4"))
+        expectFailure("raw custom AX envelope") {try CUAService.validateAction("click",["element_token":"s00000003:1","custom_action":"Name:Move Down\nTarget:fixture"])}
+        expectFailure("custom action collides with standard alias") {try CUAService.validateAction("click",["element_token":"s00000003:1","custom_action":"AX-Press"])}
+        expectFailure("ambiguous semantic click") {try CUAService.validateAction("click",["element_token":"s00000003:1","action":"show_menu","button":"left"])}
+        expectFailure("semantic action without element") {try CUAService.validateAction("click",["x":1,"y":1,"capture_id":"cap","action":"pick"])}
+        try CUAService.validateAction("type_text",["element_token":"s00000003:1","text":"a\n多行😀","delay_ms":10])
+        expectFailure("paced input exceeds dispatch budget") {try CUAService.validateAction("type_text",["element_token":"s00000003:1","text":String(repeating:"a",count:31),"delay_ms":100])}
+        expectFailure("NUL text refused") {try CUAService.validateAction("type_text",["element_token":"s00000003:1","text":"a\0b"])}
+        precondition(CUAService.recoverableNativeRefusal(["code":"select_menu_would_raise_window","effect":"refused"])=="select_menu_would_raise_window")
+        print("PASS observed custom control actions, disabled/duplicate elements, text pacing and safe dropdown refusal")
         var front:Int64?=101
         let continuity=CUAForegroundContinuity(read:{front})
         precondition(continuity.permits())

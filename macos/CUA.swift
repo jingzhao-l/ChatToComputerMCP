@@ -311,6 +311,7 @@ struct CUASnapshot {
     let width: Int?
     let height: Int?
     let tokens: Set<String>
+    let elementEvidence:[String:[String:Any]]
     let geometry: CUAWindowGeometry?
     let treeGrounded: Bool
     var pixelGrounded:Bool { captureID != nil && geometry?.pixelEligible == true }
@@ -327,9 +328,16 @@ struct CUASnapshot {
         treeGrounded=includeElements && !id.isEmpty
         self.revision = treeGrounded ? structured["ui_tree_revision"] as? Int : nil
         let elements = treeGrounded ? structured["elements"] as? [[String:Any]] ?? [] : []
-        self.tokens = Set(elements.compactMap { $0["element_token"] as? String }.filter {
-            $0.hasPrefix(id + ":") && $0.range(of:"^s[0-9a-f]{8}:[0-9]+$",options:.regularExpression) != nil
-        })
+        var evidence:[String:[String:Any]]=[:]
+        var duplicated=Set<String>()
+        for row in elements {
+            guard let token=row["element_token"] as? String,token.hasPrefix(id+":"),token.range(of:"^s[0-9a-f]{8}:[0-9]+$",options:.regularExpression) != nil else{continue}
+            if evidence[token] != nil {duplicated.insert(token)}
+            evidence[token]=row
+        }
+        for token in duplicated {evidence.removeValue(forKey:token)}
+        self.elementEvidence=evidence
+        self.tokens=Set(evidence.keys)
         // Use the actual PNG dimensions rather than untrusted caller geometry.
         let image = blocks.first { $0["type"] as? String == "image" && $0["mimeType"] as? String == "image/png" }
         if let b64 = image?["data"] as? String, let bytes = Data(base64Encoded:b64),
@@ -346,6 +354,29 @@ struct CUASnapshot {
         } else {
             width = nil; height = nil; captureID = nil
         }
+    }
+    /// Names come from the current driver observation, not caller-supplied
+    /// raw AX envelopes. Never map a custom label onto a standard AX action.
+    static func customActionNameAllowed(_ name:String)->Bool {
+        let normalized=name.lowercased().filter{$0 != "_" && $0 != "-"}
+        let key=normalized.hasPrefix("ax") ? String(normalized.dropFirst(2)) : normalized
+        return !name.isEmpty && name.utf8.count<=256 && name==name.trimmingCharacters(in:.whitespacesAndNewlines)
+            && name.rangeOfCharacter(from:.controlCharacters)==nil
+            && !name.hasPrefix("Name:") && !name.hasPrefix("AX")
+            && !["press","click","showmenu","rightclick","pick","confirm","cancel","open","showalternateui","showdefaultui","focus"].contains(key)
+    }
+    func validatedControlArguments(_ operation:String,_ args:[String:Any])->[String:Any]? {
+        var result=args
+        guard let token=args["element_token"] as? String else{return args["custom_action"]==nil ? result:nil}
+        guard let row=elementEvidence[token] else{return nil}
+        if let enabled=row["enabled"] as? NSNumber,CFGetTypeID(enabled)==CFBooleanGetTypeID(),!enabled.boolValue{return nil}
+        if let name=args["custom_action"] as? String {
+            guard operation=="click",Self.customActionNameAllowed(name),
+                  let actions=row["custom_actions"] as? [[String:Any]],
+                  actions.filter({$0["name"] as? String == name}).count==1 else{return nil}
+            result.removeValue(forKey:"custom_action");result["action"]=name
+        }
+        return result
     }
     func validatePixelGeometry(_ current:CUAWindowGeometry?) throws {
         guard pixelGrounded, current == geometry else {throw CUAFailure("cua_window_geometry_changed: observe the window again")}
@@ -423,7 +454,7 @@ final class CUAService {
     private let policyURL: URL
     private var timer: DispatchSourceTimer?
     private static let actions: [String: Set<String>] = [
-        "click":["element_token","x","y","capture_id","button","count","action"],
+        "click":["element_token","x","y","capture_id","button","count","action","custom_action"],
         "type_text":["element_token","text","x","y","capture_id","delay_ms"],
         "press_key":["key","modifiers","element_token","x","y","capture_id"],
         "hotkey":["keys","element_token","x","y","capture_id"],
@@ -697,6 +728,14 @@ final class CUAService {
         if let button = args["button"] as? String, !["left","right","middle"].contains(button) { throw CUAFailure("cua_invalid_button") }
         if let action = args["action"] as? String, !["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"].contains(action) { throw CUAFailure("cua_invalid_element_action") }
         let token = args["element_token"] != nil
+        if args["action"] != nil || args["custom_action"] != nil {
+            guard token,name=="click",args["button"]==nil,args["count"]==nil,
+                  !(args["action"] != nil && args["custom_action"] != nil) else{throw CUAFailure("cua_ambiguous_element_action")}
+            if let custom=args["custom_action"] as? String,!CUASnapshot.customActionNameAllowed(custom){throw CUAFailure("cua_invalid_custom_action_name")}
+        }
+        if name=="type_text",let text=args["text"] as? String {
+            guard !text.contains("\0"),text.utf16.count*(args["delay_ms"] as? Int ?? 0)<=3000 else{throw CUAFailure("cua_text_pacing_budget_exceeded")}
+        }
         let xy = args["x"] != nil && args["y"] != nil
         if token && (args["x"] != nil || args["y"] != nil || args["capture_id"] != nil || args["count"] != nil) { throw CUAFailure("cua_ambiguous_action_target") }
         if xy && args["capture_id"] == nil {throw CUAFailure("cua_coordinate_capture_required")}
@@ -733,7 +772,7 @@ final class CUAService {
     static func recoverableNativeRefusal(_ structured:[String:Any])->String? {
         guard structured["foreground_step"]==nil,
               let code=structured["code"] as? String,let effect=structured["effect"] as? String else{return nil}
-        if ["background_unavailable","background_occluded","background_uipi_blocked"].contains(code),effect=="refused" {return code}
+        if ["background_unavailable","background_occluded","background_uipi_blocked","select_menu_would_raise_window"].contains(code),effect=="refused" {return code}
         if code=="option_not_found",effect=="none" {return code}
         return nil
     }
@@ -932,7 +971,7 @@ final class CUAService {
             let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
             return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"same_process_window_transfer":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
-                "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
+                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
         if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
         if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {
@@ -1068,6 +1107,15 @@ final class CUAService {
                   let parameters = args["parameters"] as? [String:Any] else { throw CUAFailure("cua_observe_before_action") }
             try snapshot.validateObservationID(args["observation_id"])
             try Self.validateAction(operation,parameters)
+            // Finder set_value may invoke AppleEvents and show an OS Automation
+            // consent dialog in this pinned direct driver. File tools are the
+            // safe explicit alternative, not a foreground escalation.
+            if !guestMode,operation=="set_value",s.target.application.lowercased()=="com.apple.finder" {
+                throw CUAFailure("cua_finder_value_write_requires_file_tools")
+            }
+            guard let normalized=snapshot.validatedControlArguments(operation,parameters) else {
+                throw CUAFailure("cua_control_disabled_or_action_not_advertised")
+            }
             if operation != "set_window_frame" { try snapshot.validate(parameters) } else { try snapshot.validate([:]) }
             if parameters["capture_id"] != nil {
                 do {try snapshot.validatePixelGeometry(windowGeometry(s.target))} catch {s.snapshot=nil;throw error}
@@ -1078,7 +1126,7 @@ final class CUAService {
             try reserveReceipt(receipt,request:request,owner:owner)
             actionReceipt = (receipt,request)
             priorWindows=Set(windows(s.target.pid).compactMap{$0["window_id"] as? Int64})
-            for (key,value) in parameters where key != "capture_id" || operation == "click" { driverArgs[key] = value }
+            for (key,value) in normalized where key != "capture_id" || operation == "click" { driverArgs[key] = value }
             if operation != "invoke_menu" && operation != "set_window_frame", let revision = snapshot.revision { driverArgs["ui_tree_revision"] = revision }
             if operation != "set_value" && operation != "set_window_frame" { driverArgs["delivery_mode"] = "background" }
             if operation != "set_value" && operation != "invoke_menu" && operation != "set_window_frame" { driverArgs["scope"] = "window" }
@@ -1119,6 +1167,7 @@ final class CUAService {
                     try finishReceipt(receipt,request:request,state:"launch_failed")
                     var out:[String:Any]=["session_id":id,"operation":driverTool,"action_outcome":"refused","action_dispatched":false,"verified":false,"code":code,
                         "observation_required":true,"background_only":true,"foreground_fallback":false,"verification_required":false]
+                    if code=="select_menu_would_raise_window" {out["suggested_operation"]="set_value"}
                     if code=="option_not_found",let options=failure["options"] as? [String] {
                         out["options"]=Array(options.prefix(100)).map{String($0.prefix(256))}
                     }

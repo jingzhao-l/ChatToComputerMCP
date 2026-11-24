@@ -104,6 +104,7 @@ internal sealed class CuaService : IDisposable
         internal readonly uint Width, Height;
         internal readonly long ObservedAt = Environment.TickCount64;
         internal readonly HashSet<string> Tokens = new(StringComparer.Ordinal);
+        private readonly Dictionary<string,JsonObject> _elementEvidence=new(StringComparer.Ordinal);
         internal readonly WindowGeometry? Geometry;
         internal readonly bool TreeGrounded;
         internal bool PixelGrounded=>CaptureId is not null&&Geometry?.PixelEligible==true;
@@ -114,11 +115,16 @@ internal sealed class CuaService : IDisposable
             if (Id.Length>0&&!Regex.IsMatch(Id, "^s[0-9a-f]{8}$")) throw Fail("cua_invalid_snapshot_id");
             Geometry=geometry;TreeGrounded=includeElements&&Id.Length>0;
             if (TreeGrounded&&structured["ui_tree_revision"] is JsonValue revision && revision.TryGetValue<long>(out var r)) Revision = r;
-            if (TreeGrounded&&structured["elements"] is JsonArray elements)
-                foreach (var element in elements)
-                    if (element is JsonObject obj && obj["element_token"] is JsonValue value &&
-                        value.TryGetValue<string>(out var token) && token.StartsWith(Id+":",StringComparison.Ordinal) &&
-                        Regex.IsMatch(token,"^s[0-9a-f]{8}:[0-9]+$")) Tokens.Add(token);
+            if(TreeGrounded&&structured["elements"] is JsonArray elements){
+                var duplicates=new HashSet<string>(StringComparer.Ordinal);
+                foreach(var element in elements)
+                    if(element is JsonObject row&&row["element_token"] is JsonValue value&&value.TryGetValue<string>(out var token)&&
+                       token.StartsWith(Id+":",StringComparison.Ordinal)&&Regex.IsMatch(token,@"\As[0-9a-f]{8}:[0-9]+\z")){
+                        if(!_elementEvidence.TryAdd(token,row))duplicates.Add(token);
+                    }
+                foreach(var token in duplicates)_elementEvidence.Remove(token);
+                Tokens.UnionWith(_elementEvidence.Keys);
+            }
             var image = blocks.OfType<JsonObject>().FirstOrDefault(b =>
                 b["type"]?.GetValue<string>() == "image" && b["mimeType"]?.GetValue<string>() == "image/png");
             if (image?["data"] is JsonValue d && d.TryGetValue<string>(out var data) &&
@@ -134,6 +140,19 @@ internal sealed class CuaService : IDisposable
                     }
                 }
             }
+        }
+        internal JsonObject? ValidatedControlArguments(string operation,JsonObject args)
+        {
+            var result=(JsonObject)args.DeepClone();
+            if(args["element_token"] is JsonValue value&&value.TryGetValue<string>(out var token)){
+                if(!_elementEvidence.TryGetValue(token,out var row))return null;
+                if(row["enabled"] is JsonValue e&&e.TryGetValue<bool>(out var enabled)&&!enabled)return null;
+            }
+            // Windows default click performs the native Invoke/Toggle/
+            // SelectionItem/ExpandCollapse pattern ladder. "press" is the
+            // portable spelling for that default, not an unsupported action.
+            if(operation=="click"&&args["action"]?.GetValue<string>()=="press")result.Remove("action");
+            return result;
         }
         internal void ValidatePixelGeometry(WindowGeometry? current){if(!PixelGrounded||current!=Geometry)throw Fail("cua_window_geometry_changed: observe the window again");}
         internal void ValidateObservationId(JsonNode? raw){if(raw is not JsonValue v||!v.TryGetValue<string>(out var id)||id!=ObservationId)throw Fail("cua_stale_or_foreign_observation");}
@@ -519,10 +538,13 @@ internal sealed class CuaService : IDisposable
                 throw Fail("cua_invalid_integer_action_parameter");
         if (args["button"] is JsonValue button && !new[] {"left","right","middle"}.Contains(button.GetValue<string>(),StringComparer.Ordinal))
             throw Fail("cua_invalid_button");
-        if (args["action"] is JsonValue action && !new[] {"expand"}.Contains(action.GetValue<string>(),StringComparer.Ordinal))
+        if (args["action"] is JsonValue action && !new[] {"press","expand"}.Contains(action.GetValue<string>(),StringComparer.Ordinal))
             throw Fail("cua_invalid_element_action");
         if(args["by"] is JsonValue by&&by.GetValue<string>() is not ("line" or "page"))throw Fail("cua_invalid_scroll_unit");
         bool token = args.ContainsKey("element_token"), xy = args.ContainsKey("x") && args.ContainsKey("y");
+        if(args.ContainsKey("action")&&(!token||name!="click"||args.ContainsKey("button")||args.ContainsKey("count")))throw Fail("cua_ambiguous_element_action");
+        if(name=="type_text"&&args["text"] is JsonValue textValue&&textValue.TryGetValue<string>(out var pacedText)&&
+            (pacedText.Contains('\0')||(long)pacedText.Length*(args["delay_ms"]?.GetValue<int>()??0)>3000))throw Fail("cua_text_pacing_budget_exceeded");
         if(xy&&!args.ContainsKey("capture_id"))throw Fail("cua_coordinate_capture_required");
         if (token && (args.ContainsKey("x") || args.ContainsKey("y") || args.ContainsKey("capture_id") || args.ContainsKey("count")) ||
             args.ContainsKey("x") != args.ContainsKey("y")) throw Fail("cua_ambiguous_action_target");
@@ -784,6 +806,7 @@ internal sealed class CuaService : IDisposable
             return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",["foreground_continuity_guard"]=true,["same_process_window_transfer"]=true,
                 ["identity"] = _relayOnly?"dedicated_relay_credential":_guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["relay_only"]=_relayOnly,["host_tools_allowed"]=!_guestMode&&!_relayOnly,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+                ["native_element_actions"]=new JsonArray("press","expand"),["advertised_custom_element_actions"]=false,["paced_text_budget_ms"]=3000,
                 ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["guest_enabled"]=guestEnabled,["preferred_execution"]=(_guestMode||_relayOnly)?"explicit_guest":"native_background",["extension_profiles_enabled"]=extEnabled });
         }
         if((_guestMode||_relayOnly)&&GuestEpoch() is null)throw Fail("cua_guest_disabled_by_local_user");
@@ -937,6 +960,7 @@ internal sealed class CuaService : IDisposable
                     args["parameters"] is not JsonObject parameters) throw Fail("cua_observe_before_action");
                 snapshot.ValidateObservationId(args["observation_id"]);
                 ValidateAction(operation,parameters);
+                var normalized=snapshot.ValidatedControlArguments(operation,parameters)??throw Fail("cua_control_disabled_or_action_not_advertised");
                 if(operation!="set_window_frame") snapshot.Validate(parameters); else snapshot.Validate(new JsonObject());
                 if(parameters.ContainsKey("capture_id")){
                     try{snapshot.ValidatePixelGeometry(ReadGeometry(s.Target));}catch{s.Snapshot=null;throw;}coordinateSnapshot=snapshot;
@@ -945,7 +969,7 @@ internal sealed class CuaService : IDisposable
                 ReserveReceipt(receipt,request,owner);
                 actionReceipt=(receipt,request);
                 priorWindows=Windows(s.Target.Pid).Select(w=>w!["window_id"]!.GetValue<long>()).ToHashSet();
-                foreach (var (key,value) in parameters)
+                foreach (var (key,value) in normalized)
                     if (key != "capture_id" || operation == "click") driverArgs[key] = value?.DeepClone();
                 if (operation is not ("invoke_menu" or "set_window_frame") && snapshot.Revision is long revision) driverArgs["ui_tree_revision"] = revision;
                 if(operation!="set_window_frame")driverArgs["delivery_mode"] = "background";

@@ -134,6 +134,34 @@ Unrecognized failures, interrupted strokes, and uncertain transport
 outcomes retire the lease and record interrupted. Never blindly retry.
 Successful dispatches report dispatched_unverified, not a verified UI effect.
 
+### Complex controls
+
+Use current element tokens for semantic controls. The capability response
+lists the platform-specific native_element_actions. On Windows, click with
+action=press (or omit action) uses the pinned driver's Invoke/Toggle/
+SelectionItem/ExpandCollapse ladder; action=expand explicitly opens an
+expandable control. On Mac, the documented AX actions are available and
+click may accept custom_action using a unique, exact name from the current
+element's custom_actions. Arbitrary raw AX action envelopes, aliases of
+standard actions, and names not published by that element are refused.
+Windows does not advertise Mac-only custom actions. Explicit semantic
+actions cannot be combined with mouse-button or pixel-coordinate input.
+Disabled controls and duplicate element tokens are rejected before dispatch.
+
+For dropdowns, prefer set_value with the desired option text, then verify
+the selected value independently. The Mac Chromium dropdown refusal
+select_menu_would_raise_window preserves the session and suggests
+set_value without foreground escalation. Native tree nodes, radio buttons,
+checkboxes and lists use the underlying accessibility patterns; arbitrary
+third-party grids and rich-text editors remain compatibility-dependent.
+For paced text input, UTF-16 length multiplied by delay_ms must not exceed
+3000 ms (unpaced input retains the existing length limit). This preflight
+prevents predictably overlong dispatches; it does not guarantee text arrival.
+NUL-containing text is refused. Finder set_value on the Mac host is refused
+because the pinned direct driver can invoke AppleEvents and request an OS
+Automation consent prompt; use the independently approved file tools for
+file renames. No automatic OS permission request is introduced.
+
 Both native workers explicitly start the pinned driver with `mcp --direct` and never attach to an existing daemon. Host mutations and launches latch foreground continuity: changed or unknown foreground aborts the current dispatch and never restores user focus. macOS additionally watches workspace activation notifications; Windows checks the exact foreground HWND. Sampling/notification delivery can miss short transitions and cannot prevent all app-internal activation, so this is detection and refusal, not a universal no-interference guarantee.
 
 Each native worker verifies the driver's version and advertised tools/list
