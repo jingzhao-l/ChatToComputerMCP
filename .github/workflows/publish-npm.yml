@@ -73,6 +73,7 @@ jobs:
             'bin/cua-support.mjs','bin/cua-extension-support.mjs','cua-runtime/package.json','cua-runtime/package-lock.json','cua-runtime/worker.mjs',
             'windows/src/FileMCP.Core/WorkspaceCommandBudget.cs',
             'vendor/tunnel-client/darwin-arm64/tunnel-client',
+            'vendor/tunnel-client/darwin-amd64/tunnel-client','vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt','vendor/ripgrep/darwin-amd64/rg',
             'docs/PUBLISHING.md','docs/ARCHITECTURE.md','LICENSE'
           ]) if(!files.has(required)) throw Error('Missing '+required);
           for(const filename of files)
@@ -121,6 +122,34 @@ jobs:
           bash build_macos_app.sh
           codesign --verify --deep --strict dist/ChatToComputerMCP.app
           test -x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP
+
+  macos-intel:
+    needs: package
+    name: macOS Intel base gateway and installer
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Intel vendor, source installer and native coding tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = x86_64
+          bash tests/check_intel_vendor.sh
+          npm test
+          bash tests/test_swift_agent_tools.sh
+          MCP_HTTP_FUZZ_ITERATIONS=20 bash tests/test_swift_runtime.sh
+          bash build_macos_app.sh
+          codesign --verify --deep --strict dist/ChatToComputerMCP.app
+          file dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP | grep -q x86_64
+          cmp vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt
+          cmp vendor/ripgrep/darwin-amd64/rg dist/ChatToComputerMCP.app/Contents/MacOS/rg
 
   windows:
     name: Windows native quality gate
@@ -174,7 +203,7 @@ jobs:
 
   publish:
     name: Publish using npm Trusted Publisher
-    needs: [package, macos, windows]
+    needs: [package, macos, macos-intel, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

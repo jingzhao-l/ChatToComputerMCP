@@ -1190,7 +1190,7 @@ swiftc -framework Network -o "$TMP_DIR/server-test" \
     "$TMP_DIR/main.swift"
 mkdir -p "$TMP_DIR/git-template"
 printf 'outside-template-marker\n' > "$TMP_DIR/git-template/copied-from-template"
-FILEMCP_RG="$PWD/vendor/ripgrep/darwin-arm64/rg" GIT_TEMPLATE_DIR="$TMP_DIR/git-template" "$TMP_DIR/server-test" &
+FILEMCP_RG="$PWD/vendor/ripgrep/$TUNNEL_TARGET/rg" GIT_TEMPLATE_DIR="$TMP_DIR/git-template" "$TMP_DIR/server-test" &
 SERVER_PID=$!
 # Real startup readiness gate: OAuth persistence/self-tests execute before
 # listeners start, and may exceed a fixed one-second sleep on loaded machines.

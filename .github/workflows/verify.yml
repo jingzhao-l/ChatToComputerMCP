@@ -62,6 +62,9 @@ jobs:
           test -s vendor/ripgrep/LICENSE-MIT
           test -s vendor/ripgrep/UNLICENSE
 
+      - name: Verify Intel vendor integrity
+        run: bash tests/check_intel_vendor.sh
+
       - name: Guard GitHub Actions Node.js runtimes
         run: python3 tests/check_github_actions_node_runtime.py
 
@@ -159,6 +162,33 @@ jobs:
           cmp vendor/ripgrep/UNLICENSE dist/ChatToComputerMCP.app/Contents/Resources/ripgrep-UNLICENSE.txt
           cmp assets/branding/chat-to-computer-mcp/app-icon-128.png dist/ChatToComputerMCP.app/Contents/Resources/ChatToComputerMCP-login.png
           test -s dist/ChatToComputerMCP.app/Contents/Resources/AppIcon.icns
+
+  verify-macos-intel:
+    name: macOS Intel base gateway and installer
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Intel vendor, source installer and native coding tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = x86_64
+          bash tests/check_intel_vendor.sh
+          npm test
+          bash tests/test_swift_agent_tools.sh
+          MCP_HTTP_FUZZ_ITERATIONS=20 bash tests/test_swift_runtime.sh
+          bash build_macos_app.sh
+          codesign --verify --deep --strict dist/ChatToComputerMCP.app
+          file dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP | grep -q x86_64
+          cmp vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt dist/ChatToComputerMCP.app/Contents/Resources/tunnel-client-THIRD-PARTY-LICENSES.txt
+          cmp vendor/ripgrep/darwin-amd64/rg dist/ChatToComputerMCP.app/Contents/MacOS/rg
 
   verify-windows:
     runs-on: windows-2025
