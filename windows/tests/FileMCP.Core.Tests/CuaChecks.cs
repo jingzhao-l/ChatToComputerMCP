@@ -98,6 +98,18 @@ internal static partial class Program
             J("""{"properties":{"pid":{},"window_id":{},"delivery_mode":{}},"required":["pid","window_id"]}"""));
         Assert(!normalized.ContainsKey("ui_tree_revision")&&normalized["delivery_mode"]!.GetValue<string>()=="background","Windows revision omission is deliberate; target and mode retained");
         Refuse("unknown safety field",()=>CuaService.Worker.ValidatedDriverArguments("click",J("""{"pid":1,"delivery_mode":"background"}"""),J("""{"properties":{"pid":{}}}""")));
+        var originalTarget=new CuaService.Target(100,1,@"C:\Fixture.exe",1000);
+        Assert(originalTarget.SameProcess(originalTarget with {Window=2}),"same-process window transfer");
+        Assert(!originalTarget.SameProcess(originalTarget with {Pid=101,Window=2}),"foreign PID transfer refused");
+        Assert(!originalTarget.SameProcess(originalTarget with {Launched=1001,Window=2}),"recycled PID refused");
+        Assert(!originalTarget.SameProcess(originalTarget with {Application=@"C:\Other.exe",Window=2}),"foreign executable refused");
+        Assert(CuaService.RecoverableNativeRefusal(J("""{"code":"background_unavailable","effect":"refused"}"""))=="background_unavailable","typed refusal");
+        Assert(CuaService.RecoverableNativeRefusal(J("""{"code":"option_not_found","effect":"none"}"""))=="option_not_found","typed missing option");
+        Assert(CuaService.RecoverableNativeRefusal(J("""{"code":"background_occluded","effect":"unverifiable"}""")) is null,"uncertain action not recoverable");
+        Assert(CuaService.RecoverableNativeRefusal(J("""{"code":"unknown","effect":"refused"}""")) is null,"unknown code not recoverable");
+        Assert(CuaService.RecoverableNativeRefusal(J("""{"code":"background_unavailable","effect":"refused","foreground_step":true}""")) is null,"foreground report not recoverable");
+        Assert(CuaService.RecoverableNativeRefusal(J("""{"code":"background_unavailable"}""")) is null,"missing effect not recoverable");
+        Assert(CuaService.Definitions().Single(t=>t?["name"]?.GetValue<string>()=="cua_create_session")?["inputSchema"]?["properties"]?["previous_session_id"] is JsonObject,"transfer schema advertised");
         long? foreground=101;
         var continuity=new CuaForegroundContinuity(()=>foreground);
         Assert(continuity.Permits(),"initial foreground continuity");

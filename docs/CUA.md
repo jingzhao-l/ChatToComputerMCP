@@ -68,7 +68,7 @@ Local policy changes invalidate leases. Already dispatched actions cannot be und
 | cua_list_apps | Approved running applications and separately approved launch targets. |
 | cua_launch_app | Launch an explicitly approved application; separate launch grant and unique request_id required. |
 | cua_list_windows | Windows of the approved PID. |
-| cua_create_session | Exclusive PID/window lease. |
+| cua_create_session | Exclusive PID/window lease; optional previous_session_id transfers an idle owned lease to another window of the exact same running process. |
 | cua_list_sessions | Own leases for verified clients; shared session IDs are hidden. |
 | cua_observe | Window accessibility tree and optional image; return current element and capture tokens. |
 | cua_act | Background click, type_text, press_key, hotkey, scroll, drag, set_value, invoke_menu or set_window_frame. |
@@ -108,6 +108,31 @@ Windows ctrl/shift/alt). The driver may refuse controls requiring real
 foreground input; no escalation is performed. Window verification supports
 bounds with tolerance_px (0–100) and stable_samples (1–5). An action receipt
 whose state is interrupted does not prove that the action was not delivered.
+
+For dialogs and additional application windows, inspect the returned
+new_window_ids / closed_window_ids after a dispatch and confirm with
+cua_list_windows. Windows also reports owner_window_id (same process only)
+and enabled status. Use cua_create_session with the same pid, the new
+window_id, and previous_session_id set to your current lease. Transfer is
+atomic: no competing process lease is admitted, the old bearer is revoked,
+and the returned session requires a new observation. A closed idle window
+does not immediately release the process lease while the approved process
+is still alive, allowing explicit transfer to a remaining window. If the
+process exits, policy changes, or an uncertain action retires the lease,
+create a new session only after inspecting actual state. If the transfer
+reply is lost, verified clients can enumerate their own lease; shared
+connections may need to wait for idle expiry. No other process or client
+can be selected by the transfer operation.
+
+Known typed driver refusals (background_unavailable, background_occluded,
+background_uipi_blocked with effect=refused, or option_not_found with
+effect=none) return action_outcome=refused and keep the idle lease. A fresh
+observation and new request ID are required before any further input.
+This is the pinned driver's no-effect report, not independent verification;
+the gateway does not follow the driver's foreground escalation advice.
+Unrecognized failures, interrupted strokes, and uncertain transport
+outcomes retire the lease and record interrupted. Never blindly retry.
+Successful dispatches report dispatched_unverified, not a verified UI effect.
 
 Both native workers explicitly start the pinned driver with `mcp --direct` and never attach to an existing daemon. Host mutations and launches latch foreground continuity: changed or unknown foreground aborts the current dispatch and never restores user focus. macOS additionally watches workspace activation notifications; Windows checks the exact foreground HWND. Sampling/notification delivery can miss short transitions and cannot prevent all app-internal activation, so this is detection and refusal, not a universal no-interference guarantee.
 

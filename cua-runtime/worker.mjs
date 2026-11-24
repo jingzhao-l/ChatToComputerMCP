@@ -367,10 +367,15 @@ async function guestCall(op,p){
   if(!guestOps.has(op))fail('unsupported_guest_operation');
   if(!p||Array.isArray(p)||typeof p!=='object')fail('invalid_parameters');
   if(['cua_observe','cua_act','cua_verify','cua_stop_session'].includes(op)&&!guestSessions.has(p.session_id))refuse('guest_session_not_owned');
+  if(op==='cua_create_session'&&Object.hasOwn(p,'previous_session_id')&&!guestSessions.has(p.previous_session_id))refuse('guest_session_not_owned');
   if(op==='cua_receipt_status'&&!guestRequests.has(p.request_id))refuse('guest_receipt_not_owned');
   if(['cua_act','cua_launch_app'].includes(op))guestRequests.add(string(p.request_id,128));
   const r=await guestRPC(op,p);
-  if(op==='cua_create_session')guestSessions.add(string(r.structuredContent.session_id,128));
+  if(op==='cua_create_session'){
+    const next=string(r.structuredContent.session_id,128);
+    if(Object.hasOwn(p,'previous_session_id'))guestSessions.delete(p.previous_session_id);
+    guestSessions.add(next);
+  }
   if(op==='cua_stop_session')guestSessions.delete(p.session_id);
   return r;
 }

@@ -74,7 +74,10 @@ internal sealed class CuaService : IDisposable
             grants.Any(g => string.Equals(g.application, app, StringComparison.OrdinalIgnoreCase) &&
                             g.clients.Contains(owner, StringComparer.Ordinal));
     }
-    private sealed record Target(int Pid, long Window, string Application, long Launched);
+    internal sealed record Target(int Pid,long Window,string Application,long Launched)
+    {
+        internal bool SameProcess(Target other)=>Pid==other.Pid&&Launched==other.Launched&&Application.Equals(other.Application,StringComparison.OrdinalIgnoreCase);
+    }
     internal sealed record WindowGeometry(int Left,int Top,int Right,int Bottom,bool Visible,bool Minimized,uint Dpi)
     {
         internal bool PixelEligible=>Visible&&!Minimized&&Dpi>0&&Right>Left&&Bottom>Top;
@@ -233,8 +236,8 @@ internal sealed class CuaService : IDisposable
                 new() { ["request_id"]=String() }, ["request_id"],true),
             Def("cua_list_apps", "List running applications explicitly granted to this connection.", new(), [], true),
             Def("cua_list_windows", "List windows of an approved running application.", new() { ["pid"] = Integer() }, ["pid"], true),
-            Def("cua_create_session", "Acquire an exclusive background window session. Keep its bearer ID private.",
-                new() { ["pid"] = Integer(), ["window_id"] = Integer() }, ["pid","window_id"], false),
+            Def("cua_create_session", "Acquire an exclusive background window session, or explicitly transfer an idle owned session to another window in the same process using previous_session_id. Re-observe before input.",
+                new() { ["pid"] = Integer(), ["window_id"] = Integer(),["previous_session_id"]=String() }, ["pid","window_id"], false),
             Def("cua_list_sessions", "List own session status. Shared connections cannot enumerate session IDs.", new(), [], true),
             Def("cua_observe", "Observe the exact leased window: accessibility tree, image, or both. Only a returned observation_id can ground input.",
                 new() { ["session_id"] = String(), ["include_screenshot"] = Bool(),["include_accessibility_tree"]=Bool(),["query"]=String(),["max_elements"]=Integer(),["max_depth"]=Integer(),["max_image_dimension"]=Integer(),["timeout_ms"]=Integer() }, ["session_id"], false),
@@ -350,6 +353,8 @@ internal sealed class CuaService : IDisposable
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd,out WindowRect rect);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd,uint command);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
     private static WindowGeometry? ReadGeometry(Target target)
     {
@@ -382,7 +387,10 @@ internal sealed class CuaService : IDisposable
             _ = GetWindowText(hwnd, text, text.Capacity);
             var bounds=new JsonObject();
             if(GetWindowRect(hwnd,out var rect)) bounds=new JsonObject { ["X"]=rect.Left,["Y"]=rect.Top,["Width"]=rect.Right-rect.Left,["Height"]=rect.Bottom-rect.Top };
-            list.Add(new JsonObject { ["window_id"] = hwnd.ToInt64(), ["title"] = text.ToString(),["bounds"]=bounds,["on_screen"]=IsWindowVisible(hwnd)&&!IsIconic(hwnd),["minimized"]=IsIconic(hwnd) });
+            var ownerWindow=GetWindow(hwnd,4); // GW_OWNER
+            var row=new JsonObject { ["window_id"] = hwnd.ToInt64(), ["title"] = text.ToString(),["bounds"]=bounds,["on_screen"]=IsWindowVisible(hwnd)&&!IsIconic(hwnd),["minimized"]=IsIconic(hwnd),["enabled"]=IsWindowEnabled(hwnd) };
+            if(ownerWindow!=IntPtr.Zero&&GetWindowThreadProcessId(ownerWindow,out var ownerPid)!=0&&ownerPid==pid)row["owner_window_id"]=ownerWindow.ToInt64();
+            list.Add(row);
             return true;
         }, IntPtr.Zero);
         return list;
@@ -396,15 +404,17 @@ internal sealed class CuaService : IDisposable
             throw Fail("cua_window_not_owned_or_unavailable");
         return new Target(pid, window, app, start);
     }
-    private bool StillAllowed(Session s, bool mutation)
+    private bool StillAllowed(Session s, bool mutation,bool requireWindow=true)
     {
         lock (_gate)
             if (_stopped || s.Retiring || !s.Worker.IsAlive || !_sessions.TryGetValue(s.Id, out var live) || !ReferenceEquals(live, s) || _revoked.Contains(s.Owner)) return false;
         try
         {
             var (policy, bytes) = LoadPolicy();
-            if (!bytes.AsSpan().SequenceEqual(s.PolicyBytes) || GetTarget(s.Target.Pid, s.Target.Window, policy, s.Owner) != s.Target)
-                return false;
+            if(!bytes.AsSpan().SequenceEqual(s.PolicyBytes))return false;
+            var (app,start)=ApprovedApp(s.Target.Pid,policy,s.Owner);
+            if(!app.Equals(s.Target.Application,StringComparison.OrdinalIgnoreCase)||start!=s.Target.Launched)return false;
+            if(requireWindow&&(GetTarget(s.Target.Pid,s.Target.Window,policy,s.Owner)!=s.Target))return false;
             if (mutation && !_guestMode)
             {
                 _ = GetWindowThreadProcessId(GetForegroundWindow(), out uint pid);
@@ -427,7 +437,7 @@ internal sealed class CuaService : IDisposable
         {
             bool expired;
             lock (_gate) expired = !s.Busy && Environment.TickCount64 - s.Last > 300000;
-            if (!StillAllowed(s, false)) Retire(s.Id); else if(expired)Retire(s.Id,true);
+            if (!StillAllowed(s, false,requireWindow:false)) Retire(s.Id); else if(expired)Retire(s.Id,true);
         }
     }
     private bool Retire(string id,bool onlyIdle=false,bool waitForCleanup=false)
@@ -540,6 +550,13 @@ internal sealed class CuaService : IDisposable
     private static bool ValidModifiers(JsonArray mods){
         var names=mods.Select(m=>m?.GetValue<string>()??"").ToArray();
         return names.Length<=3&&names.Distinct(StringComparer.Ordinal).Count()==names.Length&&names.All(m=>m is "ctrl" or "shift" or "alt");
+    }
+    internal static string? RecoverableNativeRefusal(JsonObject structured)
+    {
+        if(structured.ContainsKey("foreground_step")||structured["code"] is not JsonValue c||!c.TryGetValue<string>(out var code)||
+            structured["effect"] is not JsonValue e||!e.TryGetValue<string>(out var effect))return null;
+        if((code is "background_unavailable" or "background_occluded" or "background_uipi_blocked")&&effect=="refused")return code;
+        return code=="option_not_found"&&effect=="none"?code:null;
     }
     internal static JsonObject ObservationParameters(JsonObject args)
     {
@@ -764,7 +781,7 @@ internal sealed class CuaService : IDisposable
             bool extEnabled=false,requiresVerified=false;var guestEnabled=GuestEpoch() is not null;
             try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal)&&(p.kind!="guest"||guestEnabled));
                 enabled=(!requiresVerified||owner!=SharedOwner)&&(extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal))); } catch { }
-            return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",["foreground_continuity_guard"]=true,
+            return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",["foreground_continuity_guard"]=true,["same_process_window_transfer"]=true,
                 ["identity"] = _relayOnly?"dedicated_relay_credential":_guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["relay_only"]=_relayOnly,["host_tools_allowed"]=!_guestMode&&!_relayOnly,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
                 ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["guest_enabled"]=guestEnabled,["preferred_execution"]=(_guestMode||_relayOnly)?"explicit_guest":"native_background",["extension_profiles_enabled"]=extEnabled });
@@ -869,15 +886,30 @@ internal sealed class CuaService : IDisposable
             var pid = (int)Integer(args["pid"], int.MaxValue);
             var window = Integer(args["window_id"], long.MaxValue);
             var target = GetTarget(pid,window,policy,owner);
-            Sweep();
+            if(!args.ContainsKey("previous_session_id"))Sweep();
             lock (_gate)
             {
-                if (_stopped || _revoked.Contains(owner) || _sessions.Count + _extensions.Count + _launching.Count >= 8 || _launching.Contains(target.Application) || _sessions.Values.Any(s => s.Target.Pid == pid))
+                if(_stopped||_revoked.Contains(owner)||cancellation.IsCancellationRequested||
+                    !LoadPolicy().Item2.AsSpan().SequenceEqual(bytes)||GetTarget(pid,window,policy,owner)!=target)
+                    throw Fail("cua_target_unavailable_or_revoked");
+                if(args.ContainsKey("previous_session_id")){
+                    if(args["previous_session_id"] is not JsonValue v||!v.TryGetValue<string>(out var prior)||
+                        !_sessions.TryGetValue(prior,out var old)||old.Owner!=owner||old.Busy||old.Retiring||!old.Worker.IsAlive||
+                        !old.PolicyBytes.AsSpan().SequenceEqual(bytes)||Environment.TickCount64-old.Last>300000||
+                        !old.Target.SameProcess(target)||old.Target.Window==window)
+                        throw Fail("cua_window_transfer_not_allowed");
+                    var replacement=new Session(owner,target,bytes,old.Worker);
+                    _sessions.Remove(prior);_sessions.Add(replacement.Id,replacement);
+                    old.Retired.TrySetResult(true);
+                    return Output(new JsonObject{["session_id"]=replacement.Id,["pid"]=pid,["window_id"]=window,
+                        ["transferred"]=true,["observation_required"]=true,["background_only"]=true,["idle_timeout_seconds"]=300});
+                }
+                if (_sessions.Count + _extensions.Count + _launching.Count >= 8 || _launching.Contains(target.Application) || _sessions.Values.Any(s => s.Target.Pid == pid))
                     throw Fail("cua_target_busy_or_capacity");
                 var worker = new Worker(CheckedDriver(policy),target.Application);
                 var created = new Session(owner,target,bytes,worker);
                 _sessions.Add(created.Id,created);
-                return Output(new JsonObject { ["session_id"] = created.Id, ["pid"] = pid, ["window_id"] = window,
+                return Output(new JsonObject { ["session_id"] = created.Id, ["pid"] = pid, ["window_id"] = window,["observation_required"]=true,
                     ["background_only"] = true, ["idle_timeout_seconds"] = 300 });
             }
         }
@@ -898,6 +930,7 @@ internal sealed class CuaService : IDisposable
             string driverTool;
             (CommandReceiptLedger Ledger,string Id)? actionReceipt=null;
             Snapshot? coordinateSnapshot=null;WindowGeometry? observedGeometry=null;
+            var priorWindows=new HashSet<long>();
             if (mutation)
             {
                 if (s.Snapshot is not { } snapshot || args["operation"] is not JsonValue op || !op.TryGetValue<string>(out var operation) ||
@@ -906,11 +939,12 @@ internal sealed class CuaService : IDisposable
                 ValidateAction(operation,parameters);
                 if(operation!="set_window_frame") snapshot.Validate(parameters); else snapshot.Validate(new JsonObject());
                 if(parameters.ContainsKey("capture_id")){
-                    snapshot.ValidatePixelGeometry(ReadGeometry(s.Target));coordinateSnapshot=snapshot;
+                    try{snapshot.ValidatePixelGeometry(ReadGeometry(s.Target));}catch{s.Snapshot=null;throw;}coordinateSnapshot=snapshot;
                 }
                 var request=RequestId(args["request_id"]);var receipt=Ledger();
                 ReserveReceipt(receipt,request,owner);
                 actionReceipt=(receipt,request);
+                priorWindows=Windows(s.Target.Pid).Select(w=>w!["window_id"]!.GetValue<long>()).ToHashSet();
                 foreach (var (key,value) in parameters)
                     if (key != "capture_id" || operation == "click") driverArgs[key] = value?.DeepClone();
                 if (operation is not ("invoke_menu" or "set_window_frame") && snapshot.Revision is long revision) driverArgs["ui_tree_revision"] = revision;
@@ -949,10 +983,18 @@ internal sealed class CuaService : IDisposable
             {
                 var result = await s.Worker.CallAsync(driverTool, driverArgs, () => (focusGuard?.Permits()??true)&&StillAllowed(s,mutation), cancellation,()=>coordinateSnapshot?.ValidatePixelGeometry(ReadGeometry(s.Target))).ConfigureAwait(false);
                 if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested || focusGuard?.Permits()==false) throw Fail("cua_action_outcome_unknown: foreground changed or target became unavailable; observe actual state before any new action");
-                if (result["isError"]?.GetValue<bool>() == true)
-                {
-                    var message = (result["content"] as JsonArray)?.FirstOrDefault()?["text"]?.GetValue<string>() ?? "background unavailable";
-                    throw Fail("cua_driver_rejected: " + message[..Math.Min(message.Length,2000)]);
+                if(result["isError"]?.GetValue<bool>()==true){
+                    var failure=result["structuredContent"] as JsonObject??new();
+                    if(mutation&&RecoverableNativeRefusal(failure) is string code&&actionReceipt is {} refused){
+                        FinishReceipt(refused.Ledger,refused.Id,"launch_failed");
+                        var outcome=new JsonObject{["session_id"]=sessionId,["operation"]=driverTool,["action_outcome"]="refused",["action_dispatched"]=false,["verified"]=false,["code"]=code,
+                            ["observation_required"]=true,["background_only"]=true,["foreground_fallback"]=false,["verification_required"]=false};
+                        if(code=="option_not_found"&&failure["options"] is JsonArray options)
+                            outcome["options"]=new JsonArray(options.Take(100).OfType<JsonValue>().Where(v=>v.TryGetValue<string>(out _))
+                                .Select(v=>{var label=v.GetValue<string>();return (JsonNode?)JsonValue.Create(label[..Math.Min(256,label.Length)]);}).ToArray());
+                        return Output(outcome);
+                    }
+                    throw Fail("cua_driver_rejected: inspect actual window state; no foreground fallback or automatic retry");
                 }
                 if (result["content"] is not JsonArray blocks) throw Fail("cua_driver_invalid_content");
                 var safe = new JsonArray();
@@ -986,6 +1028,12 @@ internal sealed class CuaService : IDisposable
                 if(actionReceipt is { } ar) FinishReceipt(ar.Ledger,ar.Id,"exited");
                 var header=new JsonObject { ["session_id"] = sessionId, ["operation"] = driverTool,
                     ["background_only"] = true, ["verification_required"] = mutation };
+                if(mutation){
+                    var now=Windows(s.Target.Pid).Select(w=>w!["window_id"]!.GetValue<long>()).ToHashSet();
+                    header["new_window_ids"]=new JsonArray(now.Except(priorWindows).Order().Select(id=>(JsonNode?)JsonValue.Create(id)).ToArray());
+                    header["closed_window_ids"]=new JsonArray(priorWindows.Except(now).Order().Select(id=>(JsonNode?)JsonValue.Create(id)).ToArray());
+                    header["action_outcome"]="dispatched_unverified";header["verified"]=false;
+                }
                 if(name=="cua_observe"){
                     header["pixel_actions_available"]=s.Snapshot?.PixelGrounded??false;
                     header["element_actions_available"]=s.Snapshot?.Tokens.Count>0;

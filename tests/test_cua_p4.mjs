@@ -243,6 +243,9 @@ try{
   await guest('cua_list_apps');
   await guest('read_file',{relative_path:'policy.json'},true);
   await guest('cua_observe',{session_id:'unowned'},true);
+  const foreignTransfer=await guest('cua_create_session',{pid:1,window_id:1,previous_session_id:'unowned'},true);
+  assert(JSON.stringify(foreignTransfer).includes('guest_session_not_owned'));
+  await guest('cua_list_apps');
   await call('cua_extension_open',{profile_id:'guest',request_id:requestID()},true); // exclusive guest
   await call('cua_extension_close',{session_id:g.session_id});
   // Same-policy second server must not become a second receipt authority.

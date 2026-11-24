@@ -107,6 +107,21 @@ import Foundation
             print("PASS pinned actual Mac driver handshake, tools/list and read-only permission probe; no desktop input")
         }
 
+        let processStart=Date(timeIntervalSince1970:1000)
+        let oldWindow=CUATarget(pid:100,window:1,application:"com.example.Fixture",launched:processStart)
+        precondition(oldWindow.sameProcess(as:CUATarget(pid:100,window:2,application:"com.example.Fixture",launched:processStart)))
+        precondition(!oldWindow.sameProcess(as:CUATarget(pid:101,window:2,application:"com.example.Fixture",launched:processStart)))
+        precondition(!oldWindow.sameProcess(as:CUATarget(pid:100,window:2,application:"com.example.Other",launched:processStart)))
+        precondition(!oldWindow.sameProcess(as:CUATarget(pid:100,window:2,application:"com.example.Fixture",launched:processStart.addingTimeInterval(1))))
+        precondition(CUAService.recoverableNativeRefusal(["code":"background_unavailable","effect":"refused"])=="background_unavailable")
+        precondition(CUAService.recoverableNativeRefusal(["code":"option_not_found","effect":"none"])=="option_not_found")
+        precondition(CUAService.recoverableNativeRefusal(["code":"background_occluded","effect":"unverifiable"])==nil)
+        precondition(CUAService.recoverableNativeRefusal(["code":"unknown","effect":"refused"])==nil)
+        precondition(CUAService.recoverableNativeRefusal(["code":"background_unavailable","effect":"refused","foreground_step":true])==nil)
+        precondition(CUAService.recoverableNativeRefusal(["code":"background_unavailable"])==nil)
+        let transferSchema=CUAService.definitions().first{$0["name"] as? String=="cua_create_session"}!["inputSchema"] as! [String:Any]
+        precondition((transferSchema["properties"] as! [String:Any])["previous_session_id"] != nil)
+        print("PASS same-process transfer identity and strict typed background refusal classification")
         var front:Int64?=101
         let continuity=CUAForegroundContinuity(read:{front})
         precondition(continuity.permits())

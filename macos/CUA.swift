@@ -124,6 +124,9 @@ struct CUATarget: Equatable {
     let window: Int64
     let application: String
     let launched: Date
+    func sameProcess(as other:CUATarget)->Bool {
+        pid==other.pid && application==other.application && launched==other.launched
+    }
 }
 
 final class CUAWorker {
@@ -463,7 +466,7 @@ final class CUAService {
             ("cua_receipt_status","Read an action dispatch receipt using its unique request ID. Dispatch is not verification.",["request_id":string],["request_id"],true),
             ("cua_list_apps","List running applications explicitly granted to this connection.",[:],[],true),
             ("cua_list_windows","List windows of an approved running application.",["pid":integer],["pid"],true),
-            ("cua_create_session","Acquire an exclusive background window session. Keep its bearer ID private.",["pid":integer,"window_id":integer],["pid","window_id"],false),
+            ("cua_create_session","Acquire an exclusive background window session, or explicitly transfer an idle owned session to another window in the same process using previous_session_id. Re-observe before input.",["pid":integer,"window_id":integer,"previous_session_id":string],["pid","window_id"],false),
             ("cua_list_sessions","List own session status. Shared connections cannot enumerate session IDs.",[:],[],true),
             ("cua_observe","Observe the exact leased window: accessibility tree, image, or both. Only a returned observation_id can ground input.",["session_id":string,"include_screenshot":boolean,"include_accessibility_tree":boolean,"query":string,"max_elements":integer,"max_depth":integer,"max_image_dimension":integer,"timeout_ms":integer],["session_id"],false),
             ("cua_act","Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
@@ -597,10 +600,12 @@ final class CUAService {
         }
         return CUATarget(pid:pid,window:window,application:app,launched:launch)
     }
-    private func stillAllowed(_ s: Session, mutation: Bool) -> Bool {
+    private func stillAllowed(_ s: Session, mutation: Bool, requireWindow:Bool=true) -> Bool {
         gate.lock(); let live = !stopped && !s.retiring && !revoked.contains(s.owner) && sessions[s.id] === s; gate.unlock()
         guard live, s.worker.isAlive, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
-              (try? target(s.target.pid,s.target.window,policy:policy,owner:s.owner)) == s.target else { return false }
+              let (app,launch)=try? approvedApp(s.target.pid,policy:policy,owner:s.owner),
+              app==s.target.application,launch==s.target.launched else {return false}
+        if requireWindow && !windows(s.target.pid).contains(where:{$0["window_id"] as? Int64==s.target.window}) {return false}
         if mutation && !guestMode {
             guard let foreground = NSWorkspace.shared.frontmostApplication, foreground.processIdentifier != s.target.pid else { return false }
         }
@@ -614,7 +619,7 @@ final class CUAService {
         }
         for s in all {
             gate.lock(); let expired = !s.busy && ProcessInfo.processInfo.systemUptime - s.last > 300; gate.unlock()
-            if !stillAllowed(s,mutation:false) { retire(s.id) } else if expired { retire(s.id,onlyIdle:true) }
+            if !stillAllowed(s,mutation:false,requireWindow:false) { retire(s.id) } else if expired { retire(s.id,onlyIdle:true) }
         }
     }
     @discardableResult
@@ -724,6 +729,13 @@ final class CUAService {
     }
     private static func validModifiers(_ values:[String]) -> Bool {
         values.count<=4 && Set(values).count==values.count && values.allSatisfy{["cmd","shift","option","alt","ctrl"].contains($0)}
+    }
+    static func recoverableNativeRefusal(_ structured:[String:Any])->String? {
+        guard structured["foreground_step"]==nil,
+              let code=structured["code"] as? String,let effect=structured["effect"] as? String else{return nil}
+        if ["background_unavailable","background_occluded","background_uipi_blocked"].contains(code),effect=="refused" {return code}
+        if code=="option_not_found",effect=="none" {return code}
+        return nil
     }
     static func observationParameters(_ args:[String:Any]) throws -> [String:Any] {
         for key in ["include_screenshot","include_accessibility_tree"] where args[key] != nil {
@@ -919,7 +931,7 @@ final class CUAService {
             let guestEnabled = guestEpoch() != nil
             let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
-            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
+            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"same_process_window_transfer":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
                 "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
         if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
@@ -1012,13 +1024,28 @@ final class CUAService {
             let pid = Int32(try int(args["pid"],max:Int64(Int32.max)))
             let window = try int(args["window_id"],max:Int64(UInt32.max))
             let t = try target(pid,window,policy:policy,owner:owner)
-            sweep()
+            if args["previous_session_id"] == nil {sweep()}
             gate.lock(); defer { gate.unlock() }
-            guard !stopped, !revoked.contains(owner), sessions.count + extensions.count + launching.count < 8, !launching.contains(t.application), !sessions.values.contains(where: { $0.target.pid == pid }) else { throw CUAFailure("cua_target_busy_or_capacity") }
+            guard !stopped,!revoked.contains(owner),requestAlive(),(try? loadPolicy().1)==bytes,
+                  (try? target(pid,window,policy:policy,owner:owner))==t else {throw CUAFailure("cua_target_unavailable_or_revoked")}
+            if let raw=args["previous_session_id"] {
+                guard let prior=raw as? String,let old=sessions[prior],old.owner==owner,
+                      !old.busy,!old.retiring,old.worker.isAlive,old.policyBytes==bytes,
+                      ProcessInfo.processInfo.systemUptime-old.last<=300,old.target.sameProcess(as:t),
+                      old.target.window != window else{throw CUAFailure("cua_window_transfer_not_allowed")}
+                // Keep the PID reserved continuously. A fresh bearer and no
+                // gateway observation prevent old-window actions after transfer.
+                let replacement=Session(owner:owner,target:t,policyBytes:bytes,worker:old.worker)
+                sessions.removeValue(forKey:prior)
+                sessions[replacement.id]=replacement
+                old.retired.leave()
+                return try output(["session_id":replacement.id,"pid":pid,"window_id":window,"transferred":true,"observation_required":true,"background_only":true,"idle_timeout_seconds":300])
+            }
+            guard sessions.count + extensions.count + launching.count < 8, !launching.contains(t.application), !sessions.values.contains(where: { $0.target.pid == pid }) else { throw CUAFailure("cua_target_busy_or_capacity") }
             let worker = try CUAWorker(driver:checkedDriver(policy),application:t.application)
             let s = Session(owner:owner,target:t,policyBytes:bytes,worker:worker)
             sessions[s.id] = s
-            return try output(["session_id":s.id,"pid":pid,"window_id":window,"background_only":true,"idle_timeout_seconds":300])
+            return try output(["session_id":s.id,"pid":pid,"window_id":window,"observation_required":true,"background_only":true,"idle_timeout_seconds":300])
         }
         guard let id = args["session_id"] as? String else { throw CUAFailure("cua_invalid_session") }
         gate.lock()
@@ -1035,6 +1062,7 @@ final class CUAService {
         var actionReceipt: (CommandReceiptLedger,String)?
         var coordinateSnapshot:CUASnapshot?
         var observedGeometry:CUAWindowGeometry?
+        var priorWindows=Set<Int64>()
         if mutation {
             guard let snapshot = s.snapshot, let operation = args["operation"] as? String,
                   let parameters = args["parameters"] as? [String:Any] else { throw CUAFailure("cua_observe_before_action") }
@@ -1042,13 +1070,14 @@ final class CUAService {
             try Self.validateAction(operation,parameters)
             if operation != "set_window_frame" { try snapshot.validate(parameters) } else { try snapshot.validate([:]) }
             if parameters["capture_id"] != nil {
-                try snapshot.validatePixelGeometry(windowGeometry(s.target))
+                do {try snapshot.validatePixelGeometry(windowGeometry(s.target))} catch {s.snapshot=nil;throw error}
                 coordinateSnapshot=snapshot
             }
             let request = try Self.requestID(args["request_id"])
             let receipt = try ledger()
             try reserveReceipt(receipt,request:request,owner:owner)
             actionReceipt = (receipt,request)
+            priorWindows=Set(windows(s.target.pid).compactMap{$0["window_id"] as? Int64})
             for (key,value) in parameters where key != "capture_id" || operation == "click" { driverArgs[key] = value }
             if operation != "invoke_menu" && operation != "set_window_frame", let revision = snapshot.revision { driverArgs["ui_tree_revision"] = revision }
             if operation != "set_value" && operation != "set_window_frame" { driverArgs["delivery_mode"] = "background" }
@@ -1084,7 +1113,19 @@ final class CUAService {
                 if let coordinateSnapshot {try coordinateSnapshot.validatePixelGeometry(self.windowGeometry(s.target))}
             })
             guard requestAlive(), focusGuard?.permits() != false, self.stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_action_outcome_unknown: foreground changed or target became unavailable; observe actual state before any new action") }
-            guard reply["isError"] as? Bool != true else { throw CUAFailure("cua_driver_rejected: " + ((reply["content"] as? [[String:Any]])?.first?["text"] as? String ?? "background unavailable").prefix(2000)) }
+            if reply["isError"] as? Bool == true {
+                let failure=reply["structuredContent"] as? [String:Any] ?? [:]
+                if mutation,let code=Self.recoverableNativeRefusal(failure),let (receipt,request)=actionReceipt {
+                    try finishReceipt(receipt,request:request,state:"launch_failed")
+                    var out:[String:Any]=["session_id":id,"operation":driverTool,"action_outcome":"refused","action_dispatched":false,"verified":false,"code":code,
+                        "observation_required":true,"background_only":true,"foreground_fallback":false,"verification_required":false]
+                    if code=="option_not_found",let options=failure["options"] as? [String] {
+                        out["options"]=Array(options.prefix(100)).map{String($0.prefix(256))}
+                    }
+                    return try output(out)
+                }
+                throw CUAFailure("cua_driver_rejected: inspect actual window state; no foreground fallback or automatic retry")
+            }
             guard let blocks = reply["content"] as? [[String:Any]], !blocks.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
             var safe: [[String:Any]] = []
             for block in blocks {
@@ -1110,6 +1151,13 @@ final class CUAService {
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
             if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited") }
             var header:[String:Any] = ["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation]
+            if mutation {
+                let now=Set(windows(s.target.pid).compactMap{$0["window_id"] as? Int64})
+                header["new_window_ids"]=Array(now.subtracting(priorWindows)).sorted()
+                header["closed_window_ids"]=Array(priorWindows.subtracting(now)).sorted()
+                header["action_outcome"]="dispatched_unverified"
+                header["verified"]=false
+            }
             if name=="cua_observe" {
                 header["pixel_actions_available"]=s.snapshot?.pixelGrounded ?? false
                 header["element_actions_available"]=s.snapshot?.tokens.isEmpty == false
