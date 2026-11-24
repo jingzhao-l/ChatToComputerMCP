@@ -209,10 +209,9 @@ final class ProcessRunner {
         posix_spawn_file_actions_addclose(&actions, stdoutWriteFD)
         posix_spawn_file_actions_addclose(&actions, stderrWriteFD)
         if let cwd, !cwd.isEmpty {
-            if #available(macOS 26.0, *) {
-                posix_spawn_file_actions_addchdir(&actions, cwd)
-            } else {
-                posix_spawn_file_actions_addchdir_np(&actions, cwd)
+            let result = addWorkingDirectoryAction(&actions, cwd: cwd)
+            guard result == 0 else {
+                throw ProcessRunnerError.spawnFailed(executable, result)
             }
         }
 
@@ -270,6 +269,35 @@ final class ProcessRunner {
             stdoutRead: stdoutPipe.fileHandleForReading,
             stderrRead: stderrPipe.fileHandleForReading
         )
+    }
+
+    // The standardized symbol arrived with macOS 26 SDK. Resolving it at
+    // runtime also builds with earlier SDKs (including Intel macOS 15),
+    // avoids referencing a deprecated declaration with a newer SDK, and
+    // keeps cwd selection atomic within posix_spawn (never process-wide chdir).
+    private typealias SpawnChdirAction = @convention(c) (
+        UnsafeMutablePointer<posix_spawn_file_actions_t?>, UnsafePointer<CChar>
+    ) -> Int32
+
+    private static let spawnChdirAction: SpawnChdirAction? = {
+        guard let library = dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY | RTLD_LOCAL) else {
+            return nil
+        }
+        // Keep the handle alive for the lifetime of this process, since
+        // the cached function pointer is used by concurrent launches.
+        guard let symbol = dlsym(library, "posix_spawn_file_actions_addchdir")
+            ?? dlsym(library, "posix_spawn_file_actions_addchdir_np") else {
+            dlclose(library)
+            return nil
+        }
+        return unsafeBitCast(symbol, to: SpawnChdirAction.self)
+    }()
+
+    private static func addWorkingDirectoryAction(
+        _ actions: inout posix_spawn_file_actions_t?, cwd: String
+    ) -> Int32 {
+        guard let action = spawnChdirAction else { return ENOSYS }
+        return cwd.withCString { action(&actions, $0) }
     }
 
     private static func validatePOSIXStrings(

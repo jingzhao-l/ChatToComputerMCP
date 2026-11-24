@@ -359,7 +359,7 @@ jobs:
           $info = dotnet --info | Out-String
           if ($info -notmatch '(?im)^\s*Architecture:\s*arm64\s*$') { throw "Native ARM64 .NET required" }
           if ((Get-FileHash vendor/tunnel-client/windows-arm64/tunnel-client.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne "480684ec1031fc2985c7e87f9d669e7dfda4012a8ecdab21eabe1b5deafdd656") { throw "ARM64 tunnel-client checksum mismatch" }
-          if ((Get-FileHash vendor/ripgrep/windows-arm64/rg.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne "d33a29a9ef03c9f4c03be9e8d88498e6e2e566d64cdbdef97f9afc8f13120c") { throw "ARM64 ripgrep checksum mismatch" }
+          if ((Get-FileHash vendor/ripgrep/windows-arm64/rg.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne "d33a29a9ef03c9f4c03be9e8d88498e6e2d2e566d64cdbdef97f9afc8f13120c") { throw "ARM64 ripgrep checksum mismatch" }
           if ((& vendor/tunnel-client/windows-arm64/tunnel-client.exe --version) -notmatch '^0\.0\.12\+881c9a8fed7cccbe6607cd419863bbca506b8215 ') { throw "Unexpected ARM64 tunnel-client version" }
           if ((& vendor/ripgrep/windows-arm64/rg.exe --version | Select-Object -First 1) -notmatch '^ripgrep 15\.2\.0 ') { throw "Unexpected ARM64 ripgrep version" }
       - name: Build and test base gateway

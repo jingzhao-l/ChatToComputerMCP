@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.IO.Pipes;
 using System.Text;
 using FileMCP.Core;
 
@@ -76,27 +77,31 @@ internal static partial class Program
             Assert(await Closed(body), "incomplete authenticated body is bounded");
         }
         await WaitCount(0);
-        // Exercise the same response writer used for every production HTTP response.
-        // A real loopback peer refuses to read; a tiny socket buffer makes
-        // backpressure deterministic without generating huge MCP payloads.
-        using (var listener = new TcpListener(IPAddress.Loopback, 0))
+        // Exercise the same response writer used for production HTTP.
+        // Windows loopback may buffer an entire TCP response even when the
+        // peer does not read; a real asynchronous OS pipe with a small
+        // capacity and no reader provides reproducible write backpressure.
+        // The TCP checks above still exercise the actual HTTP listener.
         {
-            listener.Start();
-            using var blocked = new TcpClient { ReceiveBufferSize = 1024 };
-            await blocked.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port);
-            using var writer = await listener.AcceptTcpClientAsync();
-            writer.SendBufferSize = 1024;
+            var name = "ct-" + Guid.NewGuid().ToString("N");
+            await using var writer = new NamedPipeServerStream(name, PipeDirection.Out, 1,
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 1024, 1024);
+            await using var blocked = new NamedPipeClientStream(".", name, PipeDirection.In,
+                PipeOptions.Asynchronous);
+            using var ceiling = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var accepted = writer.WaitForConnectionAsync(ceiling.Token);
+            await blocked.ConnectAsync(ceiling.Token);
+            await accepted;
             var clock = Stopwatch.StartNew();
-            using var ceiling = new CancellationTokenSource(TimeSpan.FromSeconds(4));
             try
             {
-                await server.WriteResponseAsync(writer.GetStream(), new byte[8_000_000], ceiling.Token);
-                throw new Exception("response unexpectedly fit in blocked peer buffers");
+                await server.WriteResponseAsync(writer, new byte[8_000_000], ceiling.Token);
+                throw new Exception("response unexpectedly fit in unread pipe buffers");
             }
             catch (OperationCanceledException)
             {
                 Assert(!ceiling.IsCancellationRequested && clock.Elapsed < TimeSpan.FromSeconds(3),
-                    "blocked response uses its independent write deadline");
+                    "blocked OS write uses its independent response deadline");
             }
         }
         using var pending = await Connect();

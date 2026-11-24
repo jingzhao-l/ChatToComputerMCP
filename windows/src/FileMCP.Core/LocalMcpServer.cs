@@ -454,7 +454,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         }
     }
 
-    internal async Task WriteResponseAsync(NetworkStream stream, byte[] response, CancellationToken cancellationToken)
+    internal async Task WriteResponseAsync(Stream stream, byte[] response, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_responseTimeout);

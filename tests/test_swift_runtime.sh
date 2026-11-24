@@ -210,6 +210,28 @@ do {
     precondition(error.localizedDescription.contains("Environment variable name"), "unexpected environment error: \(error)")
 }
 print("process-posix-string-validation: ok")
+// The cwd action must work with both old and new SDKs, and never fall
+// back to the gateway's own working directory if the requested one fails.
+let cwdFixture = FileManager.default.temporaryDirectory.appendingPathComponent("ctcmcp-cwd-" + UUID().uuidString)
+try FileManager.default.createDirectory(at: cwdFixture, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: cwdFixture) }
+guard let canonicalCwd = realpath(cwdFixture.path, nil) else {
+    preconditionFailure("could not canonicalize cwd fixture")
+}
+let expectedCwd = String(cString: canonicalCwd)
+free(canonicalCwd)
+let cwdResult = try ProcessRunner.run(executable: "/bin/pwd", arguments: ["-P"],
+    cwd: cwdFixture.path, timeoutSeconds: 3)
+precondition(cwdResult.exitCode == 0 && cwdResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == expectedCwd,
+    "spawn must use the requested working directory")
+do {
+    _ = try ProcessRunner.run(executable: "/bin/pwd", arguments: ["-P"],
+        cwd: cwdFixture.appendingPathComponent("missing").path, timeoutSeconds: 3)
+    preconditionFailure("invalid cwd must fail rather than execute in gateway directory")
+} catch {
+    precondition(error is ProcessRunnerError, "unexpected spawn failure: \(error)")
+}
+print("process-posix-cwd-action: ok")
 SWIFT
 
 swiftc -o "$TMP_DIR/process-test" \
