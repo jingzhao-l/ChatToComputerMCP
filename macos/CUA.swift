@@ -142,6 +142,7 @@ final class CUAWorker {
     private let startedAt=ProcessInfo.processInfo.systemUptime
     var ageSeconds:Int {Int(ProcessInfo.processInfo.systemUptime-startedAt)}
     private var toolSchemas: [String:[String:Any]] = [:]
+    var advertisedTools:Set<String>{Set(toolSchemas.keys)}
     private let manifestURL: URL
     private let isExtension: Bool
 
@@ -783,6 +784,13 @@ final class CUAService {
     private static func validModifiers(_ values:[String]) -> Bool {
         values.count<=4 && Set(values).count==values.count && values.allSatisfy{["cmd","shift","option","alt","ctrl"].contains($0)}
     }
+    static func permissionEvidence(_ structured:[String:Any])->[String:Any] {
+        // No paths, prompts, executable arguments, or nested arbitrary data.
+        structured.filter { key,value in
+            ["accessibility","screen_recording","screen_capture","automation","elevated","integrity_level","integrity_level_rid","uia","post_message","interactive_session","granted"].contains(key)
+            && (value is NSNumber || (value as? String).map{$0.utf8.count<=80}==true)
+        }
+    }
     static func nativeActionEvidence(_ structured:[String:Any])->[String:Any] {
         // Only factual scalar driver evidence, not escalation instructions,
         // file paths or raw action records. A bounded cell_value is retained as evidence.
@@ -1027,8 +1035,8 @@ final class CUAService {
             let guestEnabled = guestEpoch() != nil
             let profilesAvailable = !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) && ($0.kind != "guest" || guestEnabled) }) == true
             let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || profilesAvailable)
-            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"same_process_window_transfer":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
-                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"native_worker_max_age_seconds":6900,"post_action_observation":true,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
+            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","foreground_continuity_guard":true,"foreground_event_monitor":true,"same_process_window_transfer":true,"identity":relayOnly ? "dedicated_relay_credential" : guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"relay_only":relayOnly,"host_tools_allowed":!guestMode && !relayOnly,"requires_verified_client":requiresVerified,
+                "operations":Self.actions.keys.sorted(),"native_element_actions":["press","show_menu","pick","confirm","cancel","open","show_alternate_ui","show_default_ui"],"advertised_custom_element_actions":true,"paced_text_budget_ms":3000,"native_worker_max_age_seconds":6900,"post_action_observation":true,"session_driver_preflight":true,"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"guest_enabled":guestEnabled,"preferred_execution":(guestMode || relayOnly) ? "explicit_guest" : "native_background","extension_profiles_enabled":enabled && profilesAvailable])
         }
         if guestMode || relayOnly { guard guestEpoch() != nil else { throw CUAFailure("cua_guest_disabled_by_local_user") } }
         if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {
@@ -1121,27 +1129,46 @@ final class CUAService {
             let window = try int(args["window_id"],max:Int64(UInt32.max))
             let t = try target(pid,window,policy:policy,owner:owner)
             if args["previous_session_id"] == nil {sweep()}
-            gate.lock(); defer { gate.unlock() }
-            guard !stopped,!revoked.contains(owner),requestAlive(),(try? loadPolicy().1)==bytes,
-                  (try? target(pid,window,policy:policy,owner:owner))==t else {throw CUAFailure("cua_target_unavailable_or_revoked")}
-            if let raw=args["previous_session_id"] {
-                guard let prior=raw as? String,let old=sessions[prior],old.owner==owner,
-                      !old.busy,!old.retiring,old.worker.isAlive,old.worker.ageSeconds<6900,old.policyBytes==bytes,
-                      ProcessInfo.processInfo.systemUptime-old.last<=300,old.target.sameProcess(as:t),
-                      old.target.window != window else{throw CUAFailure("cua_window_transfer_not_allowed")}
-                // Keep the PID reserved continuously. A fresh bearer and no
-                // gateway observation prevent old-window actions after transfer.
-                let replacement=Session(owner:owner,target:t,policyBytes:bytes,worker:old.worker)
-                sessions.removeValue(forKey:prior)
-                sessions[replacement.id]=replacement
-                old.retired.leave()
-                return try output(["session_id":replacement.id,"pid":pid,"window_id":window,"transferred":true,"observation_required":true,"background_only":true,"idle_timeout_seconds":300])
-            }
-            guard sessions.count + extensions.count + launching.count < 8, !launching.contains(t.application), !sessions.values.contains(where: { $0.target.pid == pid }) else { throw CUAFailure("cua_target_busy_or_capacity") }
-            let worker = try CUAWorker(driver:checkedDriver(policy),application:t.application)
-            let s = Session(owner:owner,target:t,policyBytes:bytes,worker:worker)
-            sessions[s.id] = s
-            return try output(["session_id":s.id,"pid":pid,"window_id":window,"observation_required":true,"background_only":true,"idle_timeout_seconds":300])
+            // Hash the driver before taking the global lease lock. The
+            // policy bytes and target identity are rechecked at admission.
+            let driver = args["previous_session_id"] == nil ? try checkedDriver(policy) : nil
+            let admitted: (Session,Bool) = try {
+                gate.lock();defer{gate.unlock()}
+                guard !stopped,!revoked.contains(owner),requestAlive(),(try? loadPolicy().1)==bytes,
+                      (try? target(pid,window,policy:policy,owner:owner))==t else {throw CUAFailure("cua_target_unavailable_or_revoked")}
+                if let raw=args["previous_session_id"] {
+                    guard let prior=raw as? String,let old=sessions[prior],old.owner==owner,
+                          !old.busy,!old.retiring,old.worker.isAlive,old.worker.ageSeconds<6900,old.policyBytes==bytes,
+                          ProcessInfo.processInfo.systemUptime-old.last<=300,old.target.sameProcess(as:t),
+                          old.target.window != window else{throw CUAFailure("cua_window_transfer_not_allowed")}
+                    let replacement=Session(owner:owner,target:t,policyBytes:bytes,worker:old.worker)
+                    sessions.removeValue(forKey:prior);sessions[replacement.id]=replacement;old.retired.leave()
+                    replacement.busy=true
+                    return (replacement,true)
+                }
+                guard sessions.count + extensions.count + launching.count < 8, !launching.contains(t.application),
+                      !sessions.values.contains(where: { $0.target.pid == pid }),let driver else {throw CUAFailure("cua_target_busy_or_capacity")}
+                let s=Session(owner:owner,target:t,policyBytes:bytes,worker:try CUAWorker(driver:driver,application:t.application))
+                s.busy=true;sessions[s.id]=s;return(s,false)
+            }()
+            let (s,transferred)=admitted
+            defer{gate.lock();s.busy=false;s.last=ProcessInfo.processInfo.systemUptime;gate.unlock()}
+            do{
+                var evidence:[String:Any]=[:]
+                if !transferred{
+                    let reply=try s.worker.call("check_permissions",["prompt":false,"probe_direct_capture":false],allowed:{
+                        requestAlive() && self.stillAllowed(s,mutation:false)
+                    })
+                    guard reply["isError"] as? Bool != true,let blocks=reply["content"] as? [[String:Any]],!blocks.isEmpty,
+                          s.worker.advertisedTools.contains("get_window_state") else{throw CUAFailure("cua_driver_preflight_failed")}
+                    evidence=Self.permissionEvidence(reply["structuredContent"] as? [String:Any] ?? [:])
+                }
+                guard requestAlive(),stillAllowed(s,mutation:false) else{throw CUAFailure("cua_driver_preflight_revoked")}
+                return try output(["session_id":s.id,"pid":pid,"window_id":window,"transferred":transferred,"driver_ready":true,
+                    "driver_operations":Self.actions.keys.filter{s.worker.advertisedTools.contains($0)}.sorted(),
+                    "driver_permission_evidence":evidence,"timing_ms":s.worker.lastCallTiming,
+                    "observation_required":true,"background_only":true,"idle_timeout_seconds":300])
+            }catch{retire(s.id);throw error}
         }
         guard let id = args["session_id"] as? String else { throw CUAFailure("cua_invalid_session") }
         gate.lock()

@@ -59,6 +59,69 @@ internal sealed class CuaForegroundContinuity
     internal void Invalidate(){lock(_gate)_interrupted=true;}
 }
 
+/// Out-of-context WinEvent subscription; observes only foreground changes.
+internal sealed class CuaHostFocusGuard:IDisposable
+{
+    private readonly CuaForegroundContinuity _continuity=new(()=>GetForegroundWindow().ToInt64());
+    private readonly Thread _thread;
+    private readonly TaskCompletionSource<bool> _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile uint _threadId;
+    private int _closed;
+    private readonly WinEventCallback _callback;
+    internal CuaHostFocusGuard()
+    {
+        _callback=(_,_,_,_,_,_,_)=>_continuity.Invalidate();
+        _thread=new Thread(Watch){IsBackground=true,Name="CUA foreground observer"};
+        _thread.Start();
+        if(!_ready.Task.Wait(1500)||!_ready.Task.Result)_continuity.Invalidate();
+    }
+    internal bool Monitoring=>_ready.Task.IsCompletedSuccessfully&&_ready.Task.Result&&Volatile.Read(ref _closed)==0;
+    internal bool Permits()=>Monitoring&&_continuity.Permits();
+    private void Watch()
+    {
+        IntPtr hook=IntPtr.Zero;
+        try{
+            // Ensure the message queue exists before publishing its thread ID.
+            PeekMessage(out _,IntPtr.Zero,0,0,0);
+            _threadId=GetCurrentThreadId();
+            if(Volatile.Read(ref _closed)!=0)return;
+            hook=SetWinEventHook(3,3,IntPtr.Zero,_callback,0,0,0); // EVENT_SYSTEM_FOREGROUND / WINEVENT_OUTOFCONTEXT
+            _ready.TrySetResult(hook!=IntPtr.Zero);
+            if(hook==IntPtr.Zero)return;
+            if(Volatile.Read(ref _closed)!=0)return;
+            while(GetMessage(out var message,IntPtr.Zero,0,0)>0){
+                TranslateMessage(ref message);DispatchMessage(ref message);
+            }
+        }catch{_continuity.Invalidate();}
+        finally{
+            if(hook!=IntPtr.Zero)UnhookWinEvent(hook);
+            _continuity.Invalidate();_ready.TrySetResult(false);
+        }
+    }
+    public void Dispose()
+    {
+        if(Interlocked.Exchange(ref _closed,1)!=0)return;
+        var id=_threadId;
+        if(id!=0)PostThreadMessage(id,0x0012,UIntPtr.Zero,IntPtr.Zero);
+        _thread.Join(1500);
+    }
+    private delegate void WinEventCallback(IntPtr hook,uint evt,IntPtr hwnd,int objectId,int childId,uint thread,uint time);
+    [StructLayout(LayoutKind.Sequential)] private struct Message
+    {
+        internal IntPtr Hwnd;internal uint Id;internal UIntPtr WParam;internal IntPtr LParam;
+        internal uint Time;internal int X,Y;internal uint Private;
+    }
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr SetWinEventHook(uint min,uint max,IntPtr module,WinEventCallback callback,uint process,uint thread,uint flags);
+    [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hook);
+    [DllImport("user32.dll")] private static extern bool PeekMessage(out Message message,IntPtr hwnd,uint min,uint max,uint remove);
+    [DllImport("user32.dll")] private static extern int GetMessage(out Message message,IntPtr hwnd,uint min,uint max);
+    [DllImport("user32.dll")] private static extern bool TranslateMessage(ref Message message);
+    [DllImport("user32.dll")] private static extern IntPtr DispatchMessage(ref Message message);
+    [DllImport("user32.dll")] private static extern bool PostThreadMessage(uint thread,uint message,UIntPtr wparam,IntPtr lparam);
+}
+
 /// Host-level capability. A workspace grant is never a desktop grant.
 /// No remote tool can create or widen the local policy.
 internal sealed class CuaService : IDisposable
@@ -578,6 +641,14 @@ internal sealed class CuaService : IDisposable
         var names=mods.Select(m=>m?.GetValue<string>()??"").ToArray();
         return names.Length<=3&&names.Distinct(StringComparer.Ordinal).Count()==names.Length&&names.All(m=>m is "ctrl" or "shift" or "alt");
     }
+    internal static JsonObject PermissionEvidence(JsonObject structured)
+    {
+        var result=new JsonObject();
+        foreach(var key in new[]{"accessibility","screen_recording","screen_capture","automation","elevated","integrity_level","integrity_level_rid","uia","post_message","interactive_session","granted"})
+            if(structured[key] is JsonValue v&&(v.TryGetValue<string>(out var text)?Encoding.UTF8.GetByteCount(text)<=80:v.TryGetValue<bool>(out _)||v.TryGetValue<double>(out _)))
+                result[key]=v.DeepClone();
+        return result;
+    }
     internal static JsonObject NativeActionEvidence(JsonObject structured)
     {
         var result=new JsonObject();
@@ -852,10 +923,10 @@ internal sealed class CuaService : IDisposable
             bool extEnabled=false,requiresVerified=false;var guestEnabled=GuestEpoch() is not null;
             try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal)&&(p.kind!="guest"||guestEnabled));
                 enabled=(!requiresVerified||owner!=SharedOwner)&&(extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal))); } catch { }
-            return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",["foreground_continuity_guard"]=true,["same_process_window_transfer"]=true,
+            return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",["foreground_continuity_guard"]=true,["foreground_event_monitor"]=true,["same_process_window_transfer"]=true,
                 ["identity"] = _relayOnly?"dedicated_relay_credential":_guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["relay_only"]=_relayOnly,["host_tools_allowed"]=!_guestMode&&!_relayOnly,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
-                ["native_element_actions"]=new JsonArray("press","expand"),["advertised_custom_element_actions"]=false,["paced_text_budget_ms"]=3000,["native_worker_max_age_seconds"]=6900,["post_action_observation"]=true,
+                ["native_element_actions"]=new JsonArray("press","expand"),["advertised_custom_element_actions"]=false,["paced_text_budget_ms"]=3000,["native_worker_max_age_seconds"]=6900,["post_action_observation"]=true,["session_driver_preflight"]=true,
                 ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["guest_enabled"]=guestEnabled,["preferred_execution"]=(_guestMode||_relayOnly)?"explicit_guest":"native_background",["extension_profiles_enabled"]=extEnabled });
         }
         if((_guestMode||_relayOnly)&&GuestEpoch() is null)throw Fail("cua_guest_disabled_by_local_user");
@@ -881,7 +952,7 @@ internal sealed class CuaService : IDisposable
         {
             var application=args["application"]?.GetValue<string>() ?? "";
             if(!AllowedApplication(application) || !policy.PermitsLaunch(application,owner)) throw Fail("cua_launch_not_approved");
-            var focusGuard=_guestMode?null:new CuaForegroundContinuity(()=>GetForegroundWindow().ToInt64());
+            using var focusGuard=_guestMode?null:new CuaHostFocusGuard();
             if(!_guestMode){
                 if(focusGuard?.Permits()!=true)throw Fail("cua_target_in_use_by_user");
                 _=GetWindowThreadProcessId(GetForegroundWindow(),out uint foregroundPid);
@@ -959,6 +1030,8 @@ internal sealed class CuaService : IDisposable
             var window = Integer(args["window_id"], long.MaxValue);
             var target = GetTarget(pid,window,policy,owner);
             if(!args.ContainsKey("previous_session_id"))Sweep();
+            var driver=args.ContainsKey("previous_session_id")?null:CheckedDriver(policy);
+            Session created;bool transferred;
             lock (_gate)
             {
                 if(_stopped||_revoked.Contains(owner)||cancellation.IsCancellationRequested||
@@ -970,20 +1043,31 @@ internal sealed class CuaService : IDisposable
                         !old.PolicyBytes.AsSpan().SequenceEqual(bytes)||Environment.TickCount64-old.Last>300000||
                         !old.Target.SameProcess(target)||old.Target.Window==window)
                         throw Fail("cua_window_transfer_not_allowed");
-                    var replacement=new Session(owner,target,bytes,old.Worker);
-                    _sessions.Remove(prior);_sessions.Add(replacement.Id,replacement);
-                    old.Retired.TrySetResult(true);
-                    return Output(new JsonObject{["session_id"]=replacement.Id,["pid"]=pid,["window_id"]=window,
-                        ["transferred"]=true,["observation_required"]=true,["background_only"]=true,["idle_timeout_seconds"]=300});
+                    created=new Session(owner,target,bytes,old.Worker);transferred=true;
+                    _sessions.Remove(prior);_sessions.Add(created.Id,created);old.Retired.TrySetResult(true);
+                }else{
+                    if(_sessions.Count+_extensions.Count+_launching.Count>=8||_launching.Contains(target.Application)||_sessions.Values.Any(s=>s.Target.Pid==pid)||driver is null)
+                        throw Fail("cua_target_busy_or_capacity");
+                    created=new Session(owner,target,bytes,new Worker(driver,target.Application));transferred=false;
+                    _sessions.Add(created.Id,created);
                 }
-                if (_sessions.Count + _extensions.Count + _launching.Count >= 8 || _launching.Contains(target.Application) || _sessions.Values.Any(s => s.Target.Pid == pid))
-                    throw Fail("cua_target_busy_or_capacity");
-                var worker = new Worker(CheckedDriver(policy),target.Application);
-                var created = new Session(owner,target,bytes,worker);
-                _sessions.Add(created.Id,created);
-                return Output(new JsonObject { ["session_id"] = created.Id, ["pid"] = pid, ["window_id"] = window,["observation_required"]=true,
-                    ["background_only"] = true, ["idle_timeout_seconds"] = 300 });
+                created.Busy=true;
             }
+            try{
+                var evidence=new JsonObject();
+                if(!transferred){
+                    var probe=await created.Worker.CallAsync("check_permissions",new JsonObject{["prompt"]=false},()=>StillAllowed(created,false),cancellation).ConfigureAwait(false);
+                    if(probe["isError"]?.GetValue<bool>()==true||probe["content"] is not JsonArray {Count:>0}||!created.Worker.Advertises("get_window_state"))
+                        throw Fail("cua_driver_preflight_failed");
+                    evidence=PermissionEvidence(probe["structuredContent"] as JsonObject??new());
+                }
+                if(cancellation.IsCancellationRequested||!StillAllowed(created,false))throw Fail("cua_driver_preflight_revoked");
+                return Output(new JsonObject{["session_id"]=created.Id,["pid"]=pid,["window_id"]=window,["transferred"]=transferred,["driver_ready"]=true,
+                    ["driver_operations"]=new JsonArray(Actions.Keys.Where(created.Worker.Advertises).Order().Select(name=>(JsonNode?)JsonValue.Create(name)).ToArray()),
+                    ["driver_permission_evidence"]=evidence,["timing_ms"]=new JsonObject{["worker_call_ms"]=created.Worker.LastCallMs,["handshake_ms"]=created.Worker.LastHandshakeMs},
+                    ["observation_required"]=true,["background_only"]=true,["idle_timeout_seconds"]=300});
+            }catch{Retire(created.Id);throw;}
+            finally{lock(_gate){created.Busy=false;created.Last=Environment.TickCount64;}}
         }
         var sessionId = args["session_id"]?.GetValue<string>() ?? throw Fail("cua_invalid_session");
         Session s;
@@ -996,7 +1080,7 @@ internal sealed class CuaService : IDisposable
         try
         {
             bool mutation = name == "cua_act";
-            var focusGuard=mutation&&!_guestMode?new CuaForegroundContinuity(()=>GetForegroundWindow().ToInt64()):null;
+            using var focusGuard=mutation&&!_guestMode?new CuaHostFocusGuard():null;
             if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested || focusGuard?.Permits()==false) { s.Snapshot=null; throw Fail("cua_target_unavailable_or_user_active"); }
             var driverArgs = new JsonObject { ["pid"] = s.Target.Pid, ["window_id"] = s.Target.Window };
             string driverTool;
@@ -1164,6 +1248,7 @@ internal sealed class CuaService : IDisposable
         private readonly byte[] _buffer = new byte[65536];
         private int _offset, _length, _id, _closed;
         private readonly Dictionary<string,JsonObject> _toolSchemas=new(StringComparer.Ordinal);
+        internal bool Advertises(string name)=>_toolSchemas.ContainsKey(name);
         private bool _initialized;
         private readonly long _started=Environment.TickCount64;
         internal long AgeSeconds=>(Environment.TickCount64-_started)/1000;

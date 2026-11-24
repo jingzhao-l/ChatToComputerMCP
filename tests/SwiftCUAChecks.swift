@@ -104,6 +104,9 @@ import Foundation
             defer{pinned.close()}
             let permissions=try pinned.call("check_permissions",["prompt":false,"probe_direct_capture":false],allowed:{true})
             precondition(permissions["isError"] as? Bool != true)
+            precondition(pinned.advertisedTools.contains("get_window_state"))
+            let sanitized=CUAService.permissionEvidence(["accessibility":false,"screen_recording":true,"path":"/fixture"])
+            precondition(sanitized["accessibility"] as? Bool==false && sanitized["screen_recording"] as? Bool==true && sanitized["path"]==nil)
             print("PASS pinned actual Mac driver handshake, tools/list and read-only permission probe; no desktop input")
         }
 

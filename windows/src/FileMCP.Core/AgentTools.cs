@@ -590,6 +590,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
     private ManagedProcess? _process;
     private Timer? _deadline;
     private Timer? _workerTimer;
+    private int _refreshingWorker;
     private SupervisedCommandJob? _worker;
     public bool QueueIfBusy { get; } = queueIfBusy;
     public string? OwnerId { get; } = ownerId;
@@ -632,6 +633,13 @@ internal sealed class CommandSession(string requestId, string command, string cw
     private void StartWorkerTimer() => _workerTimer = new Timer(_ => RefreshWorker(), null, 0, 150);
 
     private void RefreshWorker()
+    {
+        if(Interlocked.Exchange(ref _refreshingWorker,1)!=0)return;
+        try{RefreshWorkerCore();}
+        finally{Volatile.Write(ref _refreshingWorker,0);}
+    }
+
+    private void RefreshWorkerCore()
     {
         SupervisedCommandJob? worker;
         lock (_gate) { if (_disposed || _workerTimer is null) return; worker = _worker; }

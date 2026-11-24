@@ -1,6 +1,6 @@
 {
   "name": "chat-to-computer-mcp",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Free, open-source MCP gateway connecting ChatGPT and other cloud AI chats to local Mac/Windows workspaces, with concurrent commands, optional native background computer use and safe updates.",
   "license": "Apache-2.0",
   "author": "ChatToComputerMCP contributors",

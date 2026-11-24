@@ -85,7 +85,7 @@ ChatGPT / Claude / another compatible MCP client
 | **Verified OAuth scopes (Mac/Windows)** | Cloudflare OAuth clients can be approved for specific roots, own their command sessions and be revoked in the GUI. Private OpenAI Tunnel remains shared. |
 | **Native GUI** | Both platforms: Overview, Workspaces, Connection, Tasks, Activity, Security and Settings. |
 | **Connection providers** | OpenAI Secure MCP Tunnel and Cloudflare on both platforms. |
-| **Optional background CUA** | Pinned Cua Driver, approved windows, accessibility tree and screenshot, one-use observation, typed input and verification. No foreground fallback. |
+| **Optional background CUA** | Pinned Cua Driver, approved windows, accessibility tree and screenshot, one-use observation, typed input and verification. Same-process window handoff and optional fresh post-action observation; no foreground fallback. |
 | **Optional browser / Guest** | Headless Chromium with origin grants; independent Guest disabled until local manual opt-in. |
 | **Local installation** | npm ships native source and pinned vendor binaries; installation **compiles locally**. |
 | **Optional background mode** | Mac LaunchAgent and Windows per-user login supervisor, crash recovery, optional always-on and explicit auto-connect. |

@@ -58,11 +58,11 @@ secret redaction and Cloudflare registration parsing. The native Windows
 suite additionally contains actual process/reconnect, scoped mutation,
 profile mutex and Cloudflare login rollback fixtures. The v0.5.1 native Windows gate passed (run 45337700732); the v0.6.0 Windows CUA regression initially failed. The v0.6.1 Verify run 45360668564 passed both native jobs. Hosted CI evidence is not full interactive physical-device acceptance. This section describes pre-CUA Windows parity work. See the following section for the integrated CUA backend.
 
-## Native CUA (0.6.0)
+## Native CUA (0.6.0+)
 
 Both platforms implement 15 CUA MCP tools in addition to the existing 33
 coding tools and routing/identity tools. Native driver input schemas differ
-where platform capabilities differ. Native background control is preferred;
+where platform capabilities differ. Both gateways support window handoff, visual-only observations, optional post-action observation, driver preflight and foreground-event observation. CUA protocol tests and pinned real-driver read-only probes are required by the four-architecture release gates; these are not interactive application acceptance. Native background control is preferred;
 no automatic foreground or Guest fallback. Guest is disabled by default and
 requires local interactive enablement. The real Chromium and native
 loopback guest relay tests are not full desktop or VM acceptance.

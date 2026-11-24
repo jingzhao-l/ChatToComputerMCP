@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.0] — 2026-11-24
+
+- Add native background CUA visual-only observations, independent window geometry/DPI checks, same-process window handoff, bounded complex control actions and safe typed refusal recovery.
+- Add optional fresh post-action observation, worker timings, permission preflight and actual driver capability reporting. Preserve durable action receipts across a failed read.
+- Explicit direct Windows driver, foreground continuity/event monitoring, bounded worker lifetime and synchronized cleanup; no foreground or Guest fallback.
+- Exercise native CUA protocol and checksum-pinned driver read-only probes on four native architectures; keep real Chromium regression and formal desktop acceptance distinct.
+- Fix Windows supervisor test readiness publication and serialize worker-status refresh to avoid concurrent stale status application.
+
 ## [0.6.2] — 2026-11-24
 
 - Fix Intel SDK process working-directory compatibility without changing gateway cwd; reject already-cancelled subprocesses before spawn.

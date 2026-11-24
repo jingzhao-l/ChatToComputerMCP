@@ -6,7 +6,7 @@ namespace FileMCP.Core.Tests;
 
 internal static partial class Program
 {
-    private const string SupervisedFixtureCommand = "[Console]::Write('started'); while (-not (Test-Path -LiteralPath release)) { Start-Sleep -Milliseconds 100 }; [Console]::Write('finished')";
+    private const string SupervisedFixtureCommand = "[Console]::Write('started'); [Console]::Out.Flush(); while (-not (Test-Path -LiteralPath release)) { Start-Sleep -Milliseconds 100 }; [Console]::Write('finished')";
     private static void SupervisorFixture(string root)
     {
         var workspace = Path.Combine(root, "workspace");
@@ -42,6 +42,16 @@ internal static partial class Program
             while (!File.Exists(idPath) && !fixture.HasExited && DateTime.UtcNow < deadline) await Task.Delay(50);
             Assert(File.Exists(idPath), "Supervisor launched by independent fixture");
             var id = File.ReadAllText(idPath);
+            var readyJob=supervisor.Jobs().Single(job=>job.Record.SessionId==id);
+            deadline=DateTime.UtcNow.AddSeconds(15);
+            SupervisedCommandStatus before;
+            do {
+                before=readyJob.ReadStatus();
+                if(before.Terminal||string.Concat(before.Chunks.Select(c=>c.Text))=="started")break;
+                await Task.Delay(50);
+            }while(DateTime.UtcNow<deadline);
+            Assert(!before.Terminal&&string.Concat(before.Chunks.Select(c=>c.Text))=="started",
+                "Worker reached the running barrier before gateway kill: "+System.Text.Json.JsonSerializer.Serialize(before));
             fixture.Kill(entireProcessTree: false); await fixture.WaitForExitAsync();
             var jobs = supervisor.Jobs();
             Assert(jobs.Count == 1 && jobs[0].Record.SessionId == id && jobs[0].WorkerAlive(), "Original worker survives gateway kill");
@@ -57,7 +67,7 @@ internal static partial class Program
             deadline = DateTime.UtcNow.AddSeconds(15);
             while (DateTime.UtcNow < deadline && server.DesktopCommandSnapshots().Any(row => row.SessionId == id && row.Active)) await Task.Delay(50);
             var output = await server.DesktopCommandOutputAsync("default", id);
-            Assert(output["state"]!.GetValue<string>() == "exited" && output["output"]!.GetValue<string>() == "startedfinished", "Recovered worker retains output and exits");
+            Assert(output["state"]!.GetValue<string>() == "exited" && output["output"]!.GetValue<string>() == "startedfinished", "Recovered worker retains output and exits: "+output.ToJsonString()+"; durable="+System.Text.Json.JsonSerializer.Serialize(readyJob.ReadStatus()));
             deadline = DateTime.UtcNow.AddSeconds(3);
             while (DateTime.UtcNow < deadline && ledger.OwnReceipt("default", "crash-recovery", "__local_admin__")["state"]!.GetValue<string>() != "exited") await Task.Delay(50);
             Assert(ledger.OwnReceipt("default", "crash-recovery", "__local_admin__")["state"]!.GetValue<string>() == "exited", "Terminal receipt reconciled");

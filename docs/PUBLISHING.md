@@ -72,7 +72,7 @@ The job verifies that:
 3. `package.json` version equals the pushed tag without the `v`.
 4. npm CLI and local installer tests pass.
 5. The package content manifest contains required sources (including the CUA backend, optional worker and lockfile) and no generated build artifacts.
-6. Native Mac/Windows quality gates include base schema and permission checks, native HTTP/runtime and installer regressions, Intel Mac vendor integrity and base gateway tests, native Windows ARM64 base runtime and clean installation, plus the separately maintained CUA security, Chromium and Guest transport regression.
+6. Native Mac/Windows quality gates include base schema and permission checks, native HTTP/runtime and installer regressions, Intel Mac vendor integrity and base gateway tests, native Windows ARM64 base runtime and clean installation, plus native CUA protocol and checksum-pinned real-driver read-only probes on all four architectures, and the real Chromium / Guest transport regression on the primary Mac and Windows jobs.
 7. The same registry version has not already been published.
 
 Stable publish workflows share one concurrency group and must advance the current registry latest; stale and equal versions fail closed. It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, followed by a registry read-back. The tag alone does not produce a Mac/Windows installer binary: recipients compile natively from the npm package.

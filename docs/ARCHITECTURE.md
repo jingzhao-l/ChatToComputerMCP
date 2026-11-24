@@ -95,7 +95,7 @@ credential continuity until explicit migration is complete. See
 ## Optional CUA
 
 The host owns application grants, exact process/window leases, bounded
-pinned driver subprocesses, one-use observations and durable action receipts.
+pinned direct driver subprocesses, one-use observations and durable action receipts. A read-only permission preflight negotiates driver capabilities before admitting a native session. Same-process window handoff preserves exclusivity, and optional post-action observation cannot change the action receipt.
 The headless browser uses separate origin grants. Guest-only relays are
 default-off until explicit local opt-in and never expose host workspace or
 Shell tools. No automatic foreground/Guest fallback. Details and acceptance

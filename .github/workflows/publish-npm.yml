@@ -98,6 +98,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Prepare pinned native Cua Driver (no input)
+        run: node tests/prepare_cua_driver.mjs
       - name: Native CUA security and real Chromium gateway
         shell: bash
         run: |
@@ -129,7 +131,7 @@ jobs:
 
   macos-intel:
     needs: package
-    name: macOS Intel base gateway and installer
+    name: macOS Intel gateway, CUA and installer
     runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
@@ -147,6 +149,10 @@ jobs:
           test "$(uname -m)" = x86_64
           bash tests/check_intel_vendor.sh
           npm test
+          CTCMCP_REAL_CUA_DRIVER="$(node tests/prepare_cua_driver.mjs)"
+          test -x "$CTCMCP_REAL_CUA_DRIVER"
+          export CTCMCP_REAL_CUA_DRIVER
+          bash tests/test_swift_cua.sh
           bash tests/test_swift_agent_tools.sh
           MCP_HTTP_FUZZ_ITERATIONS=20 bash tests/test_swift_runtime.sh
           bash build_macos_app.sh
@@ -180,6 +186,8 @@ jobs:
         shell: pwsh
         run: npm test
 
+      - name: Prepare pinned native Cua Driver (no input)
+        run: node tests/prepare_cua_driver.mjs
       - name: Windows build, integration, release and GUI
         shell: pwsh
         env:
@@ -215,7 +223,7 @@ jobs:
 
   windows-arm64:
     needs: package
-    name: Windows ARM64 native base runtime and installer
+    name: Windows ARM64 native runtime, CUA and installer
     runs-on: windows-11-arm
     timeout-minutes: 25
     env:
@@ -243,6 +251,8 @@ jobs:
           if ((Get-FileHash vendor/ripgrep/windows-arm64/rg.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne "d33a29a9ef03c9f4c03be9e8d88498e6e2d2e566d64cdbdef97f9afc8f13120c") { throw "ARM64 ripgrep checksum mismatch" }
           if ((& vendor/tunnel-client/windows-arm64/tunnel-client.exe --version) -notmatch '^0\.0\.12\+881c9a8fed7cccbe6607cd419863bbca506b8215 ') { throw "Unexpected ARM64 tunnel-client version" }
           if ((& vendor/ripgrep/windows-arm64/rg.exe --version | Select-Object -First 1) -notmatch '^ripgrep 15\.2\.0 ') { throw "Unexpected ARM64 ripgrep version" }
+      - name: Prepare pinned native Cua Driver (no input)
+        run: node tests/prepare_cua_driver.mjs
       - name: Build and test base gateway
         shell: pwsh
         run: |

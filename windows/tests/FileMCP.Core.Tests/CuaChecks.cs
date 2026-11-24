@@ -150,8 +150,21 @@ internal static partial class Program
         var eventLatch=new CuaForegroundContinuity(()=>foreground);
         eventLatch.Invalidate();Assert(!eventLatch.Permits(),"activation event latch");
         foreground=null;Assert(!new CuaForegroundContinuity(()=>foreground).Permits(),"unknown foreground fails closed");
+        // Native observer must be installable on the runner; no focus or input changes.
+        using(var guard=new CuaHostFocusGuard()){
+            Assert(guard.Monitoring,"Windows native foreground event subscription");
+        }
         var exe = Environment.ProcessPath!;
         Assert(!Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase), "CUA fixture requires test apphost");
+        if(Environment.GetEnvironmentVariable("CTCMCP_REAL_CUA_DRIVER") is string driver){
+            using var actual=new CuaService.Worker(driver,exe);
+            var permissions=await actual.CallAsync("check_permissions",J("""{"prompt":false}"""),()=>true,default);
+            Assert(permissions["isError"]?.GetValue<bool>()!=true&&permissions["content"] is JsonArray {Count:>0},"pinned real Windows driver read-only probe");
+            Assert(actual.Advertises("get_window_state"),"native observation contract");
+            var permissionEvidence=CuaService.PermissionEvidence(J("""{"uia":true,"integrity_level":"Medium","path":"private"}"""));
+            Assert(permissionEvidence["uia"]?.GetValue<bool>()==true&&!permissionEvidence.ContainsKey("path"),"bounded permission evidence");
+            Console.WriteLine("PASS pinned actual Windows driver handshake, tools/list and read-only permission probe; no desktop input");
+        }
         using (var worker = new CuaService.Worker(exe,exe))
         {
             var result = await worker.CallAsync("get_window_state",J("""{"pid":1,"window_id":2}"""),()=>true,default);

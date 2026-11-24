@@ -33,9 +33,10 @@ The [changelog](../CHANGELOG.md) preserves historical milestones.
 - [ ] Complete native Intel and Windows ARM64 acceptance and cross-version physical-device, accessibility and provider matrix; track individual evidence in [platform parity](PLATFORM_PARITY.md).
 - [ ] Independent always-on updater daemon (intentionally not installed; current checks run only while the desktop app is open).
 
-## R3 — Direct background computer use (0.6 series)
+## R3 — Direct background computer use (0.6–0.7 series)
 - [x] Optional native driver integration, app grants, observations and durable dispatch receipts on both platforms.
 - [x] Independent browser and Guest relay; local Guest opt-in, default-off; no automatic foreground or Guest fallback.
+- [x] Native visual-only observation, exact geometry checks, window handoff, bounded control actions, driver preflight, post-action observation and synchronized worker cleanup.
 - [ ] Expand native application compatibility and measure actual user-desktop non-interference; physical VM, browser and real cloud client acceptance.
 - See the separately maintained [CUA guide](CUA.md) for detailed implementation and constraints.
 

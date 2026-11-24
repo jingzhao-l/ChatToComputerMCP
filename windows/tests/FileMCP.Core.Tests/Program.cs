@@ -63,7 +63,6 @@ internal static partial class Program
             return 0;
         }
 
-        var baseOnly = args.Length == 1 && args[0] == "--base-only";
         Console.WriteLine($"windows-test-architecture: {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
         var root = Path.Combine(Path.GetTempPath(), "filemcp-windows-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -73,7 +72,7 @@ internal static partial class Program
             await TestProcessRunnerAsync(root);
             await TestFilesystemAndToolsAsync(root);
             await TestAgentToolsAsync(root);
-            if (!baseOnly) await TestCuaAsync(root);
+            await TestCuaAsync(root);
             await TestSupervisedRecoveryAsync(root);
             await TestWindowsReceiptLedgerAsync(root);
             await TestCodexHistoryAsync(root);
