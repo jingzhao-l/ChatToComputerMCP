@@ -44,6 +44,15 @@ internal static partial class Program
                 "Verified client reaches MCP");
             return JsonNode.Parse(HttpBody(result))!["result"]!.AsObject();
         }
+        var listed = await SendHttpAsync(port, "POST", "/mcp",
+            new Dictionary<string, string> { ["Content-Type"] = "application/json", ["Authorization"] = "Bearer " + first },
+            """{"jsonrpc":"2.0","id":52,"method":"tools/list","params":{}}""", host: "example.test");
+        var definitions = JsonNode.Parse(HttpBody(listed))!["result"]!["tools"]!.AsArray();
+        Assert(definitions.Count > 0 && definitions.All(tool =>
+            tool!["securitySchemes"] is JsonArray schemes && schemes.Count == 1 &&
+            schemes[0]!["type"]!.GetValue<string>() == "oauth2" &&
+            schemes[0]!["scopes"]!.AsArray().Count == 1 && schemes[0]!["scopes"]![0]!.GetValue<string>() == "mcp"),
+            "OAuth discovery advertises the same MCP OAuth security scheme as Mac");
         var identity = (await Call(first, "connection_identity"))["structuredContent"]!;
         Assert(identity["authentication_mode"]!.GetValue<string>() == "verified_oauth_client" &&
             !identity["conversation_authenticated"]!.GetValue<bool>() &&

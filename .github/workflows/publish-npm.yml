@@ -74,7 +74,7 @@ jobs:
             'windows/src/FileMCP.Core/WorkspaceCommandBudget.cs',
             'vendor/tunnel-client/darwin-arm64/tunnel-client',
             'vendor/tunnel-client/darwin-amd64/tunnel-client','vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt','vendor/ripgrep/darwin-amd64/rg',
-            'docs/PUBLISHING.md','docs/ARCHITECTURE.md','LICENSE'
+            'docs/PUBLISHING.md','docs/ARCHITECTURE.md','docs/BASE_TOOL_CONTRACT.md','contracts/mcp-tools.json','LICENSE'
           ]) if(!files.has(required)) throw Error('Missing '+required);
           for(const filename of files)
             if(filename.includes('/obj/') || filename.includes('/bin/Release/') ||
@@ -112,6 +112,10 @@ jobs:
           MCP_HTTP_FUZZ_ITERATIONS: '20'
         run: |
           set -Eeuo pipefail
+          python3 tests/check_platform_tool_contracts.py
+          bash tests/dump_swift_tool_contract.sh > "$RUNNER_TEMP/mac-contract.json"
+          python3 tests/check_base_tool_contract.py "$RUNNER_TEMP/mac-contract.json"
+          python3 tests/check_base_tool_docs.py
           bash tests/test_swift_updater.sh
           bash tests/test_swift_ui.sh
           bash tests/test_swift_workspace_scope.sh
@@ -180,6 +184,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           dotnet build windows/FileMCP.Windows.sln -c Release -warnaserror
           if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
+          dotnet run --no-build -c Release --project windows/tests/FileMCP.Core.Tests -- --dump-base-tool-contract | Out-File -Encoding utf8 "$env:RUNNER_TEMP/win-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows contract export failed" }
+          python tests/check_base_tool_contract.py "$env:RUNNER_TEMP/win-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows contract drift" }
           ./tests/test_windows_runtime.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows runtime tests failed" }
           ./build_windows_app.ps1 -Architecture x64

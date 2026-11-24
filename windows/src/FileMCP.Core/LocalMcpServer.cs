@@ -221,7 +221,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         }
     }
 
-    private JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
+    internal JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
     {
         lock (_workspaceGate)
         {
@@ -302,6 +302,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
             ["annotations"] = new JsonObject { ["readOnlyHint"] = false, ["destructiveHint"] = true,
                 ["openWorldHint"] = true }
         });
+        if (_oauth is not null)
+            foreach (var tool in tools.OfType<JsonObject>())
+                tool["securitySchemes"] = new JsonArray(new JsonObject
+                    { ["type"] = "oauth2", ["scopes"] = new JsonArray("mcp") });
         return tools;
     }
 

@@ -2,7 +2,7 @@ name: Verify
 
 # Do not run duplicate full suites for both branch pushes and pull requests.
 # Keep direct main pushes covered; PRs from feature/dependabot branches
-# still receive all three jobs. Manual branch checks remain possible.
+# receive the platform and security jobs. Manual branch checks remain possible.
 on:
   push:
     branches: [main]
@@ -68,8 +68,13 @@ jobs:
       - name: Guard GitHub Actions Node.js runtimes
         run: python3 tests/check_github_actions_node_runtime.py
 
-      - name: Verify cross-platform MCP tool contracts
+      - name: Verify cross-platform MCP tool names
         run: python3 tests/check_platform_tool_contracts.py
+      - name: Verify macOS base MCP schema and permission contract
+        run: |
+          bash tests/dump_swift_tool_contract.sh > "$RUNNER_TEMP/mac-contract.json"
+          python3 tests/check_base_tool_contract.py "$RUNNER_TEMP/mac-contract.json"
+          python3 tests/check_base_tool_docs.py
 
       - name: Static verification
         shell: bash
@@ -242,6 +247,14 @@ jobs:
       - name: Windows updater CLI regression
         shell: pwsh
         run: npm test
+
+      - name: Verify Windows base MCP schema and permission contract
+        shell: pwsh
+        run: |
+          dotnet run --no-build -c Release --project windows/tests/FileMCP.Core.Tests -- --dump-base-tool-contract | Out-File -Encoding utf8 "$env:RUNNER_TEMP/win-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows contract export failed" }
+          python tests/check_base_tool_contract.py "$env:RUNNER_TEMP/win-contract.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows contract drift" }
 
       - name: Windows integration tests
         shell: pwsh

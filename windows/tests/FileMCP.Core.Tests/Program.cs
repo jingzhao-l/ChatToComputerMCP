@@ -48,6 +48,7 @@ internal static partial class Program
         }
         if (args.Length > 0 && args[0] == "mcp") return await RunCuaFixtureAsync();
 
+        if (args.Length == 1 && args[0] == "--dump-base-tool-contract") { await DumpBaseToolContractAsync(); return 0; }
         if (args.Length == 1 && args[0] == "--http-resource-check")
         {
             var isolated = Path.Combine(Path.GetTempPath(), "ctcmcp-http-limit-" + Guid.NewGuid().ToString("N"));
