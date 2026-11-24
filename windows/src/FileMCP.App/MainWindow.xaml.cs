@@ -563,13 +563,13 @@ public partial class MainWindow : Window
 
     private void OverviewTasks_Click(object sender, RoutedEventArgs e)
     {
-        MainTabs.SelectedIndex = 3;
+        MainTabs.SelectedItem = TasksTab;
         RefreshTasks();
     }
 
     private async void OverviewUpdates_Click(object sender, RoutedEventArgs e)
     {
-        MainTabs.SelectedItem = SettingsTab;
+        MainTabs.SelectedItem = PreferencesTab;
         await CheckUpdatesAsync(automatic: false);
     }
 
@@ -1201,9 +1201,9 @@ public partial class MainWindow : Window
     {
         if (DirectoryBox.Text.Trim().Length == 0) { MainTabs.SelectedItem = SettingsTab; ShowError("Choose a shared directory."); return false; }
         if (!ValidateApprovedFolders()) { MainTabs.SelectedItem = SettingsTab; return false; }
-        if (!LocalMcpRuntime.IsValidProfileName(ProfileBox.Text.Trim())) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters)."); return false; }
-        if (!int.TryParse(PortBox.Text.Trim(), out var port) || port is < 1 or > 65535) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("MCP port must be between 1 and 65535."); return false; }
-        if (LocalMcpRuntime.NormalizeHealthAddress(HealthAddressBox.Text.Trim()) is null) { MainTabs.SelectedItem = SettingsTab; AdvancedExpander.IsExpanded = true; ShowError("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535."); return false; }
+        if (!LocalMcpRuntime.IsValidProfileName(ProfileBox.Text.Trim())) { MainTabs.SelectedItem = PreferencesTab; AdvancedExpander.IsExpanded = true; ShowError("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters)."); return false; }
+        if (!int.TryParse(PortBox.Text.Trim(), out var port) || port is < 1 or > 65535) { MainTabs.SelectedItem = PreferencesTab; AdvancedExpander.IsExpanded = true; ShowError("MCP port must be between 1 and 65535."); return false; }
+        if (LocalMcpRuntime.NormalizeHealthAddress(HealthAddressBox.Text.Trim()) is null) { MainTabs.SelectedItem = PreferencesTab; AdvancedExpander.IsExpanded = true; ShowError("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535."); return false; }
         return true;
     }
 
@@ -1278,7 +1278,16 @@ public partial class MainWindow : Window
             case LocalMcpRuntimeStatus.Stopping:
                 ConnectButton.Content = "Disconnecting…"; ConnectButton.IsEnabled = false; break;
         }
+        FooterStatus.Text = state.Status switch {
+            LocalMcpRuntimeStatus.Running => "Gateway running",
+            LocalMcpRuntimeStatus.Starting => "Connecting / recovering",
+            LocalMcpRuntimeStatus.Stopping => "Disconnecting",
+            LocalMcpRuntimeStatus.Failed => "Connection failed",
+            _ => "Disconnected"
+        };
         var editable = state.Status is LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed;
+        SaveSettingsButton.IsEnabled = SaveSecurityButton.IsEnabled = SavePreferencesButton.IsEnabled = editable;
+        EnableCommandsCheckBox.IsEnabled = editable;
         WorkspaceListBox.IsEnabled = editable;
         WorkspaceNameBox.IsEnabled = editable;
         CommandCapacityBox.IsEnabled = editable;
@@ -1378,7 +1387,7 @@ public partial class MainWindow : Window
     {
         if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
         if (e.Key == Key.W) { Hide(); e.Handled = true; }
-        else if (e.Key == Key.OemComma) { MainTabs.SelectedItem = SettingsTab; ShowFromTray(); e.Handled = true; }
+        else if (e.Key == Key.OemComma) { MainTabs.SelectedItem = PreferencesTab; ShowFromTray(); e.Handled = true; }
         else if (e.Key == Key.Q) { _ = QuitAsync(); e.Handled = true; }
     }
 

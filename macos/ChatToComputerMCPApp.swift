@@ -4,7 +4,9 @@ import Security
 private let appName = "ChatToComputerMCP"
 
 private enum Layout {
-    static let windowWidth: CGFloat = 620
+    static let windowWidth: CGFloat = 900
+    static let compactWindowWidth: CGFloat = 620
+    static let sidebarWidth: CGFloat = 168
     static let collapsedWindowHeight: CGFloat = 570
     static let expandedWindowHeight: CGFloat = 750
     static let openAIConnectionWindowHeight: CGFloat = 530
@@ -574,6 +576,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let followLogsCheckbox = NSButton(checkboxWithTitle: "Follow new logs", target: nil, action: nil)
     private let saveConnectionButton = LoadingButton(title: "Save connection", target: nil, action: nil)
     private let saveSettingsButton = LoadingButton(title: "Save workspace", target: nil, action: nil)
+    private let saveSecurityButton = LoadingButton(title: "Save permissions", target: nil, action: nil)
+    private let savePreferencesButton = LoadingButton(title: "Save settings", target: nil, action: nil)
     private let startButton = NSButton(title: "Connect", target: nil, action: nil)
     private let deleteKeyButton = NSButton(title: "Delete API key", target: nil, action: nil)
     private let resetButton = NSButton(title: "Reset all settings…", target: nil, action: nil)
@@ -582,8 +586,13 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let apiKeyStatusLabel = NSTextField(labelWithString: "")
     private let tabs = NSTabView()
     private let navigation = NSSegmentedControl(labels: [
-        "Overview", "Workspaces", "Connection", "Tasks", "Activity"
+        "Overview", "Folders", "Connect", "Tasks", "Activity", "Security", "Settings"
     ], trackingMode: .selectOne, target: nil, action: nil)
+    private let sidebar = NSVisualEffectView()
+    private var sidebarButtons: [NSButton] = []
+    private var wideNavigation = false
+    private var compactContentConstraints: [NSLayoutConstraint] = []
+    private var wideContentConstraints: [NSLayoutConstraint] = []
     private let tasksSummaryLabel = NSTextField(wrappingLabelWithString: "Connect to view running commands")
     private let receiptWarningLabel = NSTextField(wrappingLabelWithString:
         "Connect to view local interrupted-task receipts.")
@@ -641,6 +650,18 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateTimer?.invalidate()
         taskRefreshTimer?.invalidate()
         shutdownForTermination()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard !compactContentConstraints.isEmpty else { return }
+        let wide = view.bounds.width >= Layout.compactWindowWidth + Layout.sidebarWidth + 32
+        guard wide != wideNavigation else { return }
+        wideNavigation = wide
+        NSLayoutConstraint.deactivate(wide ? compactContentConstraints : wideContentConstraints)
+        NSLayoutConstraint.activate(wide ? wideContentConstraints : compactContentConstraints)
+        sidebar.isHidden = !wide
+        navigation.isHidden = wide
     }
 
     private func buildUI() {
@@ -771,6 +792,11 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         saveSettingsButton.target = self
         saveSettingsButton.action = #selector(saveSettingsOnly)
         saveSettingsButton.bezelStyle = .rounded
+        for button in [saveSecurityButton, savePreferencesButton] {
+            button.target = self; button.action = #selector(saveSettingsOnly)
+            button.bezelStyle = .rounded
+            button.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        }
 
         deleteKeyButton.target = self
         deleteKeyButton.action = #selector(deleteSavedKey)
@@ -1051,7 +1077,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         NSLayoutConstraint.activate([
             connectionDocument.widthAnchor.constraint(equalTo: connectionPage.contentView.widthAnchor),
             connectionRoot.leadingAnchor.constraint(equalTo: connectionDocument.leadingAnchor, constant: 12),
-            connectionRoot.trailingAnchor.constraint(equalTo: connectionDocument.trailingAnchor, constant: -12),
+            connectionRoot.trailingAnchor.constraint(lessThanOrEqualTo: connectionDocument.trailingAnchor, constant: -12),
             connectionRoot.topAnchor.constraint(equalTo: connectionDocument.topAnchor, constant: 12),
             connectionRoot.bottomAnchor.constraint(equalTo: connectionDocument.bottomAnchor, constant: -12),
             connectionHelpLabel.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
@@ -1230,66 +1256,41 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         updateButtons.orientation = .horizontal
         updateButtons.spacing = 8
 
-        let settingsForm = NSStackView(views: [
-            workspaceTitle,
-            workspaceHelp,
-            directoryRow,
-            workspaceCountLabel,
-            workspaceMenu,
-            workspaceSelectedPath,
-            workspaceActions,
-            permissionRow,
-            workspaceSafety,
-            capacityRow,
-            enableCommandsCheckbox,
-            commandWarning,
-            captureCommandHistoryCheckbox,
-            enableGitPushCheckbox,
-            extraPermissionsHelp,
-            loginItemTitle,
-            loginItemHelp,
-            loginStartCheckbox,
-            loginAutoConnectCheckbox,
-            loginAlwaysCheckbox,
-            applyLoginSettingsButton,
-            loginItemStatusLabel,
-            updateTitle,
-            updateHelp,
-            updateStatusLabel,
-            updateAutoCheckCheckbox,
-            updateAutoInstallCheckbox,
-            updateButtons,
-            advancedToggleButton,
-            advancedSettingsGroup,
-        ])
-        settingsForm.orientation = .vertical
-        settingsForm.alignment = .leading
-        settingsForm.spacing = 8
-        settingsForm.setCustomSpacing(14, after: commandWarning)
-        settingsForm.setCustomSpacing(10, after: advancedToggleButton)
-        settingsForm.translatesAutoresizingMaskIntoConstraints = false
-
-        let settingsRoot = NSStackView(views: [settingsForm, saveSettingsButton])
-        settingsRoot.orientation = .vertical
-        settingsRoot.alignment = .leading
-        settingsRoot.spacing = 10
-        settingsRoot.translatesAutoresizingMaskIntoConstraints = false
-
-        let settingsPage = NSScrollView()
-        settingsPage.hasVerticalScroller = true
-        settingsPage.scrollerStyle = .overlay
-        settingsPage.drawsBackground = false
-        let settingsDocument = TopAlignedDocumentView()
-        settingsDocument.translatesAutoresizingMaskIntoConstraints = false
-        settingsPage.documentView = settingsDocument
-        settingsDocument.addSubview(settingsRoot)
-        NSLayoutConstraint.activate([
-            settingsDocument.widthAnchor.constraint(equalTo: settingsPage.contentView.widthAnchor),
-            settingsRoot.leadingAnchor.constraint(equalTo: settingsDocument.leadingAnchor, constant: 12),
-            settingsRoot.trailingAnchor.constraint(equalTo: settingsDocument.trailingAnchor, constant: -12),
-            settingsRoot.topAnchor.constraint(equalTo: settingsDocument.topAnchor, constant: 12),
-            settingsRoot.bottomAnchor.constraint(equalTo: settingsDocument.bottomAnchor, constant: -12),
-        ])
+        let securityTitle = NSTextField(labelWithString: "Permissions & security")
+        securityTitle.font = .systemFont(ofSize: 22, weight: .semibold)
+        let securityHelp = NSTextField(wrappingLabelWithString:
+            "Global permissions are upper bounds. Set each folder's restrictions in Workspaces. OAuth identifies an approved client grant; a shared tunnel does not authenticate individual conversations.")
+        securityHelp.textColor = .secondaryLabelColor
+        securityHelp.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
+        let preferencesTitle = NSTextField(labelWithString: "Application settings")
+        preferencesTitle.font = .systemFont(ofSize: 22, weight: .semibold)
+        func formPage(_ children: [NSView]) -> NSScrollView {
+            let stack = NSStackView(views: children)
+            stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            let scroll = NSScrollView()
+            scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false
+            let doc = TopAlignedDocumentView()
+            doc.translatesAutoresizingMaskIntoConstraints = false
+            scroll.documentView = doc; doc.addSubview(stack)
+            NSLayoutConstraint.activate([
+                doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+                stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 12),
+                stack.trailingAnchor.constraint(lessThanOrEqualTo: doc.trailingAnchor, constant: -12),
+                stack.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
+                stack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 12),
+                stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -12)
+            ])
+            return scroll
+        }
+        let settingsPage = formPage([workspaceTitle, workspaceHelp, directoryRow, workspaceCountLabel,
+            workspaceMenu, workspaceSelectedPath, workspaceActions, permissionRow, workspaceSafety, capacityRow, saveSettingsButton])
+        let securityPage = formPage([securityTitle, securityHelp, enableCommandsCheckbox, commandWarning,
+            captureCommandHistoryCheckbox, enableGitPushCheckbox, extraPermissionsHelp, saveSecurityButton])
+        let preferencesPage = formPage([preferencesTitle, loginItemTitle, loginItemHelp, loginStartCheckbox,
+            loginAutoConnectCheckbox, loginAlwaysCheckbox, applyLoginSettingsButton, loginItemStatusLabel,
+            updateTitle, updateHelp, updateStatusLabel, updateAutoCheckCheckbox, updateAutoInstallCheckbox,
+            updateButtons, advancedToggleButton, advancedSettingsGroup, savePreferencesButton])
 
         logScroll.translatesAutoresizingMaskIntoConstraints = false
         logScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -1424,7 +1425,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         NSLayoutConstraint.activate([
             taskDocument.widthAnchor.constraint(equalTo: taskScroll.contentView.widthAnchor),
             taskStack.leadingAnchor.constraint(equalTo: taskDocument.leadingAnchor, constant: 12),
-            taskStack.trailingAnchor.constraint(equalTo: taskDocument.trailingAnchor, constant: -12),
+            taskStack.trailingAnchor.constraint(lessThanOrEqualTo: taskDocument.trailingAnchor, constant: -12),
             taskStack.topAnchor.constraint(equalTo: taskDocument.topAnchor, constant: 12),
             taskStack.bottomAnchor.constraint(equalTo: taskDocument.bottomAnchor, constant: -12),
         ])
@@ -1440,6 +1441,12 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         tabs.addTabViewItem(configTab)
         tabs.addTabViewItem(taskTab)
         tabs.addTabViewItem(logTab)
+        let securityTab = NSTabViewItem(identifier: "security")
+        securityTab.label = "Security"; securityTab.view = securityPage
+        tabs.addTabViewItem(securityTab)
+        let preferencesTab = NSTabViewItem(identifier: "preferences")
+        preferencesTab.label = "Settings"; preferencesTab.view = preferencesPage
+        tabs.addTabViewItem(preferencesTab)
 
         let footerDivider = NSBox()
         footerDivider.boxType = .separator
@@ -1509,10 +1516,53 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         view.addSubview(header)
         view.addSubview(feedbackRow)
         view.addSubview(navigation)
+        sidebar.material = .sidebar
+        sidebar.blendingMode = .withinWindow
+        sidebar.state = .active
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.isHidden = true
+        let sectionNames = ["Overview", "Workspaces", "Connection", "Command center", "Activity", "Security", "Settings"]
+        let sectionIcons = ["square.grid.2x2", "folder", "link", "terminal", "list.bullet.rectangle", "lock.shield", "gearshape"]
+        let sidebarStack = NSStackView()
+        sidebarStack.orientation = .vertical; sidebarStack.alignment = .leading; sidebarStack.spacing = 5
+        sidebarStack.translatesAutoresizingMaskIntoConstraints = false
+        let sidebarTitle = NSTextField(labelWithString: "GATEWAY")
+        sidebarTitle.font = .systemFont(ofSize: 10, weight: .semibold)
+        sidebarTitle.textColor = .secondaryLabelColor
+        sidebarStack.addArrangedSubview(sidebarTitle)
+        for (index, name) in sectionNames.enumerated() {
+            let button = NSButton(title: name, target: self, action: #selector(selectSidebarSection(_:)))
+            button.tag = index; button.setButtonType(.onOff); button.bezelStyle = .recessed
+            button.image = NSImage(systemSymbolName: sectionIcons[index], accessibilityDescription: nil)
+            button.imagePosition = .imageLeading; button.alignment = .left
+            button.font = .systemFont(ofSize: 13, weight: .medium)
+            button.state = index == 0 ? .on : .off
+            button.setAccessibilityLabel(name)
+            sidebarStack.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalToConstant: Layout.sidebarWidth - 20).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 31).isActive = true
+            sidebarButtons.append(button)
+        }
+        sidebar.addSubview(sidebarStack)
+        view.addSubview(sidebar)
         view.addSubview(tabs)
         view.addSubview(footer)
-        NSLayoutConstraint.activate([
+        compactContentConstraints = [
             tabs.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            tabs.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 10)
+        ]
+        wideContentConstraints = [
+            tabs.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 12),
+            tabs.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10)
+        ]
+        NSLayoutConstraint.activate(compactContentConstraints)
+        NSLayoutConstraint.activate([
+            sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            sidebar.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
+            sidebar.bottomAnchor.constraint(equalTo: feedbackRow.topAnchor, constant: -8),
+            sidebar.widthAnchor.constraint(equalToConstant: Layout.sidebarWidth),
+            sidebarStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
+            sidebarStack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 14),
             tabs.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
@@ -1521,7 +1571,6 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             navigation.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             navigation.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             navigation.heightAnchor.constraint(equalToConstant: 30),
-            tabs.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 10),
             tabs.bottomAnchor.constraint(equalTo: feedbackRow.topAnchor, constant: -8),
             feedbackRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             feedbackRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
@@ -1544,7 +1593,6 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
 
             saveSettingsButton.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
             connectionRoot.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
-            settingsForm.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
             tunnelIDField.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
             apiKeyField.widthAnchor.constraint(equalToConstant: Layout.contentWidth),
             cloudflareTunnelNameField.widthAnchor.constraint(equalToConstant: Layout.contentWidth - Layout.directoryButtonWidth - 8),
@@ -1672,6 +1720,11 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12),
         ])
         return scroll
+    }
+
+    @objc private func selectSidebarSection(_ sender: NSButton) {
+        navigation.selectedSegment = sender.tag
+        navigate()
     }
 
     @objc private func navigate() {
@@ -2778,13 +2831,19 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             return
         }
 
-        saveSettingsButton.setLoading(true)
+        let button: LoadingButton
+        switch tabs.selectedTabViewItem?.identifier as? String {
+        case "security": button = saveSecurityButton
+        case "preferences": button = savePreferencesButton
+        default: button = saveSettingsButton
+        }
+        button.setLoading(true)
         saveSettingsConfiguration()
         appendLog("Settings saved.\n")
         if runtime.state != .stopped {
             appendLog("Changes will take effect the next time the tunnel starts.\n")
         }
-        finishLoading(saveSettingsButton)
+        finishLoading(button)
     }
 
     private func finishLoading(_ button: LoadingButton) {
@@ -2867,26 +2926,26 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             return false
         }
         guard !profile.isEmpty else {
-            tabs.selectTabViewItem(withIdentifier: "settings")
+            tabs.selectTabViewItem(withIdentifier: "preferences")
             setAdvancedSettingsExpanded(true)
             showError("Profile cannot be empty.")
             return false
         }
         guard LocalMCPRuntime.isValidProfileName(profile) else {
-            tabs.selectTabViewItem(withIdentifier: "settings")
+            tabs.selectTabViewItem(withIdentifier: "preferences")
             setAdvancedSettingsExpanded(true)
             showError("Profile must start with a letter or number and contain only letters, numbers, '.', '_' or '-' (maximum 128 characters).")
             return false
         }
         guard let portNumber = UInt16(port), portNumber > 0 else {
-            tabs.selectTabViewItem(withIdentifier: "settings")
+            tabs.selectTabViewItem(withIdentifier: "preferences")
             setAdvancedSettingsExpanded(true)
             showError("MCP port must be between 1 and 65535.")
             return false
         }
         let healthAddress = healthAddressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard LocalMCPRuntime.normalizedHealthAddress(healthAddress) != nil else {
-            tabs.selectTabViewItem(withIdentifier: "settings")
+            tabs.selectTabViewItem(withIdentifier: "preferences")
             setAdvancedSettingsExpanded(true)
             showError("Health listener must use localhost, 127.0.0.1, or [::1] with a port from 0 to 65535.")
             return false
@@ -2895,7 +2954,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     }
 
     func showSettingsTab() {
-        tabs.selectTabViewItem(withIdentifier: "settings")
+        tabs.selectTabViewItem(withIdentifier: "preferences")
     }
 
     func shutdownForTermination() {
@@ -2974,6 +3033,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         if let item = tabViewItem, let index = tabView.tabViewItems.firstIndex(of: item) {
             navigation.selectedSegment = index
+            for button in sidebarButtons { button.state = button.tag == index ? .on : .off }
         }
         if tabViewItem?.identifier as? String == "tasks" {
             if taskRefreshTimer == nil {
@@ -3010,17 +3070,17 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             let chrome = viewportHeight > 0 && view.bounds.height > viewportHeight
                 ? view.bounds.height - viewportHeight : 244
             return max(minimum, ceil(contentHeight + chrome))
-        case "settings":
-            return advancedSettingsGroup.isHidden
-                ? Layout.collapsedWindowHeight
-                : Layout.expandedWindowHeight
+        case "settings", "security":
+            return Layout.collapsedWindowHeight
+        case "preferences":
+            return advancedSettingsGroup.isHidden ? 650 : Layout.expandedWindowHeight
         default:
             return 600
         }
     }
 
     private func updateWindowHeight() {
-        guard let window = view.window else { return }
+        guard let window = view.window, !window.styleMask.contains(.resizable) else { return }
 
         let targetContentHeight = preferredContentHeight
         var contentRect = window.contentRect(forFrameRect: window.frame)
@@ -3169,6 +3229,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         saveSettingsButton.setLoading(false)
         saveConnectionButton.isEnabled = configurationIsEditable && !cloudflareBusy
         saveSettingsButton.isEnabled = configurationIsEditable
+        for button in [saveSecurityButton, savePreferencesButton] {
+            button.setLoading(false); button.isEnabled = configurationIsEditable
+        }
         resetButton.isEnabled = configurationIsEditable && !cloudflareBusy
         deleteKeyButton.isEnabled = configurationIsEditable && hasStoredAPIKey
         deleteCloudflareTokenButton.isEnabled = configurationIsEditable && hasStoredCloudflareCredential
@@ -3634,15 +3697,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let initialHeight = controller.preferredContentHeight
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: Layout.windowWidth, height: initialHeight),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = appName
         window.contentViewController = controller
-        window.setContentSize(NSSize(width: Layout.windowWidth, height: initialHeight))
+        window.setContentSize(NSSize(width: Layout.windowWidth, height: max(640, initialHeight)))
+        window.contentMinSize = NSSize(width: Layout.compactWindowWidth, height: 510)
+        window.setFrameAutosaveName("gateway-main-window-v2")
         window.isReleasedWhenClosed = false
-        window.center()
+        if !window.setFrameUsingName("gateway-main-window-v2") { window.center() }
         self.window = window
 
         configureMainMenu()
