@@ -328,6 +328,47 @@ private final class WorkspaceCommandBudget {
     }
 }
 
+/// Short command remains a synchronous MCP call, but is an independently
+/// addressable local task for inspection and targeted cancellation.
+private final class SynchronousTaskControl {
+    let id = UUID()
+    let cwd: String
+    let ownerID: String?
+    private let lock = NSLock()
+    private var cancelled = false
+    private var state = "running"
+    private var stdout = Data()
+    private var stderr = Data()
+    private var truncated = false
+    private let limit = 131_072
+    init(cwd: String, ownerID: String?) { self.cwd = cwd; self.ownerID = ownerID }
+    var sessionID: String { "sync-" + id.uuidString.lowercased() }
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    var status: String { lock.lock(); defer { lock.unlock() }; return state }
+    var active: Bool { ["running", "stopping"].contains(status) }
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        if state == "running" { cancelled = true; state = "stopping" }
+    }
+    func finish(_ result: String) {
+        lock.lock(); defer { lock.unlock() }
+        state = cancelled ? "cancelled" : result
+    }
+    func append(_ data: Data, error: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard state == "running" || state == "stopping" else { return }
+        let remaining = max(0, limit - (error ? stderr.count : stdout.count))
+        if data.count > remaining { truncated = true }
+        if error { stderr.append(data.prefix(remaining)) } else { stdout.append(data.prefix(remaining)) }
+    }
+    func snapshot() -> [String: Any] {
+        lock.lock(); defer { lock.unlock() }
+        let out = String(decoding: stdout, as: UTF8.self)
+        let err = String(decoding: stderr, as: UTF8.self)
+        return ["state": state, "output": out + (err.isEmpty ? "" : "\nstderr:\n" + err), "truncated": truncated]
+    }
+}
+
 private final class LocalTools {
     private let resolver: SafePathResolver
     private let sessionLock = NSLock()
@@ -347,6 +388,8 @@ private final class LocalTools {
     private var sessions: [CommandSession] = []
     // Synchronous run_command calls hold scoped command leases too.
     private var synchronousCommandPaths: [UUID: String] = [:]
+    private var synchronousTasks: [SynchronousTaskControl] = []
+    private var revokedSynchronousOwners = Set<String>()
     private var usedRequestIDs: Set<String> = []
     private var sessionsStopped = false
     private let gitUserName: String
@@ -435,7 +478,12 @@ private final class LocalTools {
     func desktopCommandSnapshots(workspaceID: String, name: String) -> [DesktopCommandSnapshot] {
         sessionLock.lock()
         defer { sessionLock.unlock() }
-        return sessions.compactMap { session in
+        let shortTasks = synchronousTasks.map { task in
+            DesktopCommandSnapshot(workspaceID: workspaceID, workspaceName: name,
+                sessionID: task.sessionID, requestID: task.sessionID, cwd: task.cwd,
+                state: task.status, active: task.active)
+        }
+        return shortTasks + sessions.compactMap { session in
             guard let status = try? session.snapshot(cursor: 0),
                   let state = status["state"] as? String else { return nil }
             return DesktopCommandSnapshot(
@@ -2315,16 +2363,23 @@ private final class LocalTools {
 
         commandSlots.wait()
         defer { commandSlots.signal() }
-        let lease = try acquireSynchronousCommandLease(workdir.path)
-        defer { releaseSynchronousCommandLease(lease) }
+        let control = try acquireSynchronousCommandLease(workdir.path, ownerID: ownerID)
+        var finalState = "launch_failed"
+        defer {
+            control.finish(finalState)
+            releaseSynchronousCommandLease(control.id)
+        }
 
         let historyID = try commandHistory?.begin(workspaceID: workspaceScopeID, workspaceName: workspaceName,
             cwd: workdir.path, kind: "sync", requestID: nil, clientID: ownerID, command: command)
         var historyFinished = false
         defer {
             if let historyID, !historyFinished {
-                finishHistory(historyID, state: "launch_failed", code: nil)
+                finishHistory(historyID, state: control.isCancelled ? "cancelled" : "launch_failed", code: nil)
             }
+        }
+        guard !control.isCancelled, !runtimeHasStopped else {
+            throw MCPServerError.operationFailed("Command cancelled before launch")
         }
         let shell = preferredShell()
         let result = try ProcessRunner.run(
@@ -2333,15 +2388,17 @@ private final class LocalTools {
             cwd: workdir.path,
             timeoutSeconds: timeoutSeconds,
             outputLimitBytes: maxToolProcessOutputBytes,
-            shouldCancel: { [weak self] in self?.runtimeHasStopped ?? true }
+            shouldCancel: { [weak self] in control.isCancelled || (self?.runtimeHasStopped ?? true) },
+            onOutput: { control.append($0, error: $1) }
         )
+        finalState = control.isCancelled || runtimeHasStopped ? "cancelled" : result.timedOut ? "timed_out" : "exited"
         if let historyID {
-            finishHistory(historyID, state: runtimeHasStopped ? "cancelled" : result.timedOut ? "timed_out" : "exited",
+            finishHistory(historyID, state: finalState,
                 code: result.exitCode, output: formatProcessResult(result),
                 truncated: result.stdoutTruncated || result.stderrTruncated)
             historyFinished = true
         }
-        guard !runtimeHasStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
+        guard !control.isCancelled, !runtimeHasStopped else { throw MCPServerError.operationFailed("Command cancelled") }
         if result.timedOut {
             var partial = "Command timed out after \(max(1, min(timeoutSeconds, ProcessRunner.maxCommandTimeoutSeconds))) seconds."
             if !result.stdout.isEmpty { partial += "\nstdout:\n\(result.stdout)" }
@@ -3552,23 +3609,10 @@ final class LocalMCPServer {
         // Persist revocation first so even a concurrent in-flight request
         // cannot authenticate with the now-revoked access token.
         try oauth.revokeDesktopClient(clientID)
-        taskOwnershipLock.lock()
-        let revokedSessions = ownerBySessionID.compactMap { sessionID, owner in
-            owner == clientID ? sessionID : nil
-        }
-        taskOwnershipLock.unlock()
-        // In addition to denying future reads/cancels, terminate work
-        // already launched by the revoked OAuth client. Never cancel a task
-        // owned by a different client or the local administrator.
+        // Cancellation uses the task's immutable owner even if the RPC's
+        // outer ownership index has not yet been populated.
         let available = [tools] + Array(workspaceTools.values)
-        for id in revokedSessions {
-            for scoped in available {
-                if let session = try? scoped.findSession(id) {
-                    session.cancel(synchronously: true)
-                    break
-                }
-            }
-        }
+        for scope in available { scope.cancelOwnedCommands(ownerID: clientID) }
     }
 
     func desktopCommandOutput(workspaceID: String, sessionID: String) throws -> [String: Any] {
@@ -3582,7 +3626,7 @@ final class LocalMCPServer {
         }
         // This is a local GUI read of the full retained ring, not a remote
         // cursor page. Keep the 64 KiB MCP response contract unchanged.
-        return try scoped.findSession(sessionID).snapshot(cursor: 0, maxBytes: 262_144)
+        return try scoped.desktopTaskOutput(sessionID)
     }
 
     func cancelDesktopCommand(workspaceID: String, sessionID: String) throws {
@@ -3594,7 +3638,7 @@ final class LocalMCPServer {
         } else {
             throw MCPServerError.invalidArguments("Unknown approved workspace")
         }
-        _ = try selected.call(name: "cancel_command", arguments: ["session_id": sessionID])
+        try selected.cancelDesktopTask(sessionID)
     }
 
     var isReady: Bool {
@@ -4587,6 +4631,7 @@ private final class CommandSession {
     let cwd: String
     let timeout: Int
     let queueIfBusy: Bool
+    let ownerID: String?
     private let lock = NSLock()
     private var process: ManagedProcess?
     private var deadline: DispatchWorkItem?
@@ -4600,10 +4645,11 @@ private final class CommandSession {
     private var sequence = 0
 
     init(requestID: String, command: String, cwd: String, timeout: Int,
-         queueIfBusy: Bool = false,
+         queueIfBusy: Bool = false, ownerID: String? = nil,
          onFinish: ((String, Int32?) -> Void)? = nil,
          onHistoryFinish: ((String, Int32?, String, Bool) -> Void)? = nil) {
         self.queueIfBusy = queueIfBusy
+        self.ownerID = ownerID
         self.state = queueIfBusy ? "queued" : "running"
         self.requestID = requestID; self.command = command; self.cwd = cwd
         self.timeout = timeout; self.onFinish = onFinish
@@ -5037,6 +5083,7 @@ private extension LocalTools {
         guard !queueIfBusy || globalBudget != nil else { throw MCPServerError.operationFailed("Queue requires the shared gateway scheduler") }
         sessionLock.lock(); defer { sessionLock.unlock() }
         guard !sessionsStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
+        guard !revokedSynchronousOwners.contains(ownerID) else { throw MCPServerError.operationFailed("Client authorization was revoked") }
         if let existing = sessions.first(where: { $0.requestID == key }) {
             guard existing.command == command, existing.cwd == cwd.path, existing.timeout == timeout, existing.queueIfBusy == queueIfBusy else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
             return try existing.snapshot(cursor: 0)
@@ -5057,7 +5104,7 @@ private extension LocalTools {
         let scopeID = workspaceScopeID
         let historyID = UUID()
         let session = CommandSession(
-            requestID: key, command: command, cwd: cwd.path, timeout: timeout, queueIfBusy: queueIfBusy,
+            requestID: key, command: command, cwd: cwd.path, timeout: timeout, queueIfBusy: queueIfBusy, ownerID: ownerID,
             onFinish: { [weak ledger] state, code in
                 do { try ledger?.finish(scopeID: scopeID, requestID: key,
                                         state: state, exitCode: code) }
@@ -5153,7 +5200,7 @@ private extension LocalTools {
         sessions.filter { $0.active }.map(\.cwd) + Array(synchronousCommandPaths.values)
     }
 
-    private func acquireSynchronousCommandLease(_ workdir: String) throws -> UUID {
+    private func acquireSynchronousCommandLease(_ workdir: String, ownerID: String?) throws -> SynchronousTaskControl {
         // Mutations also acquire mutationSlot. Release it immediately after
         // admission so independent tool calls can continue while we run.
         mutationSlot.wait()
@@ -5170,16 +5217,24 @@ private extension LocalTools {
         guard !activePaths.contains(where: { Self.overlappingPaths($0, workdir) }) else {
             throw MCPServerError.operationFailed("Another active command occupies this working directory or a parent/child directory; use an independent worktree")
         }
-        let id = UUID()
+        if let ownerID, revokedSynchronousOwners.contains(ownerID) {
+            throw MCPServerError.operationFailed("Client authorization was revoked")
+        }
+        let control = SynchronousTaskControl(cwd: workdir, ownerID: ownerID)
         let sharedID = try globalBudget?.enterSynchronous(cwd: workdir)
-        synchronousCommandPaths[id] = workdir
-        if let sharedID { globalSynchronousLeases[id] = sharedID }
-        return id
+        synchronousCommandPaths[control.id] = workdir
+        synchronousTasks.append(control)
+        if let sharedID { globalSynchronousLeases[control.id] = sharedID }
+        return control
     }
 
     private func releaseSynchronousCommandLease(_ lease: UUID) {
         sessionLock.lock()
         synchronousCommandPaths.removeValue(forKey: lease)
+        while synchronousTasks.filter({ !$0.active }).count > 8,
+              let oldest = synchronousTasks.firstIndex(where: { !$0.active }) {
+            synchronousTasks.remove(at: oldest)
+        }
         let sharedID = globalSynchronousLeases.removeValue(forKey: lease)
         sessionLock.unlock()
         if let sharedID { globalBudget?.leaveSynchronous(sharedID) }
@@ -5238,11 +5293,39 @@ private extension LocalTools {
         return !activeCommandPathsUnderLock().isEmpty
     }
 
+    func desktopTaskOutput(_ id: String) throws -> [String: Any] {
+        sessionLock.lock()
+        let sync = synchronousTasks.first { $0.sessionID == id }
+        sessionLock.unlock()
+        if let sync { return sync.snapshot() }
+        return try findSession(id).snapshot(cursor: 0, maxBytes: 262_144)
+    }
+
+    func cancelDesktopTask(_ id: String) throws {
+        sessionLock.lock()
+        let sync = synchronousTasks.first { $0.sessionID == id }
+        sessionLock.unlock()
+        if let sync { sync.cancel(); return }
+        try findSession(id).cancel()
+    }
+
+    func cancelOwnedCommands(ownerID: String) {
+        sessionLock.lock()
+        revokedSynchronousOwners.insert(ownerID)
+        let tasks = synchronousTasks.filter { $0.ownerID == ownerID }
+        let jobs = sessions.filter { $0.ownerID == ownerID }
+        sessionLock.unlock()
+        tasks.forEach { $0.cancel() }
+        jobs.forEach { $0.cancel(synchronously: true) }
+    }
+
     func stopCommandSessions() {
         sessionLock.lock()
         sessionsStopped = true
         let active = sessions
+        let shortTasks = synchronousTasks
         sessionLock.unlock()
+        shortTasks.forEach { $0.cancel() }
         for session in active { session.cancel(synchronously: true) }
     }
 }

@@ -9,6 +9,8 @@ internal sealed partial class LocalTools
 {
     private readonly object _sessionGate = new();
     private readonly List<CommandSession> _sessions = [];
+    private readonly List<SynchronousTaskControl> _synchronousTasks = [];
+    private readonly HashSet<string> _revokedOwners = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedRequestIds = new(StringComparer.Ordinal);
     private bool _sessionsStopped;
     private static JsonObject AgentOutputSchema(string kind)
@@ -342,6 +344,7 @@ internal sealed partial class LocalTools
         lock (_sessionGate)
         {
             if (_sessionsStopped) throw new FileMcpException("Runtime has stopped");
+            if (_revokedOwners.Contains(verifiedOwnerID)) throw new FileMcpException("Client authorization was revoked");
             var existing = _sessions.FirstOrDefault(session => session.RequestId == key);
             if (existing is not null)
             {
@@ -366,7 +369,7 @@ internal sealed partial class LocalTools
                         System.Diagnostics.Trace.WriteLine(
                             "Could not persist command receipt terminal state: " + ex.GetType().Name);
                     }
-                }, (state, code, output, truncated) => FinishHistory(historyID, state, code, output, truncated), queueIfBusy);
+                }, (state, code, output, truncated) => FinishHistory(historyID, state, code, output, truncated), queueIfBusy, verifiedOwnerID);
             if (!queueIfBusy) _commandBudget.Admit(session, cwd);
             var reserved = false;
             var historyReserved = false;
@@ -420,19 +423,42 @@ internal sealed partial class LocalTools
     {
         lock (_sessionGate)
         {
-            return _sessions.Select(session => new DesktopCommandInfo(
+            return _synchronousTasks.Select(task => new DesktopCommandInfo(workspaceID, workspaceName,
+                task.SessionId, task.SessionId, task.Cwd, task.State, task.Active))
+                .Concat(_sessions.Select(session => new DesktopCommandInfo(
                 workspaceID, workspaceName, session.Id, session.RequestId,
                 session.Cwd, session.Snapshot(0)["state"]?.GetValue<string>() ?? "unknown",
-                session.Active)).ToArray();
+                session.Active))).ToArray();
         }
     }
 
-    internal JsonObject DesktopCommandOutput(string sessionID) =>
-        FindSession(sessionID).Snapshot(0, 262_144);
+    internal JsonObject DesktopCommandOutput(string sessionID)
+    {
+        SynchronousTaskControl? sync;
+        lock (_sessionGate) sync = _synchronousTasks.FirstOrDefault(task => task.SessionId == sessionID);
+        return sync?.Snapshot() ?? FindSession(sessionID).Snapshot(0, 262_144);
+    }
 
     internal void CancelDesktopCommand(string sessionID)
     {
+        SynchronousTaskControl? sync;
+        lock (_sessionGate) sync = _synchronousTasks.FirstOrDefault(task => task.SessionId == sessionID);
+        if (sync is not null) { sync.Cancel(); return; }
         FindSession(sessionID).Cancel();
+    }
+
+    internal void CancelOwnedCommands(string ownerID)
+    {
+        SynchronousTaskControl[] sync;
+        CommandSession[] longJobs;
+        lock (_sessionGate)
+        {
+            _revokedOwners.Add(ownerID);
+            sync = _synchronousTasks.Where(task => task.OwnerId == ownerID).ToArray();
+            longJobs = _sessions.Where(task => task.OwnerId == ownerID).ToArray();
+        }
+        foreach (var task in sync) task.Cancel();
+        foreach (var task in longJobs) task.Cancel(synchronously: true);
     }
 
     private CommandSession FindSession(string id)
@@ -456,7 +482,9 @@ internal sealed partial class LocalTools
     public void StopCommandSessions()
     {
         CommandSession[] sessions;
-        lock (_sessionGate) { _sessionsStopped = true; sessions = _sessions.ToArray(); }
+        SynchronousTaskControl[] synchronous;
+        lock (_sessionGate) { _sessionsStopped = true; sessions = _sessions.ToArray(); synchronous = _synchronousTasks.ToArray(); }
+        foreach (var task in synchronous) task.Cancel();
         foreach (var session in sessions) { session.Cancel(synchronously: true); session.Dispose(); }
     }
 }
@@ -464,7 +492,7 @@ internal sealed partial class LocalTools
 internal sealed class CommandSession(string requestId, string command, string cwd, int timeout,
     Action<string, int?>? onFinish = null,
     Action<string, int?, string, bool>? onHistoryFinish = null,
-    bool queueIfBusy = false) : IDisposable
+    bool queueIfBusy = false, string? ownerId = null) : IDisposable
 {
     public string Id { get; } = Guid.NewGuid().ToString();
     public string RequestId { get; } = requestId;
@@ -475,6 +503,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
     private ManagedProcess? _process;
     private Timer? _deadline;
     public bool QueueIfBusy { get; } = queueIfBusy;
+    public string? OwnerId { get; } = ownerId;
     private string _state = queueIfBusy ? "queued" : "running";
     private string? _stopReason;
     private int? _exitCode;

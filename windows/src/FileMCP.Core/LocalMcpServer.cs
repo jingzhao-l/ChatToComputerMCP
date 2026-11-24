@@ -260,18 +260,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
             "Verified client management requires Cloudflare OAuth mode");
         // Revoke server token families before touching subprocesses.
         oauth.RevokeClient(id);
-        string[] owned;
-        lock (_ownerGate)
-            owned = _ownerBySession.Where(item => item.Value == id)
-                .Select(item => item.Key).ToArray();
-        foreach (var sessionID in owned)
-        {
-            foreach (var scope in new[] { _tools }.Concat(_approved.Values.Select(x => x.Tools)))
-            {
-                try { scope.CancelDesktopCommand(sessionID); break; }
-                catch (FileMcpException) { /* session belongs to another scope */ }
-            }
-        }
+        foreach (var scope in new[] { _tools }.Concat(_approved.Values.Select(x => x.Tools)))
+            scope.CancelOwnedCommands(id);
     }
 
     internal void FreezeForIdleActivation(Action schedule)

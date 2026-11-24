@@ -266,6 +266,37 @@ func runAgentToolChecks(rootPath: String) throws {
         FileManager.default.fileExists(atPath: root.appendingPathComponent($0 + "/completed").path)
     }))
     print("PASS: simultaneous synchronous commands with scoped collision protection")
+    let syncDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        defer { syncDone.signal() }
+        do {
+            _ = try full.call(name: "run_command", arguments: ["cwd": "sync-a",
+                "command": "printf desktop-sync-live; sleep 20", "timeout_seconds": 25],
+                verifiedOwnerID: "desktop-sync-client")
+            preconditionFailure("Cancelled short command reported success")
+        } catch {}
+    }
+    let syncDeadline = Date().addingTimeInterval(6)
+    var syncTask: DesktopCommandSnapshot?
+    while Date() < syncDeadline {
+        if let task = full.desktopCommandSnapshots(workspaceID: "default", name: "Default")
+            .first(where: { $0.active && $0.sessionID.hasPrefix("sync-") }),
+           let output = try? full.desktopTaskOutput(task.sessionID),
+           (output["output"] as? String ?? "").contains("desktop-sync-live") {
+            syncTask = task; break
+        }
+        Thread.sleep(forTimeInterval: 0.03)
+    }
+    check(syncTask != nil)
+    let selectedSyncID = syncTask!.sessionID
+    rejects("remote long-command API cannot read local short-task ID") {
+        _ = try call(full, "read_command_output", ["session_id": selectedSyncID])
+    }
+    try full.cancelDesktopTask(selectedSyncID)
+    check(syncDone.wait(timeout: .now() + 6) == .success)
+    check(try full.desktopTaskOutput(selectedSyncID)["state"] as? String == "cancelled")
+    print("PASS: real synchronous command live output, local-only task ID and targeted cancellation")
+
 
     let cancel = try call(full, "start_command", ["request_id": "cancel", "command": "sleep 30 & echo $! > child.pid; wait"])
     let cancelID = cancel["session_id"] as! String

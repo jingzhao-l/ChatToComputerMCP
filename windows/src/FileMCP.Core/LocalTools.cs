@@ -305,12 +305,14 @@ internal sealed partial class LocalTools
         await _toolSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
         var serialize = SerializedToolNames.Contains(name) ||
             (name == "batch_read" && BatchReadNeedsSerialization(arguments));
-        if (serialize)
-        {
-            await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var acquiredSerialization = false;
         try
         {
+            if (serialize)
+            {
+                await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
+                acquiredSerialization = true;
+            }
             ValidateArguments(name, arguments);
             if (serialize && name != "start_command") EnsureNoActiveCommand();
             return name switch
@@ -356,7 +358,7 @@ internal sealed partial class LocalTools
         }
         finally
         {
-            if (serialize) _serializedSlot.Release();
+            if (acquiredSerialization) _serializedSlot.Release();
             _toolSlots.Release();
         }
     }
@@ -1707,24 +1709,38 @@ internal sealed partial class LocalTools
         await _commandSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
         Guid? sharedLease = null;
         Guid? historyID = null;
+        SynchronousTaskControl? control = null;
+        string finalState = "launch_failed";
         bool historyFinished = false;
         try
         {
             // Coordinate command admission with scoped mutations; independent
             // cwd commands do not hold this slot while their processes run.
             await _serializedSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try { sharedLease = _commandBudget.AcquireSynchronous(workdir); }
+            try {
+                lock (_sessionGate)
+                {
+                    if (_sessionsStopped || (ownerID is not null && _revokedOwners.Contains(ownerID)))
+                        throw new FileMcpException("Runtime stopped or client authorization revoked");
+                    sharedLease = _commandBudget.AcquireSynchronous(workdir);
+                    control = new SynchronousTaskControl(workdir, ownerID, cancellationToken);
+                    _synchronousTasks.Add(control);
+                }
+            }
             finally { _serializedSlot.Release(); }
             historyID = _commandHistory?.Begin(_workspaceScopeID, _workspaceName, workdir, "sync", null, ownerID, command);
             var result = await ProcessRunner.RunAsync(PowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], workdir,
                 Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>().ToDictionary(e => (string)e.Key, e => (string?)e.Value ?? "", StringComparer.OrdinalIgnoreCase),
-                timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, cancellationToken).ConfigureAwait(false);
+                timeoutSeconds, FileMcpConstants.MaxToolProcessOutputBytes, control.Token,
+                onOutput: control.Append).ConfigureAwait(false);
+            finalState = control.Token.IsCancellationRequested ? "cancelled" : result.TimedOut ? "timed_out" : "exited";
             if (historyID is Guid recorded)
             {
-                FinishHistory(recorded, result.TimedOut ? "timed_out" : "exited", result.ExitCode,
+                FinishHistory(recorded, finalState, result.ExitCode,
                     FormatProcessResult(result), result.StdoutTruncated || result.StderrTruncated);
                 historyFinished = true;
             }
+            control.Token.ThrowIfCancellationRequested();
             if (result.TimedOut)
             {
                 var partial = $"Command timed out after {Math.Clamp(timeoutSeconds, 1, ProcessRunner.MaxCommandTimeoutSeconds)} seconds.";
@@ -1736,6 +1752,7 @@ internal sealed partial class LocalTools
         }
         catch (OperationCanceledException)
         {
+            finalState = "cancelled";
             if (historyID is Guid cancelled && !historyFinished)
             {
                 FinishHistory(cancelled, "cancelled", null);
@@ -1744,7 +1761,14 @@ internal sealed partial class LocalTools
             throw;
         }
         finally {
-            if (historyID is Guid failed && !historyFinished) FinishHistory(failed, "launch_failed", null);
+            if (historyID is Guid failed && !historyFinished) FinishHistory(failed, finalState, null);
+            if (control is not null)
+            {
+                control.Finish(finalState);
+                lock (_sessionGate)
+                    while (_synchronousTasks.Count(task => !task.Active) > 8)
+                        _synchronousTasks.Remove(_synchronousTasks.First(task => !task.Active));
+            }
             if (sharedLease is Guid id) _commandBudget.Release(id);
             _commandSlots.Release();
         }

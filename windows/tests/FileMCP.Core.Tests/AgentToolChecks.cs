@@ -166,6 +166,25 @@ internal static partial class Program
             Assert((await Poll(replacement["session_id"]!.GetValue<string>()))["state"]!.GetValue<string>() == "cancelled", "replacement cancelled");
             utilization = await Call(full, "command_capacity_status");
             Assert(utilization["active_total"]!.GetValue<int>() == 0, "all independent sessions released");
+            var shortTask = full.CallAsync("run_command", Obj(("command", "[Console]::Write('desktop-sync-live'); Start-Sleep -Seconds 20"),
+                ("timeout_seconds", 25)), verifiedOwnerID: "desktop-sync-client");
+            watch.Restart();
+            DesktopCommandInfo? shortRow = null;
+            while (watch.Elapsed < TimeSpan.FromSeconds(8))
+            {
+                var row = full.DesktopCommandSnapshots("default", "Default").FirstOrDefault(item => item.Active && item.SessionId.StartsWith("sync-"));
+                if (row is not null && full.DesktopCommandOutput(row.SessionId)["output"]!.GetValue<string>().Contains("desktop-sync-live"))
+                { shortRow = row; break; }
+                await Task.Delay(50);
+            }
+            Assert(shortRow is not null, "short command exposes output before completion");
+            var shortID = shortRow!.SessionId;
+            await AssertThrowsAsync(() => Call(full, "read_command_output", Obj(("session_id", shortID))),
+                "session", "remote long-command API cannot read local short task ID");
+            full.CancelDesktopCommand(shortID);
+            try { await shortTask; throw new Exception("Cancelled short command reported success"); }
+            catch (OperationCanceledException) {}
+            Assert(full.DesktopCommandOutput(shortID)["state"]!.GetValue<string>() == "cancelled", "short command targeted cancellation");
             var cancel = await Call(full, "start_command", Obj(("request_id", "cancel"), ("command", "$child = Start-Process ping.exe -ArgumentList '-t 127.0.0.1' -PassThru -WindowStyle Hidden; $child.Id | Set-Content child.pid; Start-Sleep -Seconds 30")));
             var cancelId = cancel["session_id"]!.GetValue<string>();
             watch.Restart();

@@ -1351,7 +1351,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let taskTitle = NSTextField(labelWithString: "Command center")
         taskTitle.font = .systemFont(ofSize: 22, weight: .semibold)
         let taskHelp = NSTextField(wrappingLabelWithString:
-            "Live command sessions across approved workspaces. Output updates automatically while this page is visible. Short synchronous commands count toward capacity but cannot be cancelled here.")
+            "Live command sessions across approved workspaces. Output updates automatically while this page is visible. Short and long commands can both be inspected and cancelled locally.")
         taskHelp.font = .systemFont(ofSize: 12)
         taskHelp.textColor = .secondaryLabelColor
         taskHelp.preferredMaxLayoutWidth = Layout.contentWidth
