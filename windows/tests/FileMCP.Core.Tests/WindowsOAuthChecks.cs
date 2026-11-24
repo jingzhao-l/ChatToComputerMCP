@@ -121,6 +121,20 @@ internal static partial class Program
         Assert(secondProcess.VerifyBearer("Bearer "+tokenB)?.Workspaces.SetEquals(
             ["default","second"]) == true,
             "Verified OAuth client permissions and token hashes survive restart");
+        var liveFile = Path.Combine(folder, "live-state.json");
+        File.Copy(file, liveFile);
+        var live = new WindowsOAuthServer(issuer, pairing, "policy-A|files", "File access", approved, liveFile);
+        var stale = live.VerifyBearer("Bearer " + tokenB)!;
+        Assert(live.IsCurrent(stale), "Initial bearer is current");
+        try {
+            live.ReplaceCatalog([], "policy-live", "Default only", () => throw new IOException("fixture"));
+            throw new Exception("Settings save failure should propagate");
+        } catch (IOException) { }
+        Assert(live.IsCurrent(stale) && live.VerifyBearer("Bearer " + tokenB) is not null, "Failed persistence rolls back grants");
+        live.ReplaceCatalog([], "policy-live", "Default only", () => {});
+        Assert(!live.IsCurrent(stale) && live.VerifyBearer("Bearer " + tokenB) is null, "Live catalog replacement invalidates cached identity and bearer");
+        var liveRestored = new WindowsOAuthServer(issuer, pairing, "policy-live", "Default only", [], liveFile);
+        Assert(liveRestored.VerifyBearer("Bearer " + tokenB) is null, "Revocation survives restart");
         secondProcess.RevokeClient(clientB);
         Assert(secondProcess.VerifyBearer("Bearer "+tokenB) is null &&
             secondProcess.VerifyBearer("Bearer "+tokenA) is not null,

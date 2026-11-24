@@ -522,6 +522,10 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let portField = NSTextField()
     private let directoryField = NSTextField()
     private var additionalWorkspaces: [WorkspaceDefinition] = []
+    private var workspaceUpdateBusy = false
+    private var canEditAdditionalWorkspaces: Bool {
+        !workspaceUpdateBusy && (configurationIsEditable || runtime.state == .running)
+    }
     private var defaultWorkspacePermissions: WorkspacePermissions?
     private let workspacePermissionButton = NSButton(title: "Permissions…", target: nil, action: nil)
     private let workspacePermissionLabel = NSTextField(wrappingLabelWithString: "Inherits global permissions")
@@ -1166,7 +1170,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         workspaceActions.distribution = .fillProportionally
         workspaceActions.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         let workspaceSafety = NSTextField(wrappingLabelWithString:
-            "Changes take effect after Save workspace and reconnect. Removing a workspace revokes future access but never deletes its local files. Do not approve overlapping parent/child folders.")
+            "Additional workspaces can be changed online. Changed scopes must be idle; OAuth changes require fresh client authorization. Default folder and global permissions require reconnect. Removing approval never deletes files.")
         workspaceSafety.font = .systemFont(ofSize: 11)
         workspaceSafety.textColor = .secondaryLabelColor
         workspaceSafety.preferredMaxLayoutWidth = Layout.contentWidth
@@ -3113,7 +3117,6 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         providerPopup.isEnabled = configurationIsEditable && !cloudflareBusy
         chooseDirectoryButton.isEnabled = configurationIsEditable
         commandCapacityMenu.isEnabled = configurationIsEditable && enableCommandsCheckbox.state == .on
-        addWorkspaceButton.isEnabled = configurationIsEditable
         refreshWorkspaceActionButtons()
         overviewChangeButton.isEnabled = configurationIsEditable
         enableCommandsCheckbox.isEnabled = configurationIsEditable
@@ -3276,15 +3279,49 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
 
     private func refreshWorkspaceActionButtons() {
         let scoped = workspaceMenu.indexOfSelectedItem > 0
-        removeWorkspaceButton.isEnabled = scoped && configurationIsEditable
-        renameWorkspaceButton.isEnabled = scoped && configurationIsEditable
-        workspacePermissionButton.isEnabled = configurationIsEditable
+        addWorkspaceButton.isEnabled = canEditAdditionalWorkspaces
+        removeWorkspaceButton.isEnabled = scoped && canEditAdditionalWorkspaces
+        renameWorkspaceButton.isEnabled = scoped && canEditAdditionalWorkspaces
+        workspacePermissionButton.isEnabled = scoped ? canEditAdditionalWorkspaces : configurationIsEditable && !workspaceUpdateBusy
         revealWorkspaceButton.isEnabled = !workspaceSelectedPath.stringValue.isEmpty
         copyWorkspaceScopeButton.isEnabled = scoped
     }
 
+    private func applyAdditionalWorkspaceChange(previous: [WorkspaceDefinition], offlineMessage: String) {
+        if configurationIsEditable {
+            refreshApprovedWorkspaceMenu(); showFeedback(offlineMessage); return
+        }
+        guard runtime.state == .running, !workspaceUpdateBusy else {
+            additionalWorkspaces = previous; refreshApprovedWorkspaceMenu(); return
+        }
+        if selectedProvider == .cloudflare && allowCloudflareURLSecretCheckbox.state != .on {
+            let confirm = NSAlert()
+            confirm.messageText = "Apply live workspace authorization changes?"
+            confirm.informativeText = "Cloudflare OAuth clients must authorize again. Active operations must be finished first. The tunnel stays running."
+            confirm.addButton(withTitle: "Apply and revoke old grants")
+            confirm.addButton(withTitle: "Cancel")
+            guard confirm.runModal() == .alertFirstButtonReturn else {
+                additionalWorkspaces = previous; refreshApprovedWorkspaceMenu(); return
+            }
+        }
+        let next = additionalWorkspaces
+        workspaceUpdateBusy = true
+        refreshWorkspaceActionButtons()
+        runtime.replaceDesktopWorkspaces(next, persist: {
+            let encoded = try JSONEncoder().encode(next)
+            UserDefaults.standard.set(encoded, forKey: ConfigKey.additionalWorkspaces)
+        }, completion: { [weak self] error in
+            guard let self else { return }
+            self.workspaceUpdateBusy = false
+            if let error { self.additionalWorkspaces = previous; self.showError(error) }
+            else { self.showFeedback("Workspace approvals applied online."); self.refreshOAuthClientList() }
+            self.refreshApprovedWorkspaceMenu()
+            self.updateWorkspaceSummary()
+        })
+    }
+
     @objc private func addApprovedWorkspaces() {
-        guard configurationIsEditable else { return }
+        guard canEditAdditionalWorkspaces else { return }
         let dialog = NSOpenPanel()
         dialog.canChooseFiles = false
         dialog.canChooseDirectories = true
@@ -3306,27 +3343,27 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         refreshApprovedWorkspaceMenu()
         workspaceMenu.selectItem(at: additionalWorkspaces.count)
         workspaceSelectionChanged()
-        showFeedback("Workspace added. Save workspace to apply it on the next connection.")
+        applyAdditionalWorkspaceChange(previous: originals, offlineMessage: "Workspace added. Save workspace to apply it on the next connection.")
     }
 
     @objc private func removeApprovedWorkspace() {
-        guard configurationIsEditable else { return }
+        guard canEditAdditionalWorkspaces else { return }
         let selected = workspaceMenu.indexOfSelectedItem - 1
         guard additionalWorkspaces.indices.contains(selected) else { return }
         let entry = additionalWorkspaces[selected]
         let alert = NSAlert()
         alert.messageText = "Remove \(entry.name) from approved workspaces?"
-        alert.informativeText = "This only revokes access when you save and reconnect. It does not delete files."
+        alert.informativeText = "This revokes approved access, but never deletes files. Online changes require the selected workspace to be idle."
         alert.addButton(withTitle: "Remove access")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let previous = additionalWorkspaces
         additionalWorkspaces.remove(at: selected)
-        refreshApprovedWorkspaceMenu()
-        showFeedback("Removed workspace approval. Save workspace to apply changes.")
+        applyAdditionalWorkspaceChange(previous: previous, offlineMessage: "Removed workspace approval. Save workspace to apply changes.")
     }
 
     @objc private func renameApprovedWorkspace() {
-        guard configurationIsEditable else { return }
+        guard canEditAdditionalWorkspaces else { return }
         let selected = workspaceMenu.indexOfSelectedItem - 1
         guard additionalWorkspaces.indices.contains(selected) else { return }
         let alert = NSAlert()
@@ -3340,16 +3377,16 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 64 else { showError("Name must be 1–64 characters."); return }
+        let previous = additionalWorkspaces
         let old = additionalWorkspaces[selected]
         additionalWorkspaces[selected] = WorkspaceDefinition(id: old.id, name: name, path: old.path, permissions: old.permissions)
-        refreshApprovedWorkspaceMenu()
-        showFeedback("Workspace renamed. Save workspace to apply.")
+        applyAdditionalWorkspaceChange(previous: previous, offlineMessage: "Workspace renamed. Save workspace to apply.")
     }
 
     @objc private func editWorkspacePermissions() {
-        guard configurationIsEditable else { return }
         let index = workspaceMenu.indexOfSelectedItem - 1
         let scoped = additionalWorkspaces.indices.contains(index)
+        guard scoped ? canEditAdditionalWorkspaces : configurationIsEditable && !workspaceUpdateBusy else { return }
         let current = scoped ? additionalWorkspaces[index].permissions : defaultWorkspacePermissions
         let alert = NSAlert()
         alert.messageText = "Workspace permissions"
@@ -3374,10 +3411,15 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let permission: WorkspacePermissions? = inherit.state == .on ? nil :
             write.state != .on ? .readOnly : WorkspacePermissions(allowWrite: true,
                 allowShell: shell.state == .on, allowGitPush: push.state == .on, allowCodexHistory: codex.state == .on)
-        if scoped { additionalWorkspaces[index].permissions = permission }
-        else { defaultWorkspacePermissions = permission }
-        workspaceSelectionChanged()
-        showFeedback("Permissions edited. Save workspace to apply on the next connection.")
+        if scoped {
+            let previous = additionalWorkspaces
+            additionalWorkspaces[index].permissions = permission
+            applyAdditionalWorkspaceChange(previous: previous, offlineMessage: "Permissions edited. Save workspace to apply.")
+        } else {
+            defaultWorkspacePermissions = permission
+            workspaceSelectionChanged()
+            showFeedback("Default permissions edited. Save workspace to apply on the next connection.")
+        }
     }
 
     @objc private func revealApprovedWorkspace() {

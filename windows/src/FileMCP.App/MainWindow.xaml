@@ -220,7 +220,7 @@
                             <Button x:Name="RevealWorkspaceButton" Content="Reveal" Click="RevealWorkspace_Click" Margin="0,0,0,5"/>
                         </WrapPanel>
                         <TextBlock x:Name="WorkspacePermissionText" Foreground="Gray" TextWrapping="Wrap"/>
-                        <TextBlock Text="Only folders approved here are accessible. Removing approval does not delete files. Save and reconnect to apply changes."
+                        <TextBlock Text="Additional workspaces can be changed online while affected scopes are idle. OAuth changes require fresh authorization. Default/global changes require reconnect. Removing approval never deletes files."
                                    Foreground="Gray" TextWrapping="Wrap" Margin="0,4,0,9"/>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="Total concurrent commands" VerticalAlignment="Center" Margin="0,0,12,0"/>

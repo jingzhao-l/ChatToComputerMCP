@@ -142,6 +142,7 @@ private final class ProfileLock {
 
 final class LocalMCPRuntime {
     private let queue = DispatchQueue(label: "com.filemcp.runtime", qos: .userInitiated)
+    private var workspaceOAuthPolicy: (([WorkspaceDefinition]) throws -> (String, String))?
     private let queueSpecificKey = DispatchSpecificKey<Void>()
     private let stateLock = NSLock()
     private let stopRequestLock = NSLock()
@@ -224,6 +225,25 @@ final class LocalMCPRuntime {
 
     // The local GUI queries task status on the runtime queue, without
     // exposing command text or mutating another workspace's files.
+    func replaceDesktopWorkspaces(_ definitions: [WorkspaceDefinition],
+                                  persist: @escaping () throws -> Void,
+                                  completion: @escaping (String?) -> Void) {
+        queue.async { [weak self] in
+            do {
+                guard let self, self.state == .running, let server = self.server else {
+                    throw NSError(domain: "ChatToComputerMCP.Runtime", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not connected"])
+                }
+                let policy = try self.workspaceOAuthPolicy?(definitions)
+                try server.replaceAdditionalWorkspaces(definitions, oauthPolicy: policy?.0,
+                    oauthDescription: policy?.1, persist: persist)
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { completion(message) }
+            }
+        }
+    }
+
     func fetchDesktopCommands(_ completion: @escaping ([DesktopCommandSnapshot]) -> Void) {
         queue.async { [weak self] in
             let snapshot = self?.server?.desktopCommandSnapshots() ?? []
@@ -374,26 +394,29 @@ final class LocalMCPRuntime {
             let isCloudflare = configuration.provider == .cloudflare
             let oauth: LocalMCPOAuthServer?
             if isCloudflare && !configuration.allowCloudflareURLSecret {
-                let permissions = "Read, edit and delete files in the explicitly approved workspace folders."
-                    + (configuration.enableCommands ? " Run shell commands with your macOS user privileges." : " Shell commands are disabled.")
-                    + (configuration.enableGitPush ? " Push code to configured remote servers." : "")
-                    + (configuration.enableCodexHistory ? " Write conversations to Codex history outside the folder." : "")
-                // Authorization is bound to every permitted folder, not only
-                // the default. Changing any scope invalidates the old policy.
-                let roots = configuration.additionalWorkspaces.sorted { $0.id < $1.id }.map {
-                    [$0.id, Self.canonicalWorkspacePath($0.path), $0.permissions?.fingerprint ?? "inherit"]
-                }
-                let bound = [["default", Self.canonicalWorkspacePath(configuration.allowedDirectory),
-                              configuration.defaultWorkspacePermissions?.fingerprint ?? "inherit", permissions]] + roots
-                let policy = String(decoding: try JSONEncoder().encode(bound), as: UTF8.self)
-                oauth = try LocalMCPOAuthServer(issuer: "https://" + configuration.cloudflareHostname,
-                    pairingSecret: configuration.cloudflarePathSecret, policy: policy,
-                    permissionDescription: permissions + " Individual workspaces can further restrict these permissions. Default: " +
+                let builder: ([WorkspaceDefinition]) throws -> (String, String) = { workspaces in
+                    let permissions = "Read, edit and delete files in the explicitly approved workspace folders."
+                        + (configuration.enableCommands ? " Run shell commands with your macOS user privileges." : " Shell commands are disabled.")
+                        + (configuration.enableGitPush ? " Push code to configured remote servers." : "")
+                        + (configuration.enableCodexHistory ? " Write conversations to Codex history outside the folder." : "")
+                    let roots = workspaces.sorted { $0.id < $1.id }.map {
+                        [$0.id, Self.canonicalWorkspacePath($0.path), $0.permissions?.fingerprint ?? "inherit"]
+                    }
+                    let bound = [["default", Self.canonicalWorkspacePath(configuration.allowedDirectory),
+                                  configuration.defaultWorkspacePermissions?.fingerprint ?? "inherit", permissions]] + roots
+                    let policy = String(decoding: try JSONEncoder().encode(bound), as: UTF8.self)
+                    let description = permissions + " Individual workspaces can further restrict these permissions. Default: " +
                         (configuration.defaultWorkspacePermissions?.summary ?? "Inherit global permissions") + "; " +
-                        configuration.additionalWorkspaces.map { $0.name + ": " + ($0.permissions?.summary ?? "Inherit global permissions") }.joined(separator: "; "),
+                        workspaces.map { $0.name + ": " + ($0.permissions?.summary ?? "Inherit global permissions") }.joined(separator: "; ")
+                    return (policy, description)
+                }
+                let (policy, description) = try builder(configuration.additionalWorkspaces)
+                workspaceOAuthPolicy = builder
+                oauth = try LocalMCPOAuthServer(issuer: "https://" + configuration.cloudflareHostname,
+                    pairingSecret: configuration.cloudflarePathSecret, policy: policy, permissionDescription: description,
                     approvedWorkspaces: configuration.additionalWorkspaces,
                     persistedState: configuration.cloudflareOAuthState, persist: configuration.saveCloudflareOAuthState)
-            } else { oauth = nil }
+            } else { oauth = nil; workspaceOAuthPolicy = nil }
             // Separate ChatToComputerMCP App Support path; never read or
             // mutate production FileMCP process data or its Keychain.
             let commandReceiptLedger = configuration.enableCommands

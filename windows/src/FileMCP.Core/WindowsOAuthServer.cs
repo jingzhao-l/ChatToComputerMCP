@@ -15,7 +15,7 @@ namespace FileMCP.Core;
 /// </summary>
 public sealed class WindowsOAuthServer
 {
-    internal sealed record VerifiedClient(string Id, IReadOnlySet<string> Workspaces);
+    internal sealed record VerifiedClient(string Id, IReadOnlySet<string> Workspaces, Guid Revision, string TokenDigest);
     public sealed record DesktopClient(string Id, string Name,
         IReadOnlyList<string> Workspaces, DateTimeOffset ApprovedAt);
     internal sealed record Response(int Status, string ContentType, byte[] Body,
@@ -62,9 +62,10 @@ public sealed class WindowsOAuthServer
     private readonly object _gate = new();
     private readonly string _pairingCode;
     private readonly string _policy;
-    private readonly string _permissionDescription;
+    private string _permissionDescription;
     private readonly string _file;
-    private readonly ApprovedWorkspace[] _approved;
+    private ApprovedWorkspace[] _approved;
+    private Guid _catalogRevision = Guid.NewGuid();
     private readonly Dictionary<string, Authorization> _requests = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Authorization> _codes = new(StringComparer.Ordinal);
     private readonly List<DateTimeOffset> _registrationTimes = [];
@@ -141,6 +142,34 @@ public sealed class WindowsOAuthServer
         }
     }
 
+    internal bool IsCurrent(VerifiedClient client)
+    {
+        lock (_gate) return client.Revision == _catalogRevision &&
+            _store.Access.TryGetValue(client.TokenDigest, out var grant) &&
+            grant.Expires > DateTimeOffset.UtcNow && grant.Client == client.Id &&
+            _store.Clients.TryGetValue(client.Id, out var registered) && registered.Approved;
+    }
+
+    internal void ReplaceCatalog(IReadOnlyList<ApprovedWorkspace> definitions, string policy,
+        string description, Action? persistSettings)
+    {
+        lock (_gate)
+        {
+            var before = CloneStore();
+            _store.Policy = Hash(policy + "|" + _pairingCode);
+            _store.Access.Clear(); _store.Refresh.Clear(); _store.ConsumedRefresh.Clear();
+            try { Persist(); persistSettings?.Invoke(); }
+            catch
+            {
+                _store = before;
+                try { Persist(); } catch { }
+                throw;
+            }
+            _approved = definitions.ToArray(); _permissionDescription = description;
+            _requests.Clear(); _codes.Clear(); _catalogRevision = Guid.NewGuid();
+        }
+    }
+
     internal IReadOnlyList<DesktopClient> ApprovedClients()
     {
         lock (_gate)
@@ -187,7 +216,7 @@ public sealed class WindowsOAuthServer
             var allowed = new HashSet<string>(_approved.Select(x => x.Id),
                 StringComparer.Ordinal) { "default" };
             allowed.IntersectWith(client.Workspaces);
-            return new VerifiedClient(grant.Client, allowed);
+            return new VerifiedClient(grant.Client, allowed, _catalogRevision, Hash(words[1]));
         }
     }
 

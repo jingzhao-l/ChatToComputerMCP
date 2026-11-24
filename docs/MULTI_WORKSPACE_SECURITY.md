@@ -8,11 +8,7 @@ and lets the local user approve up to 12 additional folders in the Mac or Window
 In Workspaces, set the default folder, then choose Add folders.
 Each added folder receives a durable opaque ID and editable friendly name.
 Use Rename, Remove, Reveal, or Copy AI scope to manage it.
-Click Save workspace and reconnect to apply changed permissions.
-Removing a workspace never deletes files on disk.
-
-Changes to the workspace list while connected are disabled intentionally:
-the running server must not silently gain new filesystem privileges.
+While disconnected, save workspace settings before connecting. While connected, the local GUI can add, rename, revoke, or change permissions for additional workspaces without restarting the tunnel. A changed scope must be idle, and the catalog is published only after settings persistence succeeds. New scopes default to read-only. The default root and global permission switches still require reconnection. OAuth catalog changes require all active operations to finish and explicitly invalidate the old access and refresh tokens; clients must authorize again. Removing a workspace never deletes files on disk.
 
 The GUI also provides Command capacity, which applies to all approved
 workspaces (4–16, default 8), and a Tasks page showing running sessions
@@ -25,7 +21,7 @@ All scoped MCP tools accept an optional top-level workspace_id. Omitting it
 selects the default workspace. Different calls can independently select
 different approved workspaces without changing another client's context.
 
-- list_workspaces: approved id, name, canonical path entries.
+- list_workspaces: approved ID, name, canonical path and allowed_tools entries.
 - read_file, grep, git_status, start_command and other scoped tools:
   supply workspace_id alongside the ordinary arguments.
   Example read_file arguments: {"workspace_id":"second","relative_path":"README.md"}.

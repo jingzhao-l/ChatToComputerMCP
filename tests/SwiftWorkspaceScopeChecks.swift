@@ -371,6 +371,31 @@ extension LocalMCPServer {
             ids.append((index % 2 == 0 ? "default" : "second",
                         started["session_id"] as! String))
         }
+        // Add a third scope without cancelling existing jobs; a live scope
+        // with jobs cannot be removed or rebound.
+        let thirdRoot = temp.appendingPathComponent("third")
+        try FileManager.default.createDirectory(at: thirdRoot, withIntermediateDirectories: true)
+        try Data("third-data".utf8).write(to: thirdRoot.appendingPathComponent("third.txt"))
+        let third = WorkspaceDefinition(id: "third", name: "Third", path: thirdRoot.path, permissions: .readOnly)
+        var persisted = false
+        try server.replaceAdditionalWorkspaces([scoped, third], persist: { persisted = true })
+        precondition(persisted)
+        let thirdRead = try call("read_file", ["workspace_id": "third", "relative_path": "third.txt"])
+        precondition(thirdRead["isError"] as? Bool == false)
+        do {
+            try server.replaceAdditionalWorkspaces([third])
+            fatalError("Removed workspace with live jobs")
+        } catch {}
+        do {
+            try server.replaceAdditionalWorkspaces([scoped], persist: { throw MCPServerError.operationFailed("fixture persistence failure") })
+            fatalError("Failed persistence changed live catalog")
+        } catch {}
+        precondition(server.workspaceDefinitions.contains(third))
+        try server.replaceAdditionalWorkspaces([scoped])
+        let removed = try call("read_file", ["workspace_id": "third", "relative_path": "third.txt"])
+        precondition(removed["isError"] as? Bool == true)
+        precondition(FileManager.default.fileExists(atPath: thirdRoot.appendingPathComponent("third.txt").path))
+        print("PASS: live add/revoke, persistence rollback and idle-scope enforcement")
         for scope in ["default", "second"] {
             let status = try call("command_capacity_status", ["workspace_id": scope])
             let values = status["structuredContent"] as! [String: Any]

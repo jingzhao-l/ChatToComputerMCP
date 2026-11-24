@@ -136,6 +136,30 @@ internal static partial class Program
             sessions.Add((isDefault ? "default" : "second",
                 content["session_id"]!.GetValue<string>()));
         }
+        var third = Path.Combine(root, "third");
+        Directory.CreateDirectory(third);
+        File.WriteAllText(Path.Combine(third, "third.txt"), "third-data");
+        var thirdDefinition = new ApprovedWorkspace("third", "Third", third, WorkspacePermissions.ReadOnly);
+        var persisted = false;
+        server.ReplaceAdditionalWorkspaces([secondDefinition, thirdDefinition], persistSettings: () => persisted = true);
+        Assert(persisted, "live catalog persists");
+        Assert(!(await Rpc("read_file", Obj(("workspace_id", "third"), ("relative_path", "third.txt"))))["isError"]!.GetValue<bool>(), "new scope accessible online");
+        try
+        {
+            server.ReplaceAdditionalWorkspaces([thirdDefinition]);
+            throw new Exception("Removed workspace with live jobs");
+        }
+        catch (FileMcpException) { }
+        try
+        {
+            server.ReplaceAdditionalWorkspaces([secondDefinition], persistSettings: () => throw new IOException("fixture persistence failure"));
+            throw new Exception("Failed settings persistence accepted");
+        }
+        catch (IOException) { }
+        Assert(!(await Rpc("read_file", Obj(("workspace_id", "third"), ("relative_path", "third.txt"))))["isError"]!.GetValue<bool>(), "failed persistence leaves scope accessible");
+        server.ReplaceAdditionalWorkspaces([secondDefinition]);
+        Assert((await Rpc("read_file", Obj(("workspace_id", "third"), ("relative_path", "third.txt"))))["isError"]!.GetValue<bool>(), "removed scope denied online");
+        Assert(File.Exists(Path.Combine(third, "third.txt")), "revoke never deletes files");
         var cap = await Rpc("command_capacity_status");
         Assert(cap["structuredContent"]!["active_total"]!.GetValue<int>() == 4,
             "global capacity counts both workspace roots");

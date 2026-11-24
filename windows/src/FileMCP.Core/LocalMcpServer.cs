@@ -33,7 +33,16 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private readonly SemaphoreSlim _ownerAdmission = new(1, 1);
     private readonly Dictionary<string, string> _ownerBySession = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _ownerByRequest = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, (ApprovedWorkspace Definition, LocalTools Tools)> _approved = new(StringComparer.Ordinal);
+    private readonly object _workspaceGate = new();
+    private Dictionary<string, (ApprovedWorkspace Definition, LocalTools Tools)> _catalog = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _workspaceLeases = new(StringComparer.Ordinal);
+    private readonly Func<ApprovedWorkspace, LocalTools> _makeWorkspaceTools;
+    private readonly WorkspaceCommandBudget _commandBudget;
+    private bool _catalogStopped;
+    private Dictionary<string, (ApprovedWorkspace Definition, LocalTools Tools)> _approved
+    {
+        get { lock (_workspaceGate) return new(_catalog, StringComparer.Ordinal); }
+    }
     private readonly Action<string> _log;
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
@@ -62,6 +71,18 @@ public sealed class LocalMcpServer : IAsyncDisposable
              publicUri.Query.Length > 0 || publicUri.Fragment.Length > 0))
             throw new FileMcpException("Public OAuth hostname must be an exact DNS host");
         var budget = new WorkspaceCommandBudget(maxConcurrentCommands);
+        _commandBudget = budget;
+        _makeWorkspaceTools = definition => {
+            if (!Directory.Exists(definition.Path)) throw new FileMcpException("Approved workspace directory is missing");
+            return new LocalTools(definition.Path, gitUserName, gitUserEmail,
+                enableCommands && (definition.Permissions?.AllowShell ?? true),
+                sharedBudget: budget, receiptLedger: receiptLedger,
+                workspaceScopeID: definition.Id,
+                enableGitPush: enableGitPush && (definition.Permissions?.AllowGitPush ?? true),
+                enableCodexHistory: enableCodexHistory && (definition.Permissions?.AllowCodexHistory ?? true),
+                workspaceName: definition.Name, commandHistory: commandHistory,
+                allowWrite: definition.Permissions?.AllowWrite ?? true);
+        };
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
             enableCommands && (defaultWorkspacePermissions?.AllowShell ?? true), sharedBudget: budget, receiptLedger: receiptLedger,
             workspaceScopeID: "default", enableGitPush: enableGitPush && (defaultWorkspacePermissions?.AllowGitPush ?? true),
@@ -75,22 +96,14 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (string.IsNullOrWhiteSpace(definition.Name) || definition.Name.Length > 64 ||
                 string.IsNullOrWhiteSpace(definition.Id) || definition.Id == "default" ||
                 !System.Text.RegularExpressions.Regex.IsMatch(definition.Id, "^[A-Za-z0-9_-]{1,64}$") ||
-                _approved.ContainsKey(definition.Id))
+                _catalog.ContainsKey(definition.Id))
                 throw new FileMcpException("Invalid or duplicate workspace ID or name");
-            if (!Directory.Exists(definition.Path)) throw new FileMcpException("Approved workspace directory is missing");
-            var scoped = new LocalTools(definition.Path, gitUserName, gitUserEmail,
-                enableCommands && (definition.Permissions?.AllowShell ?? true),
-                sharedBudget: budget, receiptLedger: receiptLedger,
-                workspaceScopeID: definition.Id,
-                enableGitPush: enableGitPush && (definition.Permissions?.AllowGitPush ?? true),
-                enableCodexHistory: enableCodexHistory && (definition.Permissions?.AllowCodexHistory ?? true),
-                workspaceName: definition.Name, commandHistory: commandHistory,
-                allowWrite: definition.Permissions?.AllowWrite ?? true);
+            var scoped = _makeWorkspaceTools(definition);
             var canonical = Path.TrimEndingDirectorySeparator(scoped.WorkspaceRoot);
             if (roots.Any(root => OverlappingRoots(Path.TrimEndingDirectorySeparator(root), canonical)))
                 throw new FileMcpException("Approved workspace folders must not overlap");
             roots.Add(canonical);
-            _approved.Add(definition.Id, (definition, scoped));
+            _catalog.Add(definition.Id, (definition, scoped));
         }
     }
 
@@ -99,7 +112,84 @@ public sealed class LocalMcpServer : IAsyncDisposable
         one.StartsWith(two + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
         two.StartsWith(one + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
+    internal void ReplaceAdditionalWorkspaces(IReadOnlyList<ApprovedWorkspace> definitions,
+        string? oauthPolicy = null, string? oauthDescription = null, Action? persistSettings = null)
+    {
+        lock (_workspaceGate)
+        {
+            if (_catalogStopped) throw new FileMcpException("Runtime has stopped");
+            if (definitions.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
+            if (_catalog.Values.Select(item => item.Definition).SequenceEqual(definitions)) return;
+            var next = new Dictionary<string, (ApprovedWorkspace Definition, LocalTools Tools)>(StringComparer.Ordinal);
+            var roots = new List<string> { Path.TrimEndingDirectorySeparator(_tools.WorkspaceRoot) };
+            foreach (var definition in definitions)
+            {
+                if (string.IsNullOrWhiteSpace(definition.Name) || definition.Name.Length > 64 ||
+                    string.IsNullOrWhiteSpace(definition.Id) || definition.Id == "default" ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(definition.Id, "^[A-Za-z0-9_-]{1,64}$") ||
+                    next.ContainsKey(definition.Id))
+                    throw new FileMcpException("Invalid or duplicate workspace");
+                var scoped = _catalog.TryGetValue(definition.Id, out var old) && old.Definition == definition
+                    ? old.Tools : _makeWorkspaceTools(definition);
+                var canonical = Path.TrimEndingDirectorySeparator(scoped.WorkspaceRoot);
+                if (roots.Any(root => OverlappingRoots(root, canonical)))
+                    throw new FileMcpException("Approved workspace folders must not overlap");
+                roots.Add(canonical); next.Add(definition.Id, (definition, scoped));
+            }
+            var changed = _catalog.Where(item => !next.TryGetValue(item.Key, out var replacement) ||
+                !ReferenceEquals(item.Value.Tools, replacement.Tools)).ToArray();
+            foreach (var item in changed)
+                if (_workspaceLeases.GetValueOrDefault(item.Key) != 0 || _commandBudget.HasActivityUnderRoot(item.Value.Tools.WorkspaceRoot))
+                    throw new FileMcpException("Finish or cancel operations in the changed workspace first");
+            if (_oauth is not null)
+            {
+                if (oauthPolicy is null || oauthDescription is null)
+                    throw new FileMcpException("OAuth catalog changes require a new authorization policy");
+                if (_workspaceLeases.Values.Any(value => value != 0) || _commandBudget.HasActiveCommands())
+                    throw new FileMcpException("Finish active OAuth operations before changing authorization");
+                _oauth.ReplaceCatalog(definitions, oauthPolicy, oauthDescription, persistSettings);
+            }
+            else persistSettings?.Invoke();
+            _catalog = next;
+            foreach (var item in changed) item.Value.Tools.StopCommandSessions();
+            _log("Local workspace approvals updated without restarting the tunnel.\n");
+        }
+    }
+
+    private LocalTools AcquireWorkspace(string id, string tool, WindowsOAuthServer.VerifiedClient? verified)
+    {
+        lock (_workspaceGate)
+        {
+            if (_catalogStopped || (verified is not null &&
+                ((_oauth is not null && !_oauth.IsCurrent(verified)) || !verified.Workspaces.Contains(id))))
+                throw new FileMcpException("Unknown workspace or tool");
+            var selected = id == "default" ? _tools :
+                _catalog.TryGetValue(id, out var scope) ? scope.Tools : null;
+            if (selected is null || !selected.HasTool(tool)) throw new FileMcpException("Unknown workspace or tool");
+            _workspaceLeases[id] = _workspaceLeases.GetValueOrDefault(id) + 1;
+            return selected;
+        }
+    }
+
+    private void ReleaseWorkspace(string id)
+    {
+        lock (_workspaceGate)
+        {
+            var remaining = _workspaceLeases.GetValueOrDefault(id) - 1;
+            if (remaining <= 0) _workspaceLeases.Remove(id); else _workspaceLeases[id] = remaining;
+        }
+    }
+
     private JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
+    {
+        lock (_workspaceGate)
+        {
+            if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified)) return new JsonArray();
+            return PublishedToolDefinitionsLocked(verified);
+        }
+    }
+
+    private JsonArray PublishedToolDefinitionsLocked(WindowsOAuthServer.VerifiedClient? verified)
     {
         var tools = new JsonArray();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -241,8 +331,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     public void Stop()
     {
+        LocalTools[] scopes;
+        lock (_workspaceGate) { _catalogStopped = true; scopes = _catalog.Values.Select(item => item.Tools).ToArray(); }
         _tools.StopCommandSessions();
-        foreach (var scoped in _approved.Values) scoped.Tools.StopCommandSessions();
+        foreach (var scoped in scopes) scoped.StopCommandSessions();
         IsReady = false;
         try { _cts?.Cancel(); } catch { }
         try { _listener?.Stop(); } catch { }
@@ -462,6 +554,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
             ToolCallOutput output;
             if (name == "list_workspaces")
             {
+                lock (_workspaceGate)
+                {
+                if (verified is not null && _oauth is not null && !_oauth.IsCurrent(verified))
+                    throw new FileMcpException("OAuth authorization changed; reconnect client");
                 var listed = new JsonArray {
                     new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot,
                         ["allowed_tools"] = AllowedTools(_tools) }
@@ -477,26 +573,26 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 var text = listed.ToJsonString();
                 output = new ToolCallOutput(new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
                     new JsonObject { ["workspaces"] = listed });
+                }
             }
             else if (name == "workspace_call")
             {
                 var scopeID = arguments["workspace_id"]?.GetValue<string>();
                 var innerTool = arguments["tool_name"]?.GetValue<string>();
-                var selected = scopeID == "default" ? _tools :
-                    scopeID is not null && _approved.TryGetValue(scopeID, out var scope) ? scope.Tools : null;
-                if (scopeID is null || selected is null ||
-                    (verified is not null && !verified.Workspaces.Contains(scopeID)) ||
-                    innerTool is null || !selected.HasTool(innerTool) ||
+                if (scopeID is null || innerTool is null ||
                     arguments["arguments"] is not JsonObject innerArgs || innerArgs.ContainsKey("workspace_id"))
                     throw new FileMcpException("Unknown workspace or tool");
-                auditScope = scopeID;
-                auditTool = innerTool;
-                var inner = await AuthorizedCallAsync(
-                    selected, scopeID, innerTool,
-                    (JsonObject)innerArgs.DeepClone(), verified, cancellationToken)
-                    .ConfigureAwait(false);
-                output = new ToolCallOutput(inner.Content, new JsonObject {
-                    ["workspace_id"] = scopeID, ["result"] = inner.StructuredContent });
+                var selected = AcquireWorkspace(scopeID, innerTool, verified);
+                try {
+                    auditScope = scopeID;
+                    auditTool = innerTool;
+                    var inner = await AuthorizedCallAsync(
+                        selected, scopeID, innerTool,
+                        (JsonObject)innerArgs.DeepClone(), verified, cancellationToken)
+                        .ConfigureAwait(false);
+                    output = new ToolCallOutput(inner.Content, new JsonObject {
+                        ["workspace_id"] = scopeID, ["result"] = inner.StructuredContent });
+                } finally { ReleaseWorkspace(scopeID); }
             }
             else
             {
@@ -511,14 +607,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
                     scopeID = explicitScope;
                     scopedArguments.Remove("workspace_id");
                 }
-                var selected = scopeID == "default" ? _tools :
-                    _approved.TryGetValue(scopeID, out var scope) ? scope.Tools : null;
-                if (selected is null || !selected.HasTool(name))
-                    throw new FileMcpException("Unknown workspace or tool");
-                auditScope = scopeID;
-                output = await AuthorizedCallAsync(
-                    selected, scopeID, name, scopedArguments, verified, cancellationToken)
-                    .ConfigureAwait(false);
+                var selected = AcquireWorkspace(scopeID, name, verified);
+                try {
+                    auditScope = scopeID;
+                    output = await AuthorizedCallAsync(
+                        selected, scopeID, name, scopedArguments, verified, cancellationToken)
+                        .ConfigureAwait(false);
+                } finally { ReleaseWorkspace(scopeID); }
             }
             var result = new JsonObject { ["content"] = output.Content, ["structuredContent"] = output.StructuredContent, ["isError"] = false };
             if (modern) result = ModernComplete(result);

@@ -110,6 +110,26 @@ func runOAuthPersistenceChecks() throws {
         preconditionFailure("Repeated revocation incorrectly succeeded")
     } catch { }
 
+    var liveDurable = saved
+    let live = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing,
+        policy: "workspace-A|files", permissionDescription: "File access",
+        approvedWorkspaces: approved, persistedState: saved, persist: { liveDurable = $0 })
+    let stale = live.verifiedClient(forAuthorization: "Bearer " + accessB)!
+    precondition(live.isCurrent(stale))
+    do {
+        try live.replaceCatalog([], policy: "workspace-live|files", description: "Default only") {
+            throw NSError(domain: "fixture", code: 1)
+        }
+        preconditionFailure("Failed settings save must roll back authorization")
+    } catch { }
+    precondition(live.isCurrent(stale) && live.accepts("Bearer " + accessB))
+    try live.replaceCatalog([], policy: "workspace-live|files", description: "Default only") { }
+    precondition(!live.isCurrent(stale) && !live.accepts("Bearer " + accessB))
+    let liveRestored = try LocalMCPOAuthServer(issuer: issuer, pairingSecret: pairing,
+        policy: "workspace-live|files", permissionDescription: "Default only",
+        persistedState: liveDurable)
+    precondition(!liveRestored.accepts("Bearer " + accessB))
+
     // Pre-upgrade stores lack the newly added workspace choice property.
     // Such clients default to the least-privileged default workspace only.
     var oldFormat = try JSONSerialization.jsonObject(with: saved) as! [String: Any]

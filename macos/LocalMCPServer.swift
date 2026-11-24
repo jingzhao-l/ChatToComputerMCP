@@ -3240,8 +3240,18 @@ final class LocalMCPServer {
     private let taskOwnershipLock = NSLock()
     private var ownerByScopedRequest: [String: String] = [:]
     private var ownerBySessionID: [String: String] = [:]
-    private let workspaceDefinitions: [WorkspaceDefinition]
-    private let workspaceTools: [String: LocalTools]
+    private let workspaceGate = NSRecursiveLock()
+    private var catalogDefinitions: [WorkspaceDefinition]
+    private var catalogTools: [String: LocalTools]
+    private var workspaceLeases: [String: Int] = [:]
+    private var catalogStopped = false
+    private let makeWorkspaceTools: (WorkspaceDefinition) throws -> LocalTools
+    private var workspaceDefinitions: [WorkspaceDefinition] {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }; return catalogDefinitions
+    }
+    private var workspaceTools: [String: LocalTools] {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }; return catalogTools
+    }
     private let log: (String) -> Void
     private let listenerQueue = DispatchQueue(label: "com.chat-to-computer-mcp.http-listener", qos: .userInitiated)
     private let workQueue = DispatchQueue(label: "com.chat-to-computer-mcp.http-workers", qos: .userInitiated, attributes: .concurrent)
@@ -3332,6 +3342,23 @@ final class LocalMCPServer {
         guard additionalWorkspaces.count <= 12 else {
             throw MCPServerError.invalidArguments("At most 12 additional workspaces are supported")
         }
+        let makeTools: (WorkspaceDefinition) throws -> LocalTools = { workspace in
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: workspace.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw MCPServerError.invalidPath("Approved workspace is missing or not a directory")
+            }
+            return LocalTools(
+                resolver: try SafePathResolver(rootPath: workspace.path), gitUserName: gitUserName, gitUserEmail: gitUserEmail,
+                enableCommands: enableCommands && (workspace.permissions?.allowShell ?? true),
+                enableGitPush: enableGitPush && (workspace.permissions?.allowGitPush ?? true),
+                enableCodexHistory: enableCodexHistory && (workspace.permissions?.allowCodexHistory ?? true),
+                globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
+                receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
+                workspaceName: workspace.name, commandHistory: commandHistory,
+                allowWrite: workspace.permissions?.allowWrite ?? true)
+        }
+        self.makeWorkspaceTools = makeTools
         var roots = [resolver.root.path]
         var approved: [String: LocalTools] = [:]
         var names = Set<String>()
@@ -3342,34 +3369,88 @@ final class LocalMCPServer {
                   !names.contains(workspace.id) else {
                 throw MCPServerError.invalidArguments("Invalid or duplicate workspace ID or name")
             }
-            // Do not let a missing path silently create a new shared directory.
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: workspace.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
-                throw MCPServerError.invalidPath("Approved workspace is missing or not a directory")
-            }
-            let scoped = try SafePathResolver(rootPath: workspace.path)
-            guard !roots.contains(where: { path in
-                path == scoped.root.path || path.hasPrefix(scoped.root.path + "/")
-                    || scoped.root.path.hasPrefix(path + "/")
-            }) else {
+            let scoped = try makeTools(workspace)
+            guard !roots.contains(where: { Self.overlappingRoots($0, scoped.workspaceRootPath) }) else {
                 throw MCPServerError.invalidPath("Approved workspace roots must not overlap")
             }
-            roots.append(scoped.root.path)
+            roots.append(scoped.workspaceRootPath)
             names.insert(workspace.id)
-            approved[workspace.id] = LocalTools(
-                resolver: scoped, gitUserName: gitUserName, gitUserEmail: gitUserEmail,
-                enableCommands: enableCommands && (workspace.permissions?.allowShell ?? true),
-                enableGitPush: enableGitPush && (workspace.permissions?.allowGitPush ?? true),
-                enableCodexHistory: enableCodexHistory && (workspace.permissions?.allowCodexHistory ?? true),
-                globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
-                receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
-                workspaceName: workspace.name, commandHistory: commandHistory,
-                allowWrite: workspace.permissions?.allowWrite ?? true
-            )
+            approved[workspace.id] = scoped
         }
-        self.workspaceDefinitions = additionalWorkspaces
-        self.workspaceTools = approved
+        self.catalogDefinitions = additionalWorkspaces
+        self.catalogTools = approved
+    }
+
+    private static func overlappingRoots(_ a: String, _ b: String) -> Bool {
+        // Conservatively reject aliases on both case-sensitive and case-insensitive volumes.
+        let x = a.precomposedStringWithCanonicalMapping.lowercased()
+        let y = b.precomposedStringWithCanonicalMapping.lowercased()
+        return x == y || x.hasPrefix(y.hasSuffix("/") ? y : y + "/") ||
+            y.hasPrefix(x.hasSuffix("/") ? x : x + "/")
+    }
+
+    /// Called only by the local controller. Changed scopes must be idle; unchanged
+    /// scopes retain their dispatcher and live sessions. Never broaden an OAuth
+    /// grant silently: catalog changes require a fresh local authorization.
+    func replaceAdditionalWorkspaces(_ definitions: [WorkspaceDefinition],
+                                     oauthPolicy: String? = nil, oauthDescription: String? = nil,
+                                     persist: () throws -> Void = {}) throws {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        guard !catalogStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
+        guard definitions.count <= 12 else { throw MCPServerError.invalidArguments("At most 12 additional workspaces are supported") }
+        if definitions == catalogDefinitions { return }
+        let oldByID = Dictionary(uniqueKeysWithValues: catalogDefinitions.map { ($0.id, $0) })
+        var next: [String: LocalTools] = [:]
+        var roots = [tools.workspaceRootPath]
+        for definition in definitions {
+            guard definition.id != "default", definition.id.range(of: "^[A-Za-z0-9_-]{1,64}$", options: .regularExpression) != nil,
+                  !definition.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  definition.name.count <= 64, next[definition.id] == nil else {
+                throw MCPServerError.invalidArguments("Invalid or duplicate workspace")
+            }
+            let existing = oldByID[definition.id] == definition ? catalogTools[definition.id] : nil
+            let scoped = try existing ?? makeWorkspaceTools(definition)
+            guard !roots.contains(where: { Self.overlappingRoots($0, scoped.workspaceRootPath) }) else {
+                throw MCPServerError.invalidPath("Approved workspace roots must not overlap")
+            }
+            roots.append(scoped.workspaceRootPath); next[definition.id] = scoped
+        }
+        let changed = catalogTools.filter { id, scoped in next[id] !== scoped }
+        for (id, scoped) in changed {
+            guard workspaceLeases[id, default: 0] == 0, !scoped.hasActiveLocalCommands() else {
+                throw MCPServerError.operationFailed("Finish or cancel operations in the changed workspace first")
+            }
+        }
+        if let oauth {
+            guard let policy = oauthPolicy, let description = oauthDescription else {
+                throw MCPServerError.operationFailed("OAuth catalog changes require a new authorization policy")
+            }
+            guard workspaceLeases.values.allSatisfy({ $0 == 0 }), !commandBudget.hasActiveCommands() else {
+                throw MCPServerError.operationFailed("Finish active OAuth operations before changing authorization")
+            }
+            try oauth.replaceCatalog(definitions, policy: policy, description: description, persistSettings: persist)
+        } else { try persist() }
+        catalogDefinitions = definitions; catalogTools = next
+        for scoped in changed.values { scoped.stopCommandSessions() }
+        log("Local workspace approvals updated without restarting the tunnel.\n")
+    }
+
+    private func acquireWorkspace(_ id: String, tool: String, client: VerifiedOAuthClient?) throws -> LocalTools {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        guard !catalogStopped,
+              client.map({ oauth?.isCurrent($0) ?? true }) ?? true,
+              id == "default" || (client?.approvedWorkspaceIDs.contains(id) ?? true),
+              let scope = id == "default" ? tools : catalogTools[id], scope.hasTool(named: tool) else {
+            throw MCPServerError.invalidArguments("Unknown workspace or tool")
+        }
+        workspaceLeases[id, default: 0] += 1
+        return scope
+    }
+
+    private func releaseWorkspace(_ id: String) {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        let remaining = max(0, workspaceLeases[id, default: 1] - 1)
+        if remaining == 0 { workspaceLeases.removeValue(forKey: id) } else { workspaceLeases[id] = remaining }
     }
 
     func desktopReceiptSummary() -> [String: Int] {
@@ -3383,6 +3464,7 @@ final class LocalMCPServer {
     }
 
     func desktopCommandSnapshots() -> [DesktopCommandSnapshot] {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
         var entries = tools.desktopCommandSnapshots(workspaceID: "default", name: "Default")
         for entry in workspaceDefinitions {
             if let scoped = workspaceTools[entry.id] {
@@ -3512,8 +3594,12 @@ final class LocalMCPServer {
             record.deadline?.cancel()
             record.connection.cancel()
         }
+        workspaceGate.lock()
+        catalogStopped = true
+        let scopes = Array(catalogTools.values)
+        workspaceGate.unlock()
         tools.stopCommandSessions()
-        for scoped in workspaceTools.values { scoped.stopCommandSessions() }
+        for scoped in scopes { scoped.stopCommandSessions() }
     }
 
     private func closeConnection(_ connection: NWConnection) {
@@ -3755,6 +3841,8 @@ final class LocalMCPServer {
     private var publishedToolDefinitions: [[String: Any]] { toolDefinitions(for: nil) }
 
     private func toolDefinitions(for client: VerifiedOAuthClient?) -> [[String: Any]] {
+        workspaceGate.lock(); defer { workspaceGate.unlock() }
+        if let client, let oauth, !oauth.isCurrent(client) { return [] }
         let granted = [tools] + workspaceDefinitions.compactMap { workspace in
             (client?.approvedWorkspaceIDs.contains(workspace.id) ?? true) ? workspaceTools[workspace.id] : nil
         }
@@ -3824,8 +3912,8 @@ final class LocalMCPServer {
         // The HTTP parser validated authorization. If a bearer was revoked
         // between parsing and dispatch, do NOT fall back to local-admin
         // semantics: a missing verified identity must fail closed.
-        if oauth != nil, request.headers["authorization"] != nil,
-           oauth?.verifiedClient(forAuthorization: request.headers["authorization"]) == nil {
+        let verifiedClient = oauth?.verifiedClient(forAuthorization: request.headers["authorization"])
+        if oauth != nil, request.headers["authorization"] != nil, verifiedClient == nil {
             return httpResponse(status: 401, body: Data("Unauthorized".utf8),
                                 contentType: "text/plain")
         }
@@ -3905,19 +3993,15 @@ final class LocalMCPServer {
                 if message["id"] == nil {
                     return httpResponse(status: 202, body: Data(), contentType: "application/json")
                 }
-                let client = oauth?.verifiedClient(
-                    forAuthorization: request.headers["authorization"])
                 return processModernRequest(id: id, method: method,
-                                            params: params, verifiedClient: client)
+                                            params: params, verifiedClient: verifiedClient)
             }
 
             if message["id"] == nil {
                 return httpResponse(status: 202, body: Data(), contentType: "application/json")
             }
-            let client = oauth?.verifiedClient(
-                forAuthorization: request.headers["authorization"])
             return processLegacyRequest(id: id, method: method,
-                                        params: params, verifiedClient: client)
+                                        params: params, verifiedClient: verifiedClient)
         } catch {
             return jsonRPCError(id: NSNull(), code: -32700, message: "Parse error", status: 400)
         }
@@ -4050,6 +4134,11 @@ final class LocalMCPServer {
         do {
             let output: LocalToolCallOutput
             if toolName == "list_workspaces" {
+                workspaceGate.lock()
+                defer { workspaceGate.unlock() }
+                if let client = verifiedClient, let oauth, !oauth.isCurrent(client) {
+                    throw MCPServerError.operationFailed("OAuth authorization changed; reconnect client")
+                }
                 let list = workspaceDefinitions.filter {
                     verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
                 }.compactMap { workspace -> [String: Any]? in
@@ -4067,14 +4156,13 @@ final class LocalMCPServer {
                     structuredContent: payload)
             } else if toolName == "workspace_call" {
                 guard let scopeID = arguments["workspace_id"] as? String,
-                      let scoped = scopeID == "default" ? tools : workspaceTools[scopeID],
-                      scopeID == "default" || (verifiedClient?.approvedWorkspaceIDs.contains(scopeID) ?? true),
                       let innerName = arguments["tool_name"] as? String,
-                      scoped.hasTool(named: innerName),
                       let innerArgs = arguments["arguments"] as? [String: Any],
                       innerArgs["workspace_id"] == nil else {
                     throw MCPServerError.invalidArguments("Unknown workspace or tool")
                 }
+                let scoped = try acquireWorkspace(scopeID, tool: innerName, client: verifiedClient)
+                defer { releaseWorkspace(scopeID) }
                 auditScope = scopeID
                 auditTool = innerName
                 let inner = try authenticatedToolCall(
@@ -4095,11 +4183,8 @@ final class LocalMCPServer {
                 } else {
                     scopeID = "default"
                 }
-                guard let scoped = scopeID == "default" ? tools : workspaceTools[scopeID],
-                      scopeID == "default" || (verifiedClient?.approvedWorkspaceIDs.contains(scopeID) ?? true),
-                      scoped.hasTool(named: toolName) else {
-                    throw MCPServerError.invalidArguments("Unknown workspace or tool")
-                }
+                let scoped = try acquireWorkspace(scopeID, tool: toolName, client: verifiedClient)
+                defer { releaseWorkspace(scopeID) }
                 auditScope = scopeID
                 output = try authenticatedToolCall(
                     scoped: scoped, scopeID: scopeID, name: toolName,
@@ -5045,6 +5130,11 @@ private extension LocalTools {
         return sessionsStopped
     }
 
+    func hasActiveLocalCommands() -> Bool {
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        return !activeCommandPathsUnderLock().isEmpty
+    }
+
     func stopCommandSessions() {
         sessionLock.lock()
         sessionsStopped = true
@@ -5059,6 +5149,8 @@ private extension LocalTools {
 struct VerifiedOAuthClient {
     let id: String
     let approvedWorkspaceIDs: Set<String>
+    var revision: UUID? = nil
+    var tokenDigest: String? = nil
 }
 
 /// Local-only GUI record; names are self-reported and are NEVER security IDs.
@@ -5138,9 +5230,39 @@ final class LocalMCPOAuthServer {
     private var loginAttempts: [Date] = []
     let issuer: String
     var resource: String { issuer + "/mcp" }
-    private let permissionDescription: String
+    private var permissionDescription: String
     // These are configured by the local user, never by a remote MCP caller.
-    private let availableWorkspaces: [WorkspaceDefinition]
+    private var availableWorkspaces: [WorkspaceDefinition]
+    private var catalogRevision = UUID()
+
+    func isCurrent(_ client: VerifiedOAuthClient) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        // Nil is used by direct internal test fixtures only.
+        if client.revision == nil { return true }
+        guard client.revision == catalogRevision, let digest = client.tokenDigest,
+              let grant = store.access[digest], grant.expires > Date(),
+              grant.client == client.id, store.clients[client.id]?.approved == true else { return false }
+        return true
+    }
+
+    func replaceCatalog(_ workspaces: [WorkspaceDefinition], policy: String, description: String,
+                        persistSettings: () throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        let before = store
+        store.policy = Self.hash(policy + "|" + pairingSecret)
+        store.access = [:]; store.refresh = [:]; store.consumedRefresh = [:]
+        do {
+            try save()
+            try persistSettings()
+        } catch {
+            store = before
+            // Restore previous authorization metadata if the settings write failed.
+            try? save()
+            throw error
+        }
+        availableWorkspaces = workspaces; permissionDescription = description
+        requests.removeAll(); codes.removeAll(); catalogRevision = UUID()
+    }
 
     init(issuer: String, pairingSecret: String, policy: String, permissionDescription: String,
          approvedWorkspaces: [WorkspaceDefinition] = [],
@@ -5218,7 +5340,8 @@ final class LocalMCPOAuthServer {
         // the server-issued token. Never trust the request's client_info.
         let permitted = Set(["default"] + availableWorkspaces.map(\.id))
         return VerifiedOAuthClient(id: grant.client,
-            approvedWorkspaceIDs: Set(client.allowedWorkspaceIDs).intersection(permitted))
+            approvedWorkspaceIDs: Set(client.allowedWorkspaceIDs).intersection(permitted), revision: catalogRevision,
+            tokenDigest: Self.hash(String(parts[1])))
     }
 
     func handle(method: String, path: String, query: String, contentType: String?, body: Data) -> LocalOAuthResponse? {

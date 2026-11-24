@@ -46,6 +46,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private CancellationTokenSource? _startupCts;
     private int _disposed;
     private LocalMcpServer? _server;
+    private LocalMcpConfiguration? _activeConfiguration;
     private ManagedProcess? _tunnelProcess;
     private ProfileLock? _profileLock;
     private string? _cloudflareTokenFile;
@@ -87,6 +88,46 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         _server.CancelDesktopCommand(workspaceID, sessionID);
     }
 
+    private static (string Policy, string Description) WorkspaceOAuthPolicy(LocalMcpConfiguration configuration, IReadOnlyList<ApprovedWorkspace> approved)
+    {
+        if (approved.Any(item => !Directory.Exists(item.Path)))
+            throw new FileMcpException("Approved workspace directory is missing");
+        var policy = System.Text.Json.JsonSerializer.Serialize(new {
+            Default = new SafePathResolver(configuration.AllowedDirectory).Root,
+            configuration.Port, configuration.EnableCommands, configuration.EnableGitPush,
+            configuration.EnableCodexHistory, configuration.Profile,
+            DefaultPermissions = configuration.DefaultWorkspacePermissions?.Fingerprint ?? "inherit",
+            Host = configuration.CloudflareHostname.ToLowerInvariant(),
+            Workspaces = approved.OrderBy(item => item.Id, StringComparer.Ordinal).Select(item => new {
+                item.Id, Path = new SafePathResolver(item.Path).Root,
+                Permissions = item.Permissions?.Fingerprint ?? "inherit"
+            })
+        });
+        var description = "File and Git access; shell commands " + (configuration.EnableCommands ? "enabled" : "disabled") +
+            "; Git push " + (configuration.EnableGitPush ? "enabled" : "disabled") +
+            "; Codex import " + (configuration.EnableCodexHistory ? "enabled" : "disabled") +
+            ". Default workspace: " + (configuration.DefaultWorkspacePermissions?.Summary ?? "Inherit global permissions") +
+            ". Individual workspace restrictions: " + string.Join("; ", approved.Select(item =>
+                item.Name + ": " + (item.Permissions?.Summary ?? "Inherit global permissions")));
+        return (policy, description);
+    }
+
+    public async Task ReplaceDesktopWorkspacesAsync(IReadOnlyList<ApprovedWorkspace> definitions, Action persist)
+    {
+        await _serial.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (State.Status != LocalMcpRuntimeStatus.Running || _server is null || _activeConfiguration is null)
+                throw new FileMcpException("Not connected");
+            var configuration = _activeConfiguration;
+            var (policy, description) = configuration.Provider == "cloudflare"
+                ? WorkspaceOAuthPolicy(configuration, definitions) : (null, null);
+            _server.ReplaceAdditionalWorkspaces(definitions, policy, description, persist);
+            _activeConfiguration = configuration with { AdditionalWorkspaces = definitions.ToArray() };
+        }
+        finally { _serial.Release(); }
+    }
+
     public async Task StartAsync(LocalMcpConfiguration configuration)
     {
         await _serial.WaitAsync().ConfigureAwait(false);
@@ -111,29 +152,10 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                 if (isCloudflare)
                 {
                     var approved = configuration.AdditionalWorkspaces ?? [];
-                    if (approved.Any(item => !Directory.Exists(item.Path)))
-                        throw new FileMcpException("Approved workspace directory is missing");
-                    var policy = System.Text.Json.JsonSerializer.Serialize(new {
-                        Default = new SafePathResolver(configuration.AllowedDirectory).Root,
-                        configuration.Port, configuration.EnableCommands, configuration.EnableGitPush,
-                        configuration.EnableCodexHistory, configuration.Profile,
-                        DefaultPermissions = configuration.DefaultWorkspacePermissions?.Fingerprint ?? "inherit",
-                        Host = configuration.CloudflareHostname.ToLowerInvariant(),
-                        Workspaces = approved.OrderBy(item => item.Id, StringComparer.Ordinal).Select(item => new {
-                            item.Id, Path = new SafePathResolver(item.Path).Root,
-                            Permissions = item.Permissions?.Fingerprint ?? "inherit"
-                        })
-                    });
+                    var (policy, description) = WorkspaceOAuthPolicy(configuration, approved);
                     oauth = new WindowsOAuthServer(
                         "https://"+configuration.CloudflareHostname,
-                        configuration.CloudflarePairingCode,policy,
-                        "File and Git access; shell commands " + (configuration.EnableCommands ? "enabled" : "disabled") +
-                        "; Git push " + (configuration.EnableGitPush ? "enabled" : "disabled") +
-                        "; Codex import " + (configuration.EnableCodexHistory ? "enabled" : "disabled") +
-                        ". Default workspace: " + (configuration.DefaultWorkspacePermissions?.Summary ?? "Inherit global permissions") +
-                        ". Individual workspace restrictions: " + string.Join("; ", approved.Select(item =>
-                            item.Name + ": " + (item.Permissions?.Summary ?? "Inherit global permissions"))),
-                        approved);
+                        configuration.CloudflarePairingCode, policy, description, approved);
                 }
                 var history = configuration.EnableCommands ? new CommandHistoryStore(
                     CommandHistoryStore.DirectoryFor(configuration.Profile), configuration.CaptureCommandHistoryContent) : null;
@@ -147,6 +169,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     enableCodexHistory: configuration.EnableCodexHistory, commandHistory: history,
                     defaultWorkspacePermissions: configuration.DefaultWorkspacePermissions, activityAudit: audit);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
+                _activeConfiguration = configuration;
 
                 if (isCloudflare)
                 {
