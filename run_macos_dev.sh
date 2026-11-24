@@ -50,6 +50,7 @@ echo "Compiling full Swift macOS app ..."
     -o "$UI_BIN" \
     "$ROOT/macos/ProcessRunner.swift" \
     "$ROOT/macos/Ripgrep.swift" \
+    "$ROOT/macos/CUA.swift" \
     "$ROOT/macos/LocalMCPServer.swift" \
     "$ROOT/macos/CodexHistory.swift" \
     "$ROOT/macos/CommandReceiptLedger.swift" \

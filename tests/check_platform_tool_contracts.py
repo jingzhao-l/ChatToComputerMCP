@@ -30,6 +30,11 @@ required = {
     'cancel_command', 'command_capacity_status',
     'workspace_context', 'batch_read', 'save_conversation_to_codex',
 }
+mac_cua = set(re.findall(r'\("(cua_[a-z_]+)",', (root / 'macos/CUA.swift').read_text()))
+win_cua = set(re.findall(r'\bDef\("(cua_[a-z_]+)",', (root / 'windows/src/FileMCP.Core/CuaService.cs').read_text()))
+cua = {'cua_capabilities','cua_list_apps','cua_list_windows','cua_create_session','cua_list_sessions',
+       'cua_observe','cua_act','cua_verify','cua_stop_session'}
+assert mac_cua == win_cua == cua, (mac_cua, win_cua, cua)
 if mac_names != windows_names or mac_names != required:
     raise SystemExit(
         'MCP tool names differ across platforms:\n'
@@ -38,4 +43,4 @@ if mac_names != windows_names or mac_names != required:
         f'Unexpected: {sorted((mac_names | windows_names) - required)}\n'
         f'Missing: {sorted(required - (mac_names & windows_names))}'
     )
-print(f'cross-platform MCP tool names: {len(required)} matched')
+print(f'cross-platform MCP tool names: {len(required)} coding + {len(cua)} CUA matched')

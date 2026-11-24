@@ -757,7 +757,7 @@ SWIFT
 swiftc -framework Network -framework Security -framework SystemConfiguration -o "$TMP_DIR/runtime-test" \
     macos/ProcessRunner.swift \
     macos/Ripgrep.swift \
-    macos/LocalMCPServer.swift \
+    macos/CUA.swift macos/LocalMCPServer.swift \
     macos/CodexHistory.swift \
     macos/CommandReceiptLedger.swift \
     macos/LocalMCPRuntime.swift \
@@ -1118,7 +1118,7 @@ SWIFT
 swiftc -framework Network -o "$TMP_DIR/server-test" \
     macos/ProcessRunner.swift \
     macos/Ripgrep.swift \
-    macos/LocalMCPServer.swift \
+    macos/CUA.swift macos/LocalMCPServer.swift \
     macos/CodexHistory.swift \
     macos/CommandReceiptLedger.swift \
     tests/SwiftOAuthChecks.swift \

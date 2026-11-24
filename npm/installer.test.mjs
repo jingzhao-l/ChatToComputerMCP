@@ -106,6 +106,8 @@ test('macOS local build places a real app bundle under versioned release and can
   fs.copyFileSync(entry,path.join(src,'bin','chat-to-computer-mcp.mjs'));
   fs.copyFileSync(path.join(root,'bin','update-support.mjs'),
     path.join(src,'bin','update-support.mjs'));
+  fs.copyFileSync(path.join(root,'bin','cua-support.mjs'),
+    path.join(src,'bin','cua-support.mjs'));
   fs.writeFileSync(path.join(src,'package.json'),JSON.stringify({
     name:'chat-to-computer-mcp',version:version
   }));
@@ -354,4 +356,26 @@ test('Windows user-login startup commands are explicit and platform-scoped',()=>
     assert.equal(fs.existsSync(path.join(home,'AppData','Local',
       'ChatToComputerMCP','startup.json')),false);
   } finally {fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('CUA is explicit, defaults disabled and rejects unpinned archives', async()=>{
+  const {verifyArchive,driverAssets}=await import('../bin/cua-support.mjs');
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-cua-test-'));
+  try{
+    const help=invoke(['cua','help'],home);
+    assert.equal(help.status,0,help.stderr);
+    assert.match(help.stdout,/cua disable/);
+    const bad=path.join(home,'bad-archive');
+    fs.writeFileSync(bad,'not the official driver');
+    assert.throws(()=>verifyArchive(bad,driverAssets['darwin-arm64']),/SHA-256/);
+    if(['darwin','win32'].includes(process.platform)){
+      const status=invoke(['cua','status'],home);
+      assert.equal(status.status,0,status.stderr);
+      assert.equal(JSON.parse(status.stdout).enabled,false);
+      const refused=invoke(['cua','grant','--application',process.platform==='darwin'?'com.apple.calculator':process.execPath,'--client','shared-connection'],home);
+      assert.notEqual(refused.status,0);
+      assert.equal(JSON.parse(invoke(['cua','status'],home).stdout).enabled,false);
+      assert.equal(invoke(['cua','disable'],home).status,0);
+    }
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
 });

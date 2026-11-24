@@ -72,6 +72,7 @@ chmod 755 "$APP/Contents/MacOS/rg"
     -o "$APP/Contents/MacOS/ChatToComputerMCP" \
     "$ROOT/macos/ProcessRunner.swift" \
     "$ROOT/macos/Ripgrep.swift" \
+    "$ROOT/macos/CUA.swift" \
     "$ROOT/macos/LocalMCPServer.swift" \
     "$ROOT/macos/CodexHistory.swift" \
     "$ROOT/macos/CommandReceiptLedger.swift" \

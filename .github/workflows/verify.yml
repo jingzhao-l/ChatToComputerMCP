@@ -125,6 +125,9 @@ jobs:
       - name: Coding tool regression tests
         run: bash tests/test_swift_agent_tools.sh
 
+      - name: CUA security and transport regression
+        run: bash tests/test_swift_cua.sh
+
       - name: Build app
         run: ./build_macos_app.sh
       - name: Verify final sealed Mac app bundle

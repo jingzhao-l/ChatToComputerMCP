@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import url from 'node:url';
 import cp from 'node:child_process';
+import {cuaCommand} from './cua-support.mjs';
 import {validVersion,compareVersions,registry,packageName,
   installedVersion,policyFile,readPolicy,writePolicy,activateMacRelease,
   assertMacSigningTeamCompatible,parseRegistryLatest,selectMacSigningIdentity
@@ -34,6 +35,7 @@ function help() {
     ' chat-to-computer-mcp install [--rebuild]',
     ' chat-to-computer-mcp open',
     ' chat-to-computer-mcp status',
+    ' chat-to-computer-mcp cua help',
     ' chat-to-computer-mcp update check',
     ' chat-to-computer-mcp update install',
     ' chat-to-computer-mcp update status',
@@ -486,6 +488,7 @@ function main() {
         return;
       }
     case 'status':return status();
+    case 'cua':return cuaCommand(subcommand,rest);
     case 'update':return update(subcommand,rest);
     case 'launchagent':return launchagent(subcommand,rest);
     case 'startup':return startup(subcommand,rest);

@@ -3174,6 +3174,7 @@ final class LocalMCPServer {
     private let tools: LocalTools
     private let commandBudget: WorkspaceCommandBudget
     private let receiptLedger: CommandReceiptLedger?
+    private let cua = CUAService()
     private let taskOwnershipLock = NSLock()
     private var ownerByScopedRequest: [String: String] = [:]
     private var ownerBySessionID: [String: String] = [:]
@@ -3332,6 +3333,7 @@ final class LocalMCPServer {
         // Persist revocation first so even a concurrent in-flight request
         // cannot authenticate with the now-revoked access token.
         try oauth.revokeDesktopClient(clientID)
+        cua.revoke(owner: clientID)
         taskOwnershipLock.lock()
         let revokedSessions = ownerBySessionID.compactMap { sessionID, owner in
             owner == clientID ? sessionID : nil
@@ -3426,6 +3428,7 @@ final class LocalMCPServer {
     }
 
     func stop() {
+        cua.stop()
         listener?.cancel()
         listener = nil
         stateLock.lock()
@@ -3678,7 +3681,7 @@ final class LocalMCPServer {
     }
 
     private var publishedToolDefinitions: [[String: Any]] {
-        var definitions = tools.toolDefinitions
+        var definitions = tools.toolDefinitions + CUAService.definitions()
         if !workspaceDefinitions.isEmpty {
             let readOnlySchema: [String: Any] = [
                 "type": "object",
@@ -3951,7 +3954,10 @@ final class LocalMCPServer {
         let startedAt = Date()
         do {
             let output: LocalToolCallOutput
-            if toolName == "list_workspaces" {
+            if toolName.hasPrefix("cua_") {
+                let (content, structured) = try cua.call(toolName, args: arguments, owner: verifiedClient?.id)
+                output = LocalToolCallOutput(content: content, structuredContent: structured)
+            } else if toolName == "list_workspaces" {
                 let list = workspaceDefinitions.filter {
                     verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
                 }.map {

@@ -28,6 +28,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private readonly LocalTools _tools;
     private readonly WindowsOAuthServer? _oauth;
     private readonly string? _publicHost;
+    private readonly CuaService _cua = new();
     private readonly object _ownerGate = new();
     private readonly SemaphoreSlim _ownerAdmission = new(1, 1);
     private readonly Dictionary<string, string> _ownerBySession = new(StringComparer.Ordinal);
@@ -92,6 +93,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
     {
         var tools = _tools.ToolDefinitions;
+        foreach (var definition in CuaService.Definitions()) tools.Add(definition!.DeepClone());
         if (_approved.Count == 0) return tools;
         tools.Add(new JsonObject
         {
@@ -143,6 +145,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             "Verified client management requires Cloudflare OAuth mode");
         // Revoke server token families before touching subprocesses.
         oauth.RevokeClient(id);
+        _cua.Revoke(id);
         string[] owned;
         lock (_ownerGate)
             owned = _ownerBySession.Where(item => item.Value == id)
@@ -216,6 +219,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     public void Stop()
     {
+        _cua.Stop();
         _tools.StopCommandSessions();
         foreach (var scoped in _approved.Values) scoped.Tools.StopCommandSessions();
         IsReady = false;
@@ -421,7 +425,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         CancellationToken cancellationToken, WindowsOAuthServer.VerifiedClient? verified = null)
     {
         if (parameters["name"] is not JsonValue nameNode || !nameNode.TryGetValue<string>(out var name)) return JsonRpcError(id, -32602, "Missing tool name", status: modern ? 400 : 200);
-        if (!_tools.HasTool(name) && !(_approved.Count > 0 && name is ("list_workspaces" or "workspace_call")))
+        if (!_tools.HasTool(name) && !CuaService.Definitions().Any(d => d?["name"]?.GetValue<string>() == name) && !(_approved.Count > 0 && name is ("list_workspaces" or "workspace_call")))
             return JsonRpcError(id, -32602, $"Unknown tool: {name}");
         JsonObject arguments;
         if (parameters["arguments"] is null) arguments = new JsonObject();
@@ -431,7 +435,9 @@ public sealed class LocalMcpServer : IAsyncDisposable
         try
         {
             ToolCallOutput output;
-            if (name == "list_workspaces")
+            if (name.StartsWith("cua_", StringComparison.Ordinal))
+                output = await _cua.CallAsync(name, arguments, verified?.Id, cancellationToken).ConfigureAwait(false);
+            else if (name == "list_workspaces")
             {
                 var listed = new JsonArray {
                     new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot }
@@ -654,5 +660,6 @@ public sealed class LocalMcpServer : IAsyncDisposable
     {
         Stop(); if (_acceptLoop is not null) { try { await _acceptLoop.ConfigureAwait(false); } catch { } }
         _cts?.Dispose();
+        _cua.Dispose();
     }
 }

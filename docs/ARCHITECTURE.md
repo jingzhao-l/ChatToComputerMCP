@@ -92,3 +92,5 @@ and runtime key. There is **no automatic import of prior FileMCP credentials**.
 
 This ledger is protection against unintended replays, not a task supervisor.
 The Windows x64 real-device CI must pass before calling runtime parity verified.
+
+Optional background window automation: see [CUA setup and security](CUA.md).

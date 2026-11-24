@@ -30,6 +30,8 @@ internal static partial class Program
         if (args.Length > 0 && args[0] == "app-server" && Environment.GetEnvironmentVariable("FILEMCP_TEST_FAKE_CODEX") == "1")
             return await RunFakeCodexAppServerAsync();
 
+        if (args.Length > 0 && args[0] == "mcp") return await RunCuaFixtureAsync();
+
         if (!OperatingSystem.IsWindows())
         {
             Console.WriteLine("windows-tests: skipped (Windows required)");
@@ -44,6 +46,7 @@ internal static partial class Program
             await TestProcessRunnerAsync(root);
             await TestFilesystemAndToolsAsync(root);
             await TestAgentToolsAsync(root);
+            await TestCuaAsync(root);
             await TestWindowsReceiptLedgerAsync(root);
             await TestCodexHistoryAsync(root);
             await TestGitSafetyAsync(root);
