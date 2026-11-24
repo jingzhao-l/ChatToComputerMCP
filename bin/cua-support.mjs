@@ -50,7 +50,11 @@ function privateAcl(file) {
     '$acl.SetAccessRuleProtection($true,$false)',
     '$rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,"FullControl","Allow")',
     '$acl.AddAccessRule($rule)',
-    'Set-Acl -LiteralPath $p -AclObject $acl'
+    '[System.IO.File]::SetAccessControl($p,$acl)',
+    '$actual=[System.IO.File]::GetAccessControl($p,[System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access)',
+    'if (-not $actual.AreAccessRulesProtected -or -not $sid.Equals($actual.GetOwner([System.Security.Principal.SecurityIdentifier]))) { throw "Private ACL verification failed" }',
+    '$rules=$actual.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])',
+    'if ($rules.Count -ne 1 -or -not $sid.Equals($rules[0].IdentityReference) -or $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { throw "Private ACL verification failed" }'
   ].join('; ');
   run('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
     env:{...process.env,CTCMCP_CUA_PRIVATE_FILE:file}});
@@ -65,12 +69,15 @@ function readPolicy() {
   if(!Array.isArray(result.grants))throw Error('Invalid local CUA policy');
   return result;
 }
-function writePrivate(file,data) {
+export function writePrivate(file,data) {
   fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
   const temp=file+'.'+crypto.randomBytes(12).toString('hex')+'.tmp';
   try{
-    fs.writeFileSync(temp,data,{mode:0o600,flag:'wx'});
+    fs.writeFileSync(temp,'',{mode:0o600,flag:'wx'});
     privateAcl(temp);
+    fs.writeFileSync(temp,data,{flag:'r+'});
+    const fd=fs.openSync(temp,'r+');
+    try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
     fs.renameSync(temp,file);
   }finally{fs.rmSync(temp,{force:true});}
 }
@@ -117,7 +124,7 @@ function install(localArchive) {
     verifyArchive(archive,asset);
     if(process.platform==='darwin')run('/usr/bin/tar',['-xzf',archive,'-C',extracted]);
     else run('powershell.exe',['-NoProfile','-NonInteractive','-Command',
-      '$ErrorActionPreference="Stop"; Expand-Archive -LiteralPath $env:CTCMCP_CUA_ARCHIVE -DestinationPath $env:CTCMCP_CUA_DEST'],
+      '$ErrorActionPreference="Stop"; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:CTCMCP_CUA_ARCHIVE,$env:CTCMCP_CUA_DEST)'],
       {env:{...process.env,CTCMCP_CUA_ARCHIVE:archive,CTCMCP_CUA_DEST:extracted}});
     const driver=findDriver(extracted);
     if(process.platform==='darwin'){

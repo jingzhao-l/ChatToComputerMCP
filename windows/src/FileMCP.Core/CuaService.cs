@@ -131,6 +131,7 @@ internal sealed class CuaService : IDisposable
         internal bool Busy=true;
         internal bool Retiring;
         internal readonly string? GuestEpoch=guestEpoch;
+        internal readonly TaskCompletionSource<bool> Retired=new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
     private readonly Dictionary<string,ExtensionSession> _extensions=new(StringComparer.Ordinal);
     private readonly bool _guestMode;
@@ -243,7 +244,11 @@ internal sealed class CuaService : IDisposable
             if (rule.AccessControlType == AccessControlType.Allow && !current.Equals(rule.IdentityReference) &&
                 !system.Equals(rule.IdentityReference) && !admins.Equals(rule.IdentityReference))
                 throw Fail("cua_disabled: policy ACL is not private");
-        var bytes = File.ReadAllBytes(_policyPath);
+        byte[] bytes;
+        using(var stream=new FileStream(_policyPath,FileMode.Open,FileAccess.Read,FileShare.Read|FileShare.Delete)){
+            if(stream.Length is <=0 or >65536)throw Fail("cua_disabled: invalid policy size");
+            bytes=new byte[(int)stream.Length];stream.ReadExactly(bytes);
+        }
         var policy = JsonSerializer.Deserialize<Policy>(bytes);
         if (policy is null || !policy.enabled || policy.driver is null || !Path.IsPathFullyQualified(policy.driver) ||
             policy.grants is null || policy.grants.Length > 64 || (policy.profiles?.Length ?? 0)>32 || (policy.profiles??[]).Select(p=>p.id).Distinct(StringComparer.Ordinal).Count()!=(policy.profiles?.Length??0) || policy.grants.Any(g => g is null || g.application is null || g.clients is null) ||
@@ -543,14 +548,21 @@ internal sealed class CuaService : IDisposable
         lock(_gate)if(_stopped||e.Retiring||!e.Worker.IsAlive||_revoked.Contains(e.Owner)||!_extensions.TryGetValue(e.Id,out var live)||!ReferenceEquals(live,e))return false;
         try{return (e.Profile.kind!="guest"||(e.GuestEpoch is not null&&GuestEpoch()==e.GuestEpoch))&&LoadPolicy().Item2.AsSpan().SequenceEqual(e.PolicyBytes);}catch{return false;}
     }
-    private void RetireExtension(string id,bool onlyIdle=false)
+    private bool RetireExtension(string id,bool onlyIdle=false,bool waitForCleanup=false)
     {
-        ExtensionSession? e;
+        ExtensionSession? e;bool ownsRetirement;
         lock(_gate){
-            if(!_extensions.TryGetValue(id,out e)||e.Retiring||onlyIdle&&(e.Busy||Environment.TickCount64-e.Last<=300000))return;
-            e.Retiring=true;
+            if(!_extensions.TryGetValue(id,out e))return true;
+            ownsRetirement=!e.Retiring;
+            if(ownsRetirement){
+                if(onlyIdle&&(e.Busy||Environment.TickCount64-e.Last<=300000))return false;
+                e.Retiring=true;
+            }
         }
-        try{e.Worker.Dispose();}finally{lock(_gate)_extensions.Remove(id);}
+        if(!ownsRetirement)return !waitForCleanup||e.Retired.Task.Wait(TimeSpan.FromSeconds(5));
+        try{e.Worker.Dispose();}
+        finally{lock(_gate)_extensions.Remove(id);e.Retired.TrySetResult(true);}
+        return true;
     }
     private static void CheckFile(string path,string hash)
     {
@@ -592,7 +604,8 @@ internal sealed class CuaService : IDisposable
         {
             var id=args["session_id"]?.GetValue<string>()??"";
             lock(_gate)if(!_extensions.TryGetValue(id,out var e)||e.Owner!=owner)throw Fail("unknown_extension_session");
-            RetireExtension(id);return Output(new JsonObject{["closed"]=true});
+            if(!RetireExtension(id,waitForCleanup:true))throw Fail("extension_cleanup_pending");
+            return Output(new JsonObject{["closed"]=true});
         }
         var (policy,bytes)=LoadPolicy();
         if(!_guestMode&&policy.requireVerifiedClient==true&&owner==SharedOwner)throw Fail("cua_verified_client_required");
@@ -661,7 +674,8 @@ internal sealed class CuaService : IDisposable
         {
             var browserOps=new[]{"observe","navigate","click","fill","press","select","scroll","verify","wait_for","back","forward","hover","drag","tab_list","tab_open","tab_select","tab_close","dialog_prepare","upload","download"};
             var guestOps=new[]{"cua_capabilities","cua_list_apps","cua_list_windows","cua_launch_app","cua_create_session","cua_observe","cua_act","cua_verify","cua_stop_session","cua_receipt_status"};
-            if(!(session.Profile.kind=="browser"?browserOps:guestOps).Contains(op,StringComparer.Ordinal)||!ExtensionAllowed(session)||cancellation.IsCancellationRequested)
+            if(!ExtensionAllowed(session)){RetireExtension(sessionId,waitForCleanup:true);throw Fail("extension_operation_not_allowed");}
+            if(!(session.Profile.kind=="browser"?browserOps:guestOps).Contains(op,StringComparer.Ordinal)||cancellation.IsCancellationRequested)
                 throw Fail("extension_operation_not_allowed");
             var readOnly=new[]{"observe","verify","wait_for","tab_list","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"}.Contains(op,StringComparer.Ordinal);
             var request=RequestId(args["request_id"]);var receipt=Ledger();

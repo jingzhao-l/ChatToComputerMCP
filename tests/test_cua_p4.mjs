@@ -10,6 +10,7 @@ import cp from 'node:child_process';
 import crypto from 'node:crypto';
 import {once} from 'node:events';
 import readline from 'node:readline';
+import {writePrivate} from '../bin/cua-support.mjs';
 const workerOnly=process.env.CTCMCP_CUA_WORKER_ONLY==='1';
 const executable=process.env.CTCMCP_CUA_TEST_SERVER;
 if(!workerOnly&&!executable)throw Error('Set CTCMCP_CUA_TEST_SERVER to the native test apphost');
@@ -29,13 +30,8 @@ async function availablePort(){
   const p=s.address().port;await new Promise(r=>s.close(r));return p;
 }
 function privateFile(file,data){
-  fs.writeFileSync(file,data,{mode:0o600,flag:'wx'});
-  if(process.platform==='win32'){
-    const r=cp.spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
-      '$ErrorActionPreference="Stop"; $p=$env:CTCMCP_TEST_PRIVATE_FILE; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.FileSecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,"FullControl","Allow"))); Set-Acl -LiteralPath $p -AclObject $acl'],
-      {env:{...process.env,CTCMCP_TEST_PRIVATE_FILE:file},encoding:'utf8'});
-    assert.equal(r.status,0,r.stderr);
-  }
+  assert(!fs.existsSync(file),'fixture must not overwrite an existing file');
+  writePrivate(file,data);
 }
 async function spawnServer(port,policy,auth,mode,approval=path.join(path.dirname(policy),'guest-approval')){
   const proc=cp.spawn(executable,['cua-test-server',String(port),policy,auth,mode,approval],{stdio:['pipe','pipe','pipe']});
@@ -225,6 +221,11 @@ try{
     assert.equal((await step('verify',{text_contains:'Hello MCP'})).structuredContent.result.verified,true);
     privateFile(hostApproval,token()+'\n');
     await call('cua_extension_call',{session_id:live,operation:'cua_list_apps',parameters:{},request_id:requestID()},true);
+    // Explicit closure acknowledges completed cleanup, or the lease is already
+    // gone. Never allow two workers to use the same guest during retirement.
+    const closed=await rpc(hostPort,hostAuth,'tools/call',{name:'cua_extension_close',arguments:{session_id:live}});
+    if(closed.result?.isError)assert.equal(closed.result.content[0].text,'unknown_extension_session');
+    else assert.equal(closed.result?.structuredContent?.closed,true);
     console.log('PASS guest disable/re-enable retires the old epoch without disturbing browser lease');
   }
   await step('navigate',{url:'http://127.0.0.1:'+forbidden+'/'},true);
@@ -250,7 +251,7 @@ try{
   await tool(competingPort,competingAuth,'cua_receipt_status',{request_id:actionId},true);
   // Strict client-only mode cannot be defeated by a body-supplied claimed identity.
   const strictPolicy=JSON.parse(fs.readFileSync(hostPolicy,'utf8'));strictPolicy.requireVerifiedClient=true;
-  fs.writeFileSync(hostPolicy,JSON.stringify(strictPolicy));
+  writePrivate(hostPolicy,JSON.stringify(strictPolicy));
   const strict=(await call('cua_capabilities',{})).structuredContent;
   assert.equal(strict.requires_verified_client,true);assert.equal(strict.enabled,false);assert.equal(strict.conversation_identity_verified,false);
   await call('cua_extension_list',{},true);
@@ -301,7 +302,7 @@ try{
   await relay(1,'cua_extension_close',{session_id:leaseB});
   const tampered=JSON.parse(fs.readFileSync(relayPolicies[0],'utf8'));
   tampered.profiles.push({id:'extra',kind:'browser',origins:[origin],clients:['shared-connection']});
-  fs.writeFileSync(relayPolicies[0],JSON.stringify(tampered));
+  writePrivate(relayPolicies[0],JSON.stringify(tampered));
   await relay(0,'cua_extension_list',{},true);
   await relay(0,'cua_extension_open',{profile_id:'extra',request_id:requestID()},true);
   await relay(0,'run_command',{command:'echo denied'},true);

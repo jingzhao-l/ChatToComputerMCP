@@ -336,8 +336,10 @@ final class CUAService {
         var busy = true
         var retiring = false
         let guestEpoch: String?
+        let retired = DispatchGroup()
         init(owner: String, profile: CUAPolicy.ExtensionProfile, policyBytes: Data, worker: CUAWorker, guestEpoch: String?) {
             self.owner=owner; self.profile=profile; self.policyBytes=policyBytes; self.worker=worker; self.guestEpoch=guestEpoch
+            retired.enter()
         }
     }
     private let gate = NSRecursiveLock()
@@ -698,12 +700,22 @@ final class CUAService {
         gate.lock(); let live = !stopped && !e.retiring && !revoked.contains(e.owner) && extensions[e.id] === e; gate.unlock()
         return live && e.worker.isAlive && (e.profile.kind != "guest" || (e.guestEpoch != nil && guestEpoch() == e.guestEpoch)) && (try? loadPolicy().1) == e.policyBytes
     }
-    private func retireExtension(_ id: String, onlyIdle:Bool=false) {
+    @discardableResult
+    private func retireExtension(_ id: String, onlyIdle:Bool=false, waitForCleanup:Bool=false) -> Bool {
         gate.lock()
-        guard let e=extensions[id],!e.retiring,!onlyIdle || (!e.busy && ProcessInfo.processInfo.systemUptime-e.last>300) else{gate.unlock();return}
+        guard let e=extensions[id] else{gate.unlock();return true}
+        if e.retiring {
+            gate.unlock()
+            // The endpoint stays exclusive until the existing retirement
+            // owner has actually closed its process.
+            return !waitForCleanup || e.retired.wait(timeout:.now()+5) == .success
+        }
+        guard !onlyIdle || (!e.busy && ProcessInfo.processInfo.systemUptime-e.last>300) else{gate.unlock();return false}
         e.retiring=true;gate.unlock()
         e.worker.close()
         gate.lock();extensions.removeValue(forKey:id);gate.unlock()
+        e.retired.leave()
+        return true
     }
     private func checkFile(_ path: String, hash: String, executable: Bool) throws {
         let url = URL(fileURLWithPath:path)
@@ -737,7 +749,7 @@ final class CUAService {
             guard let id = args["session_id"] as? String else { throw CUAFailure("invalid_extension_session") }
             gate.lock(); let owns = extensions[id]?.owner == owner; gate.unlock()
             guard owns else { throw CUAFailure("unknown_extension_session") }
-            retireExtension(id)
+            guard retireExtension(id,waitForCleanup:true) else {throw CUAFailure("extension_cleanup_pending")}
             return try output(["closed":true])
         }
         let (policy,bytes) = try loadPolicy()
@@ -794,7 +806,8 @@ final class CUAService {
         defer {gate.lock();e.busy=false;e.last=ProcessInfo.processInfo.systemUptime;gate.unlock()}
         let browserOps=Set(["observe","navigate","click","fill","press","select","scroll","verify","wait_for","back","forward","hover","drag","tab_list","tab_open","tab_select","tab_close","dialog_prepare","upload","download"])
         let guestOps=Set(["cua_capabilities","cua_list_apps","cua_list_windows","cua_launch_app","cua_create_session","cua_observe","cua_act","cua_verify","cua_stop_session","cua_receipt_status"])
-        guard (e.profile.kind == "browser" ? browserOps : guestOps).contains(op), extensionAllowed(e),requestAlive() else {throw CUAFailure("extension_operation_not_allowed")}
+        guard extensionAllowed(e) else {retireExtension(id,waitForCleanup:true);throw CUAFailure("extension_operation_not_allowed")}
+        guard (e.profile.kind == "browser" ? browserOps : guestOps).contains(op),requestAlive() else {throw CUAFailure("extension_operation_not_allowed")}
         let readOnly=Set(["observe","verify","wait_for","tab_list","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"])
         let request=try Self.requestID(args["request_id"]),receipt=try ledger()
         if !readOnly.contains(op) {try reserveReceipt(receipt,request:request,owner:owner)}

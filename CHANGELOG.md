@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.6.1] — 2026-11-24
+
+- Fix Windows CUA private-file creation when Windows PowerShell cannot load its Security module. Production CLI and real gateway tests now use the same direct .NET ACL implementation with owner/ACL read-back, before writing private contents. Driver ZIP extraction also avoids PowerShell module autoload.
+- Explicit extension closure waits for any concurrent retirement before acknowledging closure; guest exclusivity is retained until cleanup.
+- Keep the original v0.6.0 source tag immutable: its Windows CUA fixture failed before npm publication. No release gate or permission requirement is bypassed.
+
 ## [0.6.0] — 2026-11-24
 
 - Integrate optional Cua Driver 0.61.0 native background window control on macOS and Windows: application grants, exact PID/window leases, bounded observation, input, menus, geometry and independent verification.

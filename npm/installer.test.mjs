@@ -464,3 +464,17 @@ test('Guest is disabled by default and noninteractive CLI cannot enable it',()=>
     assert.equal(state().enabled,false);
   }finally{fs.rmSync(home,{recursive:true,force:true})}
 });
+
+
+test('CUA private configuration writer protects before writing and replaces atomically',async()=>{
+  const {writePrivate}=await import('../bin/cua-support.mjs');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-private-write-'));
+  try{
+    const f=path.join(dir,'policy.json');
+    writePrivate(f,'long fixture contents');
+    writePrivate(f,'short');
+    assert.equal(fs.readFileSync(f,'utf8'),'short');
+    assert.deepEqual(fs.readdirSync(dir),['policy.json']);
+    if(process.platform!=='win32')assert.equal(fs.statSync(f).mode&0o777,0o600);
+  }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
