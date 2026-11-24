@@ -42,18 +42,29 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private readonly SemaphoreSlim _serial = new(1, 1);
     private readonly object _stateGate = new();
     private readonly string? _profileDirectoryOverride;
+    private readonly string? _dataDirectoryOverride;
     private LocalMcpRuntimeState _state = LocalMcpRuntimeState.Stopped;
     private CancellationTokenSource? _startupCts;
     private int _disposed;
     private LocalMcpServer? _server;
     private LocalMcpConfiguration? _activeConfiguration;
     private ManagedProcess? _tunnelProcess;
+    private string? _localAuthToken;
+    private string? _activeHealthAddress;
+    private Guid _transportAttempt;
+    private Guid _recoveryGeneration;
+    private int _transportRetryDelay = 2;
+    private bool _transportStarted;
     private ProfileLock? _profileLock;
     private string? _cloudflareTokenFile;
     private readonly SystemSleepGuard _sleepGuard = new();
     private bool _requestedStop;
 
-    public LocalMcpRuntime(string? profileDirectory = null) => _profileDirectoryOverride = profileDirectory;
+    public LocalMcpRuntime(string? profileDirectory = null, string? dataDirectory = null)
+    {
+        _profileDirectoryOverride = profileDirectory;
+        _dataDirectoryOverride = dataDirectory;
+    }
 
     public event Action<LocalMcpRuntimeState>? StateChanged;
     public event Action<string>? Log;
@@ -136,6 +147,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             if (State.Status is not (LocalMcpRuntimeStatus.Stopped or LocalMcpRuntimeStatus.Failed)) return;
             if (_requestedStop) { _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); return; }
             SetState(LocalMcpRuntimeState.Starting);
+            _transportStarted = false; _transportRetryDelay = 2; _recoveryGeneration = Guid.NewGuid();
             _startupCts?.Dispose(); _startupCts = new CancellationTokenSource();
             var cancellationToken = _startupCts.Token;
             try
@@ -147,7 +159,8 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                 // A corrupt receipt journal fails closed and cannot allow
                 // blind replays. Never read FileMCP's old Application Data.
                 var receipts = configuration.EnableCommands
-                    ? new CommandReceiptLedger() : null;
+                    ? new CommandReceiptLedger(_dataDirectoryOverride is null ? null :
+                        Path.Combine(_dataDirectoryOverride, "receipts", "commands.json")) : null;
                 WindowsOAuthServer? oauth = null;
                 if (isCloudflare)
                 {
@@ -158,8 +171,10 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                         configuration.CloudflarePairingCode, policy, description, approved);
                 }
                 var history = configuration.EnableCommands ? new CommandHistoryStore(
-                    CommandHistoryStore.DirectoryFor(configuration.Profile), configuration.CaptureCommandHistoryContent) : null;
-                var audit = new ActivityAuditStore(ActivityAuditStore.DirectoryFor(configuration.Profile));
+                    _dataDirectoryOverride is null ? CommandHistoryStore.DirectoryFor(configuration.Profile) :
+                    Path.Combine(_dataDirectoryOverride, "history", configuration.Profile), configuration.CaptureCommandHistoryContent) : null;
+                var audit = new ActivityAuditStore(_dataDirectoryOverride is null ? ActivityAuditStore.DirectoryFor(configuration.Profile) :
+                    Path.Combine(_dataDirectoryOverride, "audit", configuration.Profile));
                 _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
                     configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
@@ -171,79 +186,10 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
                 _activeConfiguration = configuration;
 
-                if (isCloudflare)
-                {
-                    var path = WindowsCloudflareRunner.Locate();
-                    var start = configuration.CloudflareMode == "named"
-                        ? WindowsCloudflareRunner.PrepareNamed(path,
-                            configuration.CloudflareTunnelName,
-                            configuration.CloudflareHostname,
-                            configuration.Port,configuration.Profile)
-                        : WindowsCloudflareRunner.Prepare(path,
-                            configuration.CloudflareToken,configuration.Profile);
-                    _cloudflareTokenFile = start.TokenFile;
-                    var registered = new TaskCompletionSource<bool>(
-                        TaskCreationOptions.RunContinuationsAsynchronously);
-                    _tunnelProcess = ProcessRunner.StartManaged(start.Executable,start.Args,
-                        null,start.Environment,
-                        output =>
-                        {
-                            if (output.Contains("Registered tunnel connection",
-                                StringComparison.OrdinalIgnoreCase))
-                                registered.TrySetResult(true);
-                            EmitLog(Redact(output, [
-                                configuration.CloudflareToken,configuration.CloudflarePairingCode]));
-                        },
-                        code =>
-                        {
-                            registered.TrySetException(new FileMcpException(
-                                "Cloudflare tunnel exited before registration: " + code));
-                            _ = Task.Run(() => TunnelDidExitAsync(code));
-                        });
-                    EmitLog("Waiting for Cloudflare Tunnel to register a secure connection…\n");
-                    await registered.Task.WaitAsync(TimeSpan.FromSeconds(40),
-                        cancellationToken).ConfigureAwait(false);
-                    if (configuration.CloudflareMode == "token" &&
-                        _cloudflareTokenFile is { } pendingToken)
-                    {
-                        // The managed cloudflared process has read its token.
-                        // Remove the ephemeral file as soon as registration
-                        // succeeds; the durable copy stays only in CredMgr.
-                        WindowsCloudflareRunner.RemovePrivateToken(pendingToken);
-                        _cloudflareTokenFile = null;
-                    }
-                    SetState(LocalMcpRuntimeState.Running);
-                    EmitLog("Cloudflare Tunnel registered for " +
-                        configuration.CloudflareHostname + ". Ensure DNS and "+
-                        $"ingress route all OAuth and MCP paths to http://127.0.0.1:{configuration.Port}.\n");
-                    return;
-                }
-
-                var tunnelClient = TunnelClientPath(); var profileDirectory = TunnelProfileDirectory();
-                var environment = TunnelClientEnvironment(configuration.ApiKey, localAuthToken);
-                var localAuthHeader = $"{FileMcpConstants.LocalAuthHeaderName}: env:FILEMCP_LOCAL_AUTH_TOKEN";
-                environment["MCP_EXTRA_HEADERS"] = localAuthHeader; environment["MCP_DISCOVERY_EXTRA_HEADERS"] = localAuthHeader;
-                string[] sensitive = [configuration.ApiKey, localAuthToken];
-
-                EmitLog("Configuring Secure MCP Tunnel…\n");
-                var initResult = await ProcessRunner.RunAsync(tunnelClient,
-                    ["init", "--sample", "sample_mcp_remote_no_auth", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--force", "--tunnel-id", configuration.TunnelId, "--mcp-server-url", $"http://127.0.0.1:{configuration.Port}/mcp", "--health-listen-addr", healthAddress],
-                    environment: environment, timeoutSeconds: 30, outputLimitBytes: 250_000, cancellationToken: cancellationToken).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested(); RequireSuccess(initResult, "tunnel-client init", sensitive);
-
-                EmitLog("Checking tunnel configuration…\n");
-                var doctorResult = await ProcessRunner.RunAsync(tunnelClient,
-                    ["doctor", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress, "--explain"],
-                    environment: environment, timeoutSeconds: 30, outputLimitBytes: 250_000, cancellationToken: cancellationToken).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested(); RequireSuccess(doctorResult, "tunnel-client doctor", sensitive);
-
-                _tunnelProcess = ProcessRunner.StartManaged(tunnelClient,
-                    ["run", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress],
-                    null, environment,
-                    text => EmitLog(Redact(text, sensitive)),
-                    exitCode => _ = Task.Run(() => TunnelDidExitAsync(exitCode)));
-                SetState(LocalMcpRuntimeState.Running);
-                EmitLog($"OpenAI Secure MCP Tunnel started. Command execution: {(configuration.EnableCommands ? "enabled" : "disabled")}.\n");
+                _localAuthToken = localAuthToken;
+                _activeHealthAddress = healthAddress;
+                await LaunchTransportAsync(configuration, localAuthToken, healthAddress, initialize: true, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_requestedStop || _startupCts?.IsCancellationRequested == true)
             {
@@ -257,6 +203,91 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             }
         }
         finally { _serial.Release(); }
+    }
+
+    private async Task LaunchTransportAsync(LocalMcpConfiguration configuration, string localAuthToken,
+        string healthAddress, bool initialize, CancellationToken cancellationToken)
+    {
+        _transportAttempt = Guid.NewGuid();
+        var attempt = _transportAttempt;
+        if (configuration.Provider == "cloudflare")
+        {
+            var path = WindowsCloudflareRunner.Locate();
+            var start = configuration.CloudflareMode == "named"
+                ? WindowsCloudflareRunner.PrepareNamed(path,
+                    configuration.CloudflareTunnelName,
+                    configuration.CloudflareHostname,
+                    configuration.Port,configuration.Profile)
+                : WindowsCloudflareRunner.Prepare(path,
+                    configuration.CloudflareToken,configuration.Profile);
+            _cloudflareTokenFile = start.TokenFile;
+            var registered = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _tunnelProcess = ProcessRunner.StartManaged(start.Executable,start.Args,
+                null,start.Environment,
+                output =>
+                {
+                    if (output.Contains("Registered tunnel connection",
+                        StringComparison.OrdinalIgnoreCase))
+                        registered.TrySetResult(true);
+                    EmitLog(Redact(output, [
+                        configuration.CloudflareToken,configuration.CloudflarePairingCode]));
+                },
+                code =>
+                {
+                    registered.TrySetException(new FileMcpException(
+                        "Cloudflare tunnel exited before registration: " + code));
+                    _ = Task.Run(() => TunnelDidExitAsync(code, attempt));
+                });
+            EmitLog("Waiting for Cloudflare Tunnel to register a secure connection…\n");
+            await registered.Task.WaitAsync(TimeSpan.FromSeconds(40),
+                cancellationToken).ConfigureAwait(false);
+            if (configuration.CloudflareMode == "token" &&
+                _cloudflareTokenFile is { } pendingToken)
+            {
+                // The managed cloudflared process has read its token.
+                // Remove the ephemeral file as soon as registration
+                // succeeds; the durable copy stays only in CredMgr.
+                WindowsCloudflareRunner.RemovePrivateToken(pendingToken);
+                _cloudflareTokenFile = null;
+            }
+            _transportStarted = true; _transportRetryDelay = 2;
+            SetState(LocalMcpRuntimeState.Running);
+            EmitLog("Cloudflare Tunnel registered for " +
+                configuration.CloudflareHostname + ". Ensure DNS and "+
+                $"ingress route all OAuth and MCP paths to http://127.0.0.1:{configuration.Port}.\n");
+            return;
+        }
+
+        var tunnelClient = TunnelClientPath(); var profileDirectory = TunnelProfileDirectory();
+        var environment = TunnelClientEnvironment(configuration.ApiKey, localAuthToken);
+        var localAuthHeader = $"{FileMcpConstants.LocalAuthHeaderName}: env:FILEMCP_LOCAL_AUTH_TOKEN";
+        environment["MCP_EXTRA_HEADERS"] = localAuthHeader; environment["MCP_DISCOVERY_EXTRA_HEADERS"] = localAuthHeader;
+        string[] sensitive = [configuration.ApiKey, localAuthToken];
+
+        if (initialize)
+        {
+        EmitLog("Configuring Secure MCP Tunnel…\n");
+        var initResult = await ProcessRunner.RunAsync(tunnelClient,
+            ["init", "--sample", "sample_mcp_remote_no_auth", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--force", "--tunnel-id", configuration.TunnelId, "--mcp-server-url", $"http://127.0.0.1:{configuration.Port}/mcp", "--health-listen-addr", healthAddress],
+            environment: environment, timeoutSeconds: 30, outputLimitBytes: 250_000, cancellationToken: cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested(); RequireSuccess(initResult, "tunnel-client init", sensitive);
+
+        EmitLog("Checking tunnel configuration…\n");
+        var doctorResult = await ProcessRunner.RunAsync(tunnelClient,
+            ["doctor", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress, "--explain"],
+            environment: environment, timeoutSeconds: 30, outputLimitBytes: 250_000, cancellationToken: cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested(); RequireSuccess(doctorResult, "tunnel-client doctor", sensitive);
+
+        }
+        _tunnelProcess = ProcessRunner.StartManaged(tunnelClient,
+            ["run", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress],
+            null, environment,
+            text => EmitLog(Redact(text, sensitive)),
+            exitCode => _ = Task.Run(() => TunnelDidExitAsync(exitCode, attempt)));
+        _transportStarted = true;
+        SetState(LocalMcpRuntimeState.Running);
+        EmitLog($"OpenAI Secure MCP Tunnel started. Command execution: {(configuration.EnableCommands ? "enabled" : "disabled")}.\n");
     }
 
     public async Task StopAsync()
@@ -307,24 +338,63 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         finally { _serial.Release(); }
     }
 
-    private async Task TunnelDidExitAsync(int exitCode)
+    private async Task TunnelDidExitAsync(int exitCode, Guid attempt)
     {
         await _serial.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_tunnelProcess is null && State.Status == LocalMcpRuntimeStatus.Stopped) return;
-            _tunnelProcess?.Dispose(); _tunnelProcess = null; _server?.Stop(); _server = null;
-            _profileLock?.Dispose(); _profileLock = null;
-            if (_cloudflareTokenFile is { } token)
+            if (attempt != _transportAttempt) return;
+            CleanupTransport();
+            if (_requestedStop) { FinishStop(); return; }
+            if (_transportStarted && _server?.IsReady == true && _activeConfiguration is not null)
             {
-                WindowsCloudflareRunner.RemovePrivateToken(token);
-                _cloudflareTokenFile = null;
+                EmitLog($"Tunnel exited (status {exitCode}); retaining the local gateway and command sessions.\n");
+                ScheduleTransportRecovery();
+                return;
             }
-            if (_requestedStop) { _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n"); }
-            else if (exitCode == 0) { SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n"); }
-            else { var message = $"Tunnel stopped unexpectedly (exit status {exitCode})."; SetState(LocalMcpRuntimeState.Failed(message)); EmitLog(message + "\n"); }
+            CleanupRuntime();
+            if (exitCode == 0) SetState(LocalMcpRuntimeState.Stopped);
+            else SetState(LocalMcpRuntimeState.Failed($"Tunnel stopped unexpectedly (exit status {exitCode})."));
         }
         finally { _serial.Release(); }
+    }
+
+    private void ScheduleTransportRecovery()
+    {
+        if (_requestedStop || _server?.IsReady != true || _startupCts is null) return;
+        _recoveryGeneration = Guid.NewGuid();
+        var generation = _recoveryGeneration;
+        var delay = _transportRetryDelay;
+        _transportRetryDelay = Math.Min(60, delay * 2);
+        var cancellation = _startupCts.Token;
+        SetState(LocalMcpRuntimeState.Starting);
+        EmitLog($"Reconnecting transport in {delay} seconds; local commands continue.\n");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delay), cancellation).ConfigureAwait(false);
+                await _serial.WaitAsync(cancellation).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { return; }
+            try
+            {
+                if (generation != _recoveryGeneration || _requestedStop ||
+                    _server?.IsReady != true || _activeConfiguration is null ||
+                    _localAuthToken is null || _activeHealthAddress is null) return;
+                try {
+                    await LaunchTransportAsync(_activeConfiguration, _localAuthToken,
+                        _activeHealthAddress, initialize: false, cancellation).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { CleanupTransport(); }
+                catch {
+                    CleanupTransport();
+                    EmitLog("Transport restart failed; local tasks retained.\n");
+                    ScheduleTransportRecovery();
+                }
+            }
+            finally { _serial.Release(); }
+        });
     }
 
     private void FinishStop()
@@ -332,15 +402,25 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         CleanupRuntime(); _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n");
     }
 
-    private void CleanupRuntime()
+    private void CleanupTransport()
     {
-        _server?.Stop(); _server = null; _tunnelProcess?.Dispose(); _tunnelProcess = null;
-        _profileLock?.Dispose(); _profileLock = null;
+        // Invalidate any delayed callback before disposing the previous child.
+        _transportAttempt = Guid.NewGuid();
+        _tunnelProcess?.Dispose(); _tunnelProcess = null;
         if (_cloudflareTokenFile is { } token)
         {
             WindowsCloudflareRunner.RemovePrivateToken(token);
             _cloudflareTokenFile = null;
         }
+    }
+
+    private void CleanupRuntime()
+    {
+        _recoveryGeneration = Guid.NewGuid(); _transportStarted = false;
+        CleanupTransport();
+        _server?.Stop(); _server = null;
+        _activeConfiguration = null; _localAuthToken = null; _activeHealthAddress = null;
+        _profileLock?.Dispose(); _profileLock = null;
     }
 
     public static string ValidateConfiguration(LocalMcpConfiguration configuration)
@@ -458,7 +538,8 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         lock (_stateGate)
         {
             _state = state;
-            if (state.Status == LocalMcpRuntimeStatus.Running) _sleepGuard.Acquire(); else _sleepGuard.Release();
+            if (state.Status == LocalMcpRuntimeStatus.Running ||
+                (state.Status == LocalMcpRuntimeStatus.Starting && _transportStarted)) _sleepGuard.Acquire(); else _sleepGuard.Release();
         }
         StateChanged?.Invoke(state);
     }

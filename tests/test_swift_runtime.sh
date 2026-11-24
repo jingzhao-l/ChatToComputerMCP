@@ -261,7 +261,18 @@ case "$1" in
         [ "$2" = "--url-file" ] && [ -f "$3" ] && [ "$4" = "--require-control-plane-poll" ] && [ "$5" = "--json" ] || { echo invalid-health-probe >&2; exit 3; }
         printf '{"control_plane_poll":{"value":%s,"ok":true}}\n' "$(date +%s)"
         exit 0 ;;
-    run) echo "run-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; trap 'exit 0' TERM INT; while :; do sleep 1; done ;;
+    run)
+        echo "run-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"
+        if [ -n "${MCP_TEST_TRANSPORT_TOKEN_FILE:-}" ]; then
+            (umask 077; printf '%s' "$FILEMCP_LOCAL_AUTH_TOKEN" > "$MCP_TEST_TRANSPORT_TOKEN_FILE")
+        fi
+        trap 'exit 0' TERM INT
+        while :; do
+            if [ -n "${MCP_TEST_TRANSPORT_EXIT_FILE:-}" ] && [ -f "$MCP_TEST_TRANSPORT_EXIT_FILE" ]; then
+                rm -f "$MCP_TEST_TRANSPORT_EXIT_FILE"; exit 17
+            fi
+            sleep 0.1
+        done ;;
     *) echo unsupported-subcommand >&2; exit 2 ;;
 esac
 SH
@@ -456,8 +467,8 @@ setenv("MCP_TEST_PROFILE_DIR_EXPECTED", profileDirectory.path, 1)
 setenv("MCP_SERVER_URL", "https://evil.example/mcp", 1)
 setenv("HEALTH_UNIX_SOCKET", "/tmp/evil-health.sock", 1)
 setenv("LOG_HTTP_RAW_UNSAFE", "true", 1)
-let first = LocalMCPRuntime(profileDirectory: profileDirectory)
-let second = LocalMCPRuntime(profileDirectory: profileDirectory)
+let first = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
+let second = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 let logLock = NSLock()
 var capturedRuntimeLog = ""
 first.onLog = { text in
@@ -513,7 +524,61 @@ waitFor({ first.state == .stopped }, timeout: 5, label: "shutdown")
 waitFor({ !holdsIdleSleepAssertion() }, timeout: 2, label: "idle sleep assertion released after shutdown")
 print("runtime-lifecycle-profile-lock: ok")
 
-let invalidHealthRuntime = LocalMCPRuntime(profileDirectory: profileDirectory)
+let transportRoot = root.appendingPathComponent("transport-jobs")
+try FileManager.default.createDirectory(at: transportRoot, withIntermediateDirectories: true)
+let crashMarker = root.appendingPathComponent("transport-crash")
+let transportToken = root.appendingPathComponent("transport-token")
+setenv("MCP_TEST_TRANSPORT_EXIT_FILE", crashMarker.path, 1)
+setenv("MCP_TEST_TRANSPORT_TOKEN_FILE", transportToken.path, 1)
+let recover = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-recovery-data"))
+let recoveryConfig = LocalMCPConfiguration(tunnelID: "tunnel_0123456789abcdef0123456789abcdef",
+    apiKey: "test-key", profile: "transport-recovery-" + UUID().uuidString, port: 18096,
+    allowedDirectory: transportRoot.path, healthAddress: "127.0.0.1:0", gitUserName: "", gitUserEmail: "", enableCommands: true)
+recover.start(recoveryConfig)
+waitFor({ recover.state == .running && FileManager.default.fileExists(atPath: transportToken.path) }, timeout: 10, label: "transport recovery fixture")
+let recoveredToken = try String(contentsOf: transportToken, encoding: .utf8)
+func transportRPC(_ name: String, _ arguments: [String: Any]) throws -> [String: Any] {
+    let body = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": ["name": name, "arguments": arguments]])
+    let result = try ProcessRunner.run(executable: "/usr/bin/curl", arguments: ["--noproxy", "*", "-sS",
+        "-H", "Content-Type: application/json", "-H", "\(fileMCPLocalAuthHeaderName): \(recoveredToken)",
+        "--data-binary", String(decoding: body, as: UTF8.self), "http://127.0.0.1:18096/mcp"],
+        timeoutSeconds: 5)
+    precondition(result.exitCode == 0)
+    let json = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as! [String: Any]
+    let response = json["result"] as! [String: Any]
+    precondition(response["isError"] as? Bool == false)
+    return response["structuredContent"] as! [String: Any]
+}
+let launched = try transportRPC("start_command", ["request_id": "transport-job",
+    "command": "printf alive; while [ ! -f release ]; do sleep 0.1; done; printf finished", "timeout_seconds": 30])
+let retainedID = launched["session_id"] as! String
+try Data().write(to: crashMarker)
+waitFor({ recover.state == .starting }, timeout: 8, label: "transport reconnect state")
+let retainedDuring = try transportRPC("read_command_output", ["session_id": retainedID])
+precondition(retainedDuring["state"] as? String == "running")
+waitFor({ recover.state == .running }, timeout: 12, label: "transport reconnected")
+let tokenAfterRecovery = try String(contentsOf: transportToken, encoding: .utf8)
+precondition(tokenAfterRecovery == recoveredToken)
+try Data().write(to: transportRoot.appendingPathComponent("release"))
+var retainedFinished = false
+let retainedDeadline = Date().addingTimeInterval(10)
+while Date() < retainedDeadline {
+    let value = try transportRPC("read_command_output", ["session_id": retainedID])
+    if value["state"] as? String == "exited" {
+        precondition((value["output"] as? String ?? "").contains("finished"))
+        retainedFinished = true; break
+    }
+    Thread.sleep(forTimeInterval: 0.05)
+}
+precondition(retainedFinished)
+recover.stop()
+waitFor({ recover.state == .stopped }, timeout: 8, label: "recovered transport stop")
+unsetenv("MCP_TEST_TRANSPORT_EXIT_FILE")
+unsetenv("MCP_TEST_TRANSPORT_TOKEN_FILE")
+print("runtime-transport-reconnect-retains-real-command-session: ok")
+
+let invalidHealthRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 let invalidHealthConfig = LocalMCPConfiguration(
     tunnelID: "tunnel_0123456789abcdef0123456789abcdef", apiKey: "test-key", profile: "invalid-health-\(UUID().uuidString)", port: 18083,
     allowedDirectory: root.path, healthAddress: "0.0.0.0:8080",
@@ -526,7 +591,7 @@ if case let .failed(message) = invalidHealthRuntime.state {
 }
 print("runtime-health-loopback-policy: ok")
 
-let invalidTunnelRuntime = LocalMCPRuntime(profileDirectory: profileDirectory)
+let invalidTunnelRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 let invalidTunnelConfig = LocalMCPConfiguration(
     tunnelID: "tunnel-test", apiKey: "test-key", profile: "invalid-tunnel", port: 18082,
     allowedDirectory: root.path, healthAddress: "127.0.0.1:0",
@@ -538,7 +603,7 @@ if case let .failed(message) = invalidTunnelRuntime.state {
     precondition(message.contains("Tunnel ID must match"), "unexpected tunnel ID validation error: \(message)")
 }
 
-let invalidProfileRuntime = LocalMCPRuntime(profileDirectory: profileDirectory)
+let invalidProfileRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 let invalidProfileConfig = LocalMCPConfiguration(
     tunnelID: "tunnel_0123456789abcdef0123456789abcdef", apiKey: "test-key", profile: "../escape", port: 18081,
     allowedDirectory: root.path, healthAddress: "127.0.0.1:0",
@@ -552,7 +617,7 @@ if case let .failed(message) = invalidProfileRuntime.state {
 print("runtime-tunnel-profile-validation: ok")
 
 setenv("MCP_TEST_SLOW_INIT", "1", 1)
-let immediateStopRuntime = LocalMCPRuntime(profileDirectory: profileDirectory)
+let immediateStopRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 let immediateStopConfig = LocalMCPConfiguration(
     tunnelID: "tunnel_0123456789abcdef0123456789abcdef", apiKey: "test-key", profile: "immediate-\(UUID().uuidString)", port: 18084,
     allowedDirectory: root.path, healthAddress: "127.0.0.1:0",
@@ -564,7 +629,7 @@ Thread.sleep(forTimeInterval: 0.5)
 precondition(immediateStopRuntime.state == .stopped, "immediate stop after start must cancel the queued startup")
 print("runtime-immediate-stop: ok")
 
-let slowRuntime = LocalMCPRuntime(profileDirectory: profileDirectory)
+let slowRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 let slowConfig = LocalMCPConfiguration(
     tunnelID: "tunnel_0123456789abcdef0123456789abcdef", apiKey: "test-key", profile: "slow-\(UUID().uuidString)", port: 18085,
     allowedDirectory: root.path, healthAddress: "127.0.0.1:0",
@@ -585,7 +650,7 @@ precondition(slowRuntime.state == .stopped, "cancelled bootstrap must end stoppe
 precondition(shutdownElapsed < 2.5, "bootstrap shutdown took too long: \(shutdownElapsed)s")
 print("runtime-bootstrap-cancel: ok")
 
-let cloudflareRuntime = LocalMCPRuntime(profileDirectory: profileDirectory)
+let cloudflareRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 var cloudflareLog = ""
 cloudflareRuntime.onLog = { text in
     logLock.lock()

@@ -716,10 +716,12 @@ internal static partial class Program
         Environment.SetEnvironmentVariable("MCP_TEST_ENV_CAPTURE", capture);
         Environment.SetEnvironmentVariable("LOG_HTTP_RAW_UNSAFE", "true");
         Environment.SetEnvironmentVariable("MCP_SERVER_URL", "http://evil.invalid/mcp");
-        var runtime = new LocalMcpRuntime(profiles); var logs = new StringBuilder(); runtime.Log += text => logs.Append(text);
+        var crashMarker = Path.Combine(root, "transport-crash");
+        Environment.SetEnvironmentVariable("MCP_TEST_TRANSPORT_EXIT_FILE", crashMarker);
+        var runtime = new LocalMcpRuntime(profiles, Path.Combine(root, "runtime-data")); var logs = new StringBuilder(); runtime.Log += text => logs.Append(text);
         try
         {
-            var config = new LocalMcpConfiguration("tunnel_" + new string('b', 32), "sk-runtime-test-secret", "runtime-test", (ushort)FreePort(), workspace, "127.0.0.1:0", "", "", false);
+            var config = new LocalMcpConfiguration("tunnel_" + new string('b', 32), "sk-runtime-test-secret", "runtime-test", (ushort)FreePort(), workspace, "127.0.0.1:0", "", "", true);
             await runtime.StartAsync(config);
             Assert(runtime.State.Status == LocalMcpRuntimeStatus.Running, "runtime running");
             Assert(File.Exists(Path.Combine(profiles, "runtime-test.yaml")), "isolated profile created");
@@ -728,13 +730,44 @@ internal static partial class Program
             Assert(!captureText.Contains("LOG_HTTP_RAW_UNSAFE=true", StringComparison.Ordinal) && !captureText.Contains("MCP_SERVER_URL=http://evil", StringComparison.Ordinal), "dangerous tunnel env not inherited");
             Assert(!logs.ToString().Contains("sk-runtime-test-secret", StringComparison.Ordinal), "api key redacted");
             Assert(!System.Text.RegularExpressions.Regex.IsMatch(logs.ToString(), "[0-9a-f]{64}"), "local token redacted");
+            var auth = captureText.Split('\n').First(line => line.StartsWith("FILEMCP_LOCAL_AUTH_TOKEN=", StringComparison.Ordinal)).Split('=', 2)[1].Trim();
+            async Task<JsonNode> Rpc(string name, JsonObject arguments)
+            {
+                var body = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 1, ["method"] = "tools/call",
+                    ["params"] = new JsonObject { ["name"] = name, ["arguments"] = arguments } };
+                var response = await SendHttpAsync(config.Port, "POST", "/mcp", AuthHeaders(auth), body.ToJsonString());
+                var result = JsonNode.Parse(HttpBody(response))!["result"]!;
+                Assert(!result["isError"]!.GetValue<bool>(), "real retained local RPC");
+                return result["structuredContent"]!;
+            }
+            var launched = await Rpc("start_command", Obj(("request_id", "transport-job"),
+                ("command", "[Console]::Write('alive'); while (!(Test-Path release)) { Start-Sleep -Milliseconds 100 }; [Console]::Write('finished')"), ("timeout_seconds", 30)));
+            var retainedID = launched["session_id"]!.GetValue<string>();
+            File.WriteAllText(crashMarker, "");
+            var watch = Stopwatch.StartNew();
+            while (runtime.State.Status != LocalMcpRuntimeStatus.Starting && watch.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(50);
+            Assert(runtime.State.Status == LocalMcpRuntimeStatus.Starting, "transport recovery starts");
+            Assert((await Rpc("read_command_output", Obj(("session_id", retainedID))))["state"]!.GetValue<string>() == "running", "same command during transport recovery");
+            watch.Restart();
+            while (runtime.State.Status != LocalMcpRuntimeStatus.Running && watch.Elapsed < TimeSpan.FromSeconds(12)) await Task.Delay(50);
+            Assert(runtime.State.Status == LocalMcpRuntimeStatus.Running, "transport recovers");
+            File.WriteAllText(Path.Combine(workspace, "release"), "");
+            watch.Restart();
+            var finished = false;
+            while (watch.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                var result = await Rpc("read_command_output", Obj(("session_id", retainedID)));
+                if (result["state"]!.GetValue<string>() == "exited") { finished = result["output"]!.GetValue<string>().Contains("finished"); break; }
+                await Task.Delay(50);
+            }
+            Assert(finished, "same actual command finishes after transport reconnect");
             await runtime.StopAsync();
             Assert(runtime.State.Status == LocalMcpRuntimeStatus.Stopped, "runtime stopped");
         }
         finally
         {
             await runtime.DisposeAsync();
-            Environment.SetEnvironmentVariable("MCP_TUNNEL_CLIENT", null); Environment.SetEnvironmentVariable("MCP_TEST_ENV_CAPTURE", null);
+            Environment.SetEnvironmentVariable("MCP_TUNNEL_CLIENT", null); Environment.SetEnvironmentVariable("MCP_TEST_ENV_CAPTURE", null); Environment.SetEnvironmentVariable("MCP_TEST_TRANSPORT_EXIT_FILE", null);
             Environment.SetEnvironmentVariable("LOG_HTTP_RAW_UNSAFE", null); Environment.SetEnvironmentVariable("MCP_SERVER_URL", null);
         }
         Console.WriteLine("windows-runtime-lifecycle: ok");
@@ -992,7 +1025,13 @@ internal static partial class Program
         }
         if (args[0] == "doctor") { Console.WriteLine("doctor-ok " + apiKey + " " + token); return 0; }
         Console.WriteLine("run-ok " + apiKey + " " + token);
-        await Task.Delay(Timeout.InfiniteTimeSpan); return 0;
+        var crash = Environment.GetEnvironmentVariable("MCP_TEST_TRANSPORT_EXIT_FILE");
+        while (true)
+        {
+            if (!string.IsNullOrEmpty(crash) && File.Exists(crash))
+            { File.Delete(crash); return 17; }
+            await Task.Delay(100);
+        }
     }
 
     private static string ValueAfter(string[] args, string key) { var index = Array.IndexOf(args, key); return index >= 0 && index + 1 < args.Length ? args[index + 1] : throw new InvalidOperationException("missing " + key); }
