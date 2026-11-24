@@ -283,6 +283,7 @@ internal sealed partial class LocalTools
                     ("active_long_running", "integer"),
                     ("active_synchronous", "integer"),
                     ("active_total", "integer"),
+                    ("queued_total", "integer"),
                     ("available_slots", "integer"),
                     ("accepting_new_commands", "boolean") })));
             if (!_allowWrite)

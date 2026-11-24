@@ -180,6 +180,43 @@ internal static partial class Program
                 : await Rpc("cancel_command", Obj(("workspace_id", scopeID), ("session_id", id)));
             Assert(!response["isError"]!.GetValue<bool>(), "targeted workspace task cancellation");
         }
+        // Wait for previous cancellations to reach terminal state.
+        var settle = System.Diagnostics.Stopwatch.StartNew();
+        while ((await Rpc("command_capacity_status"))["structuredContent"]!["active_total"]!.GetValue<int>() != 0 &&
+               settle.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(50);
+        var queueRoot = Path.Combine(root, "queue");
+        Directory.CreateDirectory(queueRoot);
+        var queueScope = new ApprovedWorkspace("queue", "Queue", queueRoot);
+        server.ReplaceAdditionalWorkspaces([secondDefinition, queueScope]);
+        var blocker = await Rpc("start_command", Obj(("workspace_id", "queue"), ("request_id", "blocker"),
+            ("command", "while (!(Test-Path release)) { Start-Sleep -Milliseconds 100 }"), ("timeout_seconds", 25)));
+        Assert(!blocker["isError"]!.GetValue<bool>(), "blocker started");
+        JsonObject FirstArgs() => Obj(("workspace_id", "queue"), ("request_id", "fifo-first"),
+            ("command", "Set-Content -NoNewline order first"), ("queue_if_busy", true));
+        var firstQueued = (await Rpc("start_command", FirstArgs()))["structuredContent"]!;
+        Assert(firstQueued["state"]!.GetValue<string>() == "queued", "first queued");
+        var retry = (await Rpc("start_command", FirstArgs()))["structuredContent"]!;
+        Assert(retry["session_id"]!.GetValue<string>() == firstQueued["session_id"]!.GetValue<string>(), "queued retry identity");
+        var cancelQueued = (await Rpc("start_command", Obj(("workspace_id", "queue"), ("request_id", "fifo-cancel"),
+            ("command", "Set-Content should-not-exist bad"), ("queue_if_busy", true))))["structuredContent"]!;
+        var secondQueued = (await Rpc("start_command", Obj(("workspace_id", "queue"), ("request_id", "fifo-second"),
+            ("command", "if ((Get-Content order -Raw) -ne 'first') { exit 7 }; Add-Content -NoNewline order second"), ("queue_if_busy", true))))["structuredContent"]!;
+        var queueStatus = (await Rpc("command_capacity_status"))["structuredContent"]!;
+        Assert(queueStatus["queued_total"]!.GetValue<int>() == 3 && queueStatus["active_total"]!.GetValue<int>() == 1, "queue separate from capacity");
+        var cancelled = (await Rpc("cancel_command", Obj(("workspace_id", "queue"), ("session_id", cancelQueued["session_id"]!.GetValue<string>()))))["structuredContent"]!;
+        Assert(cancelled["state"]!.GetValue<string>() == "cancelled", "cancel queued");
+        Assert((await Rpc("start_command", Obj(("request_id", "no-jump"), ("command", "exit 0"))))["isError"]!.GetValue<bool>(), "no bypass");
+        File.WriteAllText(Path.Combine(queueRoot, "release"), "");
+        var wait = System.Diagnostics.Stopwatch.StartNew();
+        var terminal = false;
+        while (wait.Elapsed < TimeSpan.FromSeconds(15))
+        {
+            var result = (await Rpc("read_command_output", Obj(("workspace_id", "queue"), ("session_id", secondQueued["session_id"]!.GetValue<string>()))))["structuredContent"]!;
+            if (result["state"]!.GetValue<string>() == "exited") { Assert(result["exit_code"]!.GetValue<int>() == 0, "FIFO completion"); terminal = true; break; }
+            await Task.Delay(50);
+        }
+        Assert(terminal && File.ReadAllText(Path.Combine(queueRoot, "order")) == "firstsecond" &&
+            !File.Exists(Path.Combine(queueRoot, "should-not-exist")), "FIFO execution and queued cancellation");
         Console.WriteLine("windows-workspace-scope-and-global-concurrency: ok");
     }
 }

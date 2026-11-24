@@ -77,7 +77,7 @@ success("cancel_command", {"session_id": active[workdirs[1]]})
 deadline = time.monotonic() + 20
 while time.monotonic() < deadline:
     states = {name: success("read_command_output", {"session_id": sid}).get("state") for name, sid in active.items()}
-    if all(value not in ("running", "stopping") for value in states.values()):
+    if all(value not in ("queued", "running", "stopping") for value in states.values()):
         break
     time.sleep(.1)
 assert states[workdirs[1]] == "cancelled", states

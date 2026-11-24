@@ -10,7 +10,7 @@ public sealed record CommandHistoryRecord(
     string? RequestId, string? ClientId, DateTimeOffset StartedAt, DateTimeOffset UpdatedAt,
     string State, int? ExitCode, string? Command, string? Output, bool Truncated)
 {
-    public bool IsTerminal => State != "running";
+    public bool IsTerminal => State is not ("queued" or "running");
 }
 
 public sealed class CommandHistoryStore
@@ -19,7 +19,7 @@ public sealed class CommandHistoryStore
     public const int RetentionDays = 30;
     public const int ContentLimit = 65_536;
     private static readonly HashSet<string> States =
-        ["running", "exited", "cancelled", "timed_out", "launch_failed", "interrupted"];
+        ["queued", "running", "exited", "cancelled", "timed_out", "launch_failed", "interrupted"];
     private readonly object _gate = new();
     private readonly string _directory;
     private readonly Dictionary<Guid, CommandHistoryRecord> _records;
@@ -50,7 +50,7 @@ public sealed class CommandHistoryStore
     }
 
     public Guid Begin(string workspaceId, string workspaceName, string cwd, string kind,
-        string? requestId, string? clientId, string command, Guid? id = null)
+        string? requestId, string? clientId, string command, Guid? id = null, bool queued = false)
     {
         lock (_gate)
         {
@@ -59,7 +59,7 @@ public sealed class CommandHistoryStore
             var now = DateTimeOffset.UtcNow;
             var content = CaptureContent ? Bounded(command) : ((string Text, bool Truncated)?)null;
             var record = new CommandHistoryRecord(key, workspaceId, workspaceName, cwd, kind,
-                requestId, clientId == "__local_admin__" ? null : clientId, now, now, "running",
+                requestId, clientId == "__local_admin__" ? null : clientId, now, now, queued ? "queued" : "running",
                 null, content?.Text, null, content?.Truncated ?? false);
             Persist(record);
             _records.Add(key, record);
@@ -67,11 +67,21 @@ public sealed class CommandHistoryStore
         }
     }
 
+    public void MarkRunning(Guid id)
+    {
+        lock (_gate)
+        {
+            if (!_records.TryGetValue(id, out var record) || record.State != "queued") throw new FileMcpException("Missing queued history");
+            var updated = record with { State = "running", UpdatedAt = DateTimeOffset.UtcNow };
+            Persist(updated); _records[id] = updated;
+        }
+    }
+
     public void Finish(Guid id, string state, int? exitCode, string output = "", bool truncated = false)
     {
         lock (_gate)
         {
-            if (!States.Contains(state) || state == "running" ||
+            if (!States.Contains(state) || state is "running" or "queued" ||
                 !_records.TryGetValue(id, out var record) || record.IsTerminal)
                 throw new FileMcpException("Invalid or already terminal local history entry");
             var content = CaptureContent ? Bounded(output) : ((string Text, bool Truncated)?)null;

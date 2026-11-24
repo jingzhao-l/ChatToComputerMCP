@@ -43,7 +43,7 @@ for _ in range(150):
     page = call('read_command_output', {'session_id': start['session_id'], 'cursor': cursor})
     cursor = page['next_cursor']
     output += page['output']
-    if page['state'] not in ('running', 'stopping') and not page['has_more']:
+    if page['state'] not in ('queued', 'running', 'stopping') and not page['has_more']:
         break
     time.sleep(0.03)
 else:

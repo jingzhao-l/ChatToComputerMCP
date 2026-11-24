@@ -57,3 +57,17 @@ with the same workspace_id (or matching legacy wrapper context).
 - Windows now supports explicit scoped routing and a shared 4–16 command
   budget. A real Windows regression/GUI acceptance remains mandatory before
   claiming cross-platform release readiness.
+
+## Optional FIFO command queue
+
+Pass `queue_if_busy: true` to `start_command` to opt into one global FIFO
+queue across authorized workspaces. A queued response is nonterminal: keep
+polling with the same workspace and session ID. Queue waiting does not consume
+the execution timeout. `command_capacity_status` includes `queued_total`,
+separate from running commands. Up to 64 queued requests are admitted; later
+immediate submissions cannot jump the queue. Queued commands can be cancelled
+before launch, and their directory is revalidated when scheduled. An earlier
+blocked directory can delay independent later work, intentionally preserving
+FIFO order. Queued or running work also prevents changing affected workspace
+permissions. Runtime restart marks unfinished local records interrupted and
+never automatically replays queued commands.

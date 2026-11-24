@@ -23,7 +23,7 @@ func runAgentToolChecks(rootPath: String) throws {
         let end = Date().addingTimeInterval(deadline)
         while Date() < end {
             let result = try call(full, "read_command_output", ["session_id": id, "cursor": cursor])
-            if !["running", "stopping"].contains(result["state"] as! String) { return result }
+            if !["queued", "running", "stopping"].contains(result["state"] as! String) { return result }
             Thread.sleep(forTimeInterval: 0.03)
         }
         fatalError("Session did not finish")

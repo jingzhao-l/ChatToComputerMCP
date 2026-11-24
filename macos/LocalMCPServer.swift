@@ -218,6 +218,8 @@ private final class WorkspaceCommandBudget {
     private let capacity: Int
     private var longJobs: [ObjectIdentifier: (CommandSession, String)] = [:]
     private var synchronous: [UUID: String] = [:]
+    private var pending: [(CommandSession, () -> Void)] = []
+    private var pumpScheduled = false
 
     init(capacity: Int) { self.capacity = min(16, max(4, capacity)) }
 
@@ -226,13 +228,21 @@ private final class WorkspaceCommandBudget {
         return longJobs.values.map { $0.1 } + Array(synchronous.values)
     }
 
+    private func overlaps(_ a: String, _ b: String) -> Bool {
+        let x = a.lowercased(), y = b.lowercased()
+        return x == y || x.hasPrefix(y.hasSuffix("/") ? y : y + "/") ||
+            y.hasPrefix(x.hasSuffix("/") ? x : x + "/")
+    }
+
     private func check(_ path: String, against existing: [String]) throws {
+        pending.removeAll { !$0.0.active }
+        guard pending.isEmpty else {
+            throw MCPServerError.operationFailed("Global command queue has waiting jobs; use queue_if_busy or retry after it drains")
+        }
         guard existing.count < capacity else {
             throw MCPServerError.operationFailed("Global command capacity reached (\(capacity))")
         }
-        guard !existing.contains(where: {
-            $0 == path || $0.hasPrefix(path + "/") || path.hasPrefix($0 + "/")
-        }) else {
+        guard !existing.contains(where: { overlaps($0, path) }) else {
             throw MCPServerError.operationFailed("Active command overlaps another workspace")
         }
     }
@@ -243,9 +253,46 @@ private final class WorkspaceCommandBudget {
         longJobs[ObjectIdentifier(session)] = (session, cwd)
     }
 
+    // Strict FIFO across workspaces: later submissions cannot jump an older
+    // blocked request. Queue admission is explicitly requested by the client.
+    func enqueue(_ session: CommandSession, launch: @escaping () -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        pending.removeAll { !$0.0.active }
+        guard pending.count < 64 else { throw MCPServerError.operationFailed("Global command queue is full (64)") }
+        pending.append((session, launch))
+        schedulePumpUnderLock()
+    }
+
+    private func schedulePumpUnderLock() {
+        guard !pumpScheduled, !pending.isEmpty else { return }
+        pumpScheduled = true
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+            self?.pump()
+        }
+    }
+
+    private func pump() {
+        lock.lock()
+        pumpScheduled = false
+        pending.removeAll { !$0.0.active }
+        var paths = activePaths()
+        var launches: [() -> Void] = []
+        while let next = pending.first, paths.count < capacity,
+              !paths.contains(where: { overlaps($0, next.0.cwd) }) {
+            pending.removeFirst()
+            longJobs[ObjectIdentifier(next.0)] = (next.0, next.0.cwd)
+            paths.append(next.0.cwd)
+            launches.append(next.1)
+        }
+        schedulePumpUnderLock()
+        lock.unlock()
+        for launch in launches { launch() }
+    }
+
     func forget(_ session: CommandSession) {
         lock.lock(); defer { lock.unlock() }
         longJobs.removeValue(forKey: ObjectIdentifier(session))
+        pending.removeAll { $0.0 === session }
     }
 
     func enterSynchronous(cwd: String) throws -> UUID {
@@ -263,13 +310,16 @@ private final class WorkspaceCommandBudget {
 
     func hasActiveCommands() -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return !activePaths().isEmpty
+        pending.removeAll { !$0.0.active }
+        return !activePaths().isEmpty || !pending.isEmpty
     }
 
     func status(accepting: Bool) -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         let total = activePaths().count
+        pending.removeAll { !$0.0.active }
         return ["max_concurrent_commands": capacity,
+                "queued_total": pending.count,
                 "active_long_running": longJobs.count,
                 "active_synchronous": synchronous.count,
                 "active_total": total,
@@ -4522,21 +4572,25 @@ private final class CommandSession {
     let command: String
     let cwd: String
     let timeout: Int
+    let queueIfBusy: Bool
     private let lock = NSLock()
     private var process: ManagedProcess?
     private var deadline: DispatchWorkItem?
-    private var state = "running"
+    private var state: String
     private var stopReason: String?
     private var exitCode: Int32?
-    private let onFinish: ((String, Int32) -> Void)?
-    private let onHistoryFinish: ((String, Int32, String, Bool) -> Void)?
+    private let onFinish: ((String, Int32?) -> Void)?
+    private let onHistoryFinish: ((String, Int32?, String, Bool) -> Void)?
     private var chunks: [(Int, String)] = []
     private var bytes = 0
     private var sequence = 0
 
     init(requestID: String, command: String, cwd: String, timeout: Int,
-         onFinish: ((String, Int32) -> Void)? = nil,
-         onHistoryFinish: ((String, Int32, String, Bool) -> Void)? = nil) {
+         queueIfBusy: Bool = false,
+         onFinish: ((String, Int32?) -> Void)? = nil,
+         onHistoryFinish: ((String, Int32?, String, Bool) -> Void)? = nil) {
+        self.queueIfBusy = queueIfBusy
+        self.state = queueIfBusy ? "queued" : "running"
         self.requestID = requestID; self.command = command; self.cwd = cwd
         self.timeout = timeout; self.onFinish = onFinish
         self.onHistoryFinish = onHistoryFinish
@@ -4544,21 +4598,29 @@ private final class CommandSession {
 
     var active: Bool {
         lock.lock(); defer { lock.unlock() }
-        return state == "running" || state == "stopping"
+        return state == "queued" || state == "running" || state == "stopping"
     }
 
-    func launch(shell: String) throws {
+    func launch(shell: String, beforeLaunch: () throws -> Void = {}) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard state == "queued" || state == "running" else { return }
+        try beforeLaunch()
+        state = "running"
         let child = try ProcessRunner.startManaged(executable: shell, arguments: ["-lc", command], cwd: cwd,
             onOutput: { [weak self] text in self?.append(text) },
             onExit: { [weak self] code in self?.finish(code) })
-        lock.lock()
         process = child
         if state == "running" {
             let work = DispatchWorkItem { [weak self] in self?.cancel(reason: "timed_out") }
             deadline = work
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(timeout), execute: work)
         }
-        lock.unlock()
+    }
+
+    func launchQueued(shell: String, beforeLaunch: () throws -> Void) {
+        do { try launch(shell: shell, beforeLaunch: beforeLaunch) }
+        catch { complete(nil, fallback: "launch_failed") }
     }
 
     private func append(_ text: String) {
@@ -4571,10 +4633,13 @@ private final class CommandSession {
         }
     }
 
-    private func finish(_ code: Int32) {
+    private func finish(_ code: Int32) { complete(code, fallback: "exited") }
+
+    private func complete(_ code: Int32?, fallback: String) {
         lock.lock()
+        guard ["queued", "running", "stopping"].contains(state) else { lock.unlock(); return }
         exitCode = code
-        state = stopReason ?? "exited"
+        state = stopReason ?? fallback
         let terminalState = state
         deadline?.cancel(); deadline = nil
         let historyOutput = onHistoryFinish == nil ? "" : chunks.map { $0.1 }.joined()
@@ -4588,11 +4653,13 @@ private final class CommandSession {
 
     func cancel(reason: String = "cancelled", synchronously: Bool = false) {
         lock.lock()
-        guard state == "running" || state == "stopping" else { lock.unlock(); return }
+        guard ["queued", "running", "stopping"].contains(state) else { lock.unlock(); return }
         if stopReason == nil { stopReason = reason }
+        let wasQueued = state == "queued"
         state = "stopping"
         let child = process
         lock.unlock()
+        if wasQueued { complete(nil, fallback: reason); return }
         if synchronously { child?.stopSynchronously() } else { child?.stop() }
     }
 
@@ -4652,7 +4719,7 @@ private extension LocalTools {
             fields["exit_code"] = ["type": ["integer", "null"]]
         case "capacity":
             add(["max_concurrent_commands", "active_long_running", "active_synchronous",
-                 "active_total", "available_slots"], "integer")
+                 "active_total", "available_slots", "queued_total"], "integer")
             add(["accepting_new_commands"], "boolean")
         case "context":
             add(["workspace_root", "cwd", "scope"], "string")
@@ -4667,7 +4734,7 @@ private extension LocalTools {
             add(["next_cursor", "last_cursor", "timeout_seconds"], "integer")
             add(["has_more", "truncated"], "boolean")
             fields["exit_code"] = ["type": ["integer", "null"]]
-            fields["state"] = ["type": "string", "enum": ["running", "stopping", "exited", "cancelled", "timed_out"]]
+            fields["state"] = ["type": "string", "enum": ["queued", "running", "stopping", "exited", "cancelled", "timed_out", "launch_failed"]]
         }
         return ["type": "object", "properties": fields, "required": fields.keys.sorted(), "additionalProperties": false]
     }
@@ -4702,15 +4769,16 @@ private extension LocalTools {
         ]
         if enableCommands {
             definitions += [
-                tool(name: "start_command", description: "Start a long-running non-interactive shell command (shell permission required; not OS-sandboxed). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
+                tool(name: "start_command", description: "Start a long-running non-interactive shell command (shell permission required; not OS-sandboxed). Returns immediately. Reuse request_id with identical arguments after an uncertain response to avoid duplicate execution. Up to 4–16 configured command sessions can run concurrently in non-overlapping working directories; use separate worktrees. Read output until terminal state AND has_more=false; use cancel_command to stop. Use queue_if_busy=true for FIFO waiting across workspaces. Queue waiting does not consume the execution timeout. Runtime disconnect stops jobs; output is bounded and retained for the latest eight jobs.",
                      properties: ["request_id": stringProperty("Unique retry key, 1–128 ASCII letters/digits/dot/underscore/hyphen. Reuse only for the same command."),
                                   "command": stringProperty("Shell command."), "cwd": stringProperty("Working directory inside shared root."),
-                                  "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600]],
+                                  "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 3600, "default": 600],
+                                  "queue_if_busy": ["type": "boolean", "default": false, "description": "Opt into the global FIFO queue (including when a directory is busy). Poll queued jobs until terminal."]],
                      required: ["request_id", "command"], readOnly: false, destructive: true, openWorld: true, output: .object(agentOutputSchema("command"))),
                 tool(name: "command_receipt_status", description: "Read the durable status of one of your earlier commands by request_id, including after an application restart. Only the original verified client can access the receipt. Interrupted is NOT a reattached process. No command text, output, workspace path, or other client's history is returned.",
                      properties: ["request_id": stringProperty("Original request_id from start_command.")],
                      required: ["request_id"], readOnly: true, output: .object(agentOutputSchema("receipt"))),
-                tool(name: "read_command_output", description: "Read bounded combined stdout/stderr from a command session. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. running/stopping are not completion; exited may have nonzero exit_code. Check has_more even after completion. Unknown IDs may have expired or belong to an earlier runtime.",
+                tool(name: "read_command_output", description: "Read bounded combined stdout/stderr from a command session. Pass next_cursor from the previous response. truncated=true means older chunks were evicted. queued/running/stopping are not completion; exited may have nonzero exit_code. Check has_more even after completion. Unknown IDs may have expired or belong to an earlier runtime.",
                      properties: ["session_id": stringProperty("ID returned by start_command."), "cursor": ["type": "integer", "minimum": 0, "default": 0]],
                      required: ["session_id"], readOnly: true, output: .object(agentOutputSchema("command"))),
                 tool(name: "cancel_command", description: "Request termination of the command and its descendants. Poll read_command_output until it reports a terminal state. Repeated cancellation is safe.",
@@ -4951,18 +5019,22 @@ private extension LocalTools {
         var dir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &dir), dir.boolValue else { throw MCPServerError.invalidPath("No such working directory") }
         let timeout = int(args, "timeout_seconds", default: 600)
+        let queueIfBusy = bool(args, "queue_if_busy", default: false)
+        guard !queueIfBusy || globalBudget != nil else { throw MCPServerError.operationFailed("Queue requires the shared gateway scheduler") }
         sessionLock.lock(); defer { sessionLock.unlock() }
         guard !sessionsStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
         if let existing = sessions.first(where: { $0.requestID == key }) {
-            guard existing.command == command, existing.cwd == cwd.path, existing.timeout == timeout else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
+            guard existing.command == command, existing.cwd == cwd.path, existing.timeout == timeout, existing.queueIfBusy == queueIfBusy else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
             return try existing.snapshot(cursor: 0)
         }
-        let activePaths = activeCommandPathsUnderLock()
-        guard activePaths.count < maxActiveCommandSessions else {
-            throw MCPServerError.operationFailed("Concurrent command limit reached (\(maxActiveCommandSessions)); finish or cancel a session first")
-        }
-        guard !activePaths.contains(where: { Self.overlappingPaths($0, cwd.path) }) else {
-            throw MCPServerError.operationFailed("Another active command occupies this working directory or a parent/child directory; use an independent worktree")
+        if !queueIfBusy {
+            let activePaths = activeCommandPathsUnderLock()
+            guard activePaths.count < maxActiveCommandSessions else {
+                throw MCPServerError.operationFailed("Concurrent command limit reached (\(maxActiveCommandSessions)); finish or cancel a session first")
+            }
+            guard !activePaths.contains(where: { Self.overlappingPaths($0, cwd.path) }) else {
+                throw MCPServerError.operationFailed("Another active command occupies this working directory or a parent/child directory; use an independent worktree")
+            }
         }
         // Evicted retry keys remain tombstoned for this runtime: never execute an old retry twice.
         guard !usedRequestIDs.contains(key) else { throw MCPServerError.operationFailed("request_id expired; use a new ID only for an intentional new execution") }
@@ -4971,7 +5043,7 @@ private extension LocalTools {
         let scopeID = workspaceScopeID
         let historyID = UUID()
         let session = CommandSession(
-            requestID: key, command: command, cwd: cwd.path, timeout: timeout,
+            requestID: key, command: command, cwd: cwd.path, timeout: timeout, queueIfBusy: queueIfBusy,
             onFinish: { [weak ledger] state, code in
                 do { try ledger?.finish(scopeID: scopeID, requestID: key,
                                         state: state, exitCode: code) }
@@ -4983,16 +5055,32 @@ private extension LocalTools {
                 do { try commandHistory?.finish(id: historyID, state: state, exitCode: code, output: output, truncated: truncated) }
                 catch { NSLog("ChatToComputerMCP local history completion could not persist: %@", error.localizedDescription) }
             })
-        try globalBudget?.admit(session, cwd: cwd.path)
+        if !queueIfBusy { try globalBudget?.admit(session, cwd: cwd.path) }
         var reserved = false
         var historyReserved = false
         do {
             try ledger?.reserve(scopeID: scopeID, requestID: key, ownerID: ownerID)
             reserved = ledger != nil
             try commandHistory?.begin(id: historyID, workspaceID: scopeID, workspaceName: workspaceName,
-                cwd: cwd.path, kind: "async", requestID: key, clientID: ownerID, command: command)
+                cwd: cwd.path, kind: "async", requestID: key, clientID: ownerID, command: command,
+                queued: queueIfBusy)
             historyReserved = commandHistory != nil
-            try session.launch(shell: preferredShell())
+            if queueIfBusy {
+                let shell = preferredShell()
+                let relativeCwd = relativePath(for: cwd)
+                let history = commandHistory
+                try globalBudget?.enqueue(session) { [resolver, session] in
+                    session.launchQueued(shell: shell) {
+                        let resolved = try resolver.resolve(relativeCwd)
+                        var isDirectory: ObjCBool = false
+                        guard resolved.path == cwd.path,
+                              FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                            throw MCPServerError.invalidPath("Queued working directory changed")
+                        }
+                        try history?.markRunning(id: historyID)
+                    }
+                }
+            } else { try session.launch(shell: preferredShell()) }
         } catch {
             globalBudget?.forget(session)
             if historyReserved { finishHistory(historyID, state: "launch_failed", code: nil) }
@@ -5041,6 +5129,7 @@ private extension LocalTools {
             "active_long_running": longRunning,
             "active_synchronous": synchronous,
             "active_total": total,
+            "queued_total": 0,
             "available_slots": max(0, maxActiveCommandSessions - total),
             "accepting_new_commands": !sessionsStopped,
         ]

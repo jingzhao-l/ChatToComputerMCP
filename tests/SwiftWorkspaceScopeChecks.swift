@@ -416,6 +416,55 @@ extension LocalMCPServer {
             precondition(result["isError"] as? Bool == false)
         }
         print("PASS: shared 4–16 budget across independently scoped workspaces")
+        // A separate gate makes FIFO and cancellation deterministic without timing
+        // assumptions about the earlier parallel-build fixture.
+        let queueRoot = temp.appendingPathComponent("queue")
+        try FileManager.default.createDirectory(at: queueRoot, withIntermediateDirectories: true)
+        let queueScope = WorkspaceDefinition(id: "queue", name: "Queue", path: queueRoot.path)
+        let queueServer = try setup([queueScope])
+        defer { queueServer.stop() }
+        func q(_ name: String, _ args: [String: Any]) throws -> [String: Any] {
+            let response = queueServer.callTool(id: 2, params: ["name": name, "arguments": args], modern: false)
+            let boundary = response.range(of: Data("\r\n\r\n".utf8))!
+            let json = try JSONSerialization.jsonObject(with: response.subdata(in: boundary.upperBound..<response.count)) as! [String: Any]
+            return json["result"] as! [String: Any]
+        }
+        let blocker = try q("start_command", ["workspace_id": "queue", "request_id": "blocker",
+            "command": "while [ ! -f release ]; do sleep 0.1; done", "timeout_seconds": 25])
+        precondition(blocker["isError"] as? Bool == false)
+        let firstArgs: [String: Any] = ["workspace_id": "queue", "request_id": "fifo-first",
+            "command": "printf first > order", "queue_if_busy": true]
+        let firstQueued = try q("start_command", firstArgs)["structuredContent"] as! [String: Any]
+        precondition(firstQueued["state"] as? String == "queued")
+        let retry = try q("start_command", firstArgs)["structuredContent"] as! [String: Any]
+        precondition(retry["session_id"] as? String == firstQueued["session_id"] as? String)
+        let cancelQueued = try q("start_command", ["workspace_id": "queue", "request_id": "fifo-cancel",
+            "command": "touch should-not-exist", "queue_if_busy": true])["structuredContent"] as! [String: Any]
+        let secondQueued = try q("start_command", ["workspace_id": "queue", "request_id": "fifo-second",
+            "command": "test \"$(cat order)\" = first && printf second >> order", "queue_if_busy": true])["structuredContent"] as! [String: Any]
+        let status = try q("command_capacity_status", [:])["structuredContent"] as! [String: Any]
+        precondition(status["queued_total"] as? Int == 3 && status["active_total"] as? Int == 1)
+        let cancelled = try q("cancel_command", ["workspace_id": "queue", "session_id": cancelQueued["session_id"]!])["structuredContent"] as! [String: Any]
+        precondition(cancelled["state"] as? String == "cancelled")
+        let bypass = try q("start_command", ["request_id": "no-jump", "command": "true"])
+        precondition(bypass["isError"] as? Bool == true)
+        try Data().write(to: queueRoot.appendingPathComponent("release"))
+        let until = Date().addingTimeInterval(15)
+        var terminal = false
+        while Date() < until {
+            let result = try q("read_command_output", ["workspace_id": "queue", "session_id": secondQueued["session_id"]!])["structuredContent"] as! [String: Any]
+            if result["state"] as? String == "exited" {
+                precondition(result["exit_code"] as? Int == 0)
+                terminal = true; break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        precondition(terminal)
+        let order = try String(contentsOf: queueRoot.appendingPathComponent("order"), encoding: .utf8)
+        precondition(order == "firstsecond")
+        precondition(!FileManager.default.fileExists(atPath: queueRoot.appendingPathComponent("should-not-exist").path))
+        print("PASS: global FIFO queue, queued retry identity, cancellation and no bypass")
+
 
         // An explicitly approved root must never overlap the default even
         // through symlinks. A malformed root does not get created implicitly.

@@ -27,7 +27,7 @@ internal static partial class Program
             while (watch.Elapsed < TimeSpan.FromSeconds(12))
             {
                 var value = await Call(full, "read_command_output", Obj(("session_id", id), ("cursor", cursor)));
-                if (value["state"]!.GetValue<string>() is not ("running" or "stopping")) return value;
+                if (value["state"]!.GetValue<string>() is not ("queued" or "running" or "stopping")) return value;
                 await Task.Delay(30);
             }
             throw new Exception("Command did not finish");
