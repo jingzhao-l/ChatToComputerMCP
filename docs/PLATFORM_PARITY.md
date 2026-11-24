@@ -6,7 +6,7 @@ Native test results and unverified external steps are kept distinct.
 
 | Capability | macOS | Windows | Evidence and limits |
 | --- | --- | --- | --- |
-| 33 scoped MCP tool names plus routing tools | Implemented | Implemented | Source guard checks names; native integration suites check runtime behaviors |
+| 33 scoped MCP tool names plus routing tools | Implemented | Implemented | Shared base input/output schemas, annotations and permission profiles; native integration suites check behaviors |
 | File/Git operations, search, repo overview, batch reading | Implemented | Implemented | Swift runtime/agent and Windows native tests |
 | 4–16 concurrent slots, workspace isolation and task cancellation | Implemented | Implemented | Independent native tests; no claim of unlimited concurrency |
 | Multiple approved workspaces and GUI management | Implemented | Implemented | Native GUI and integration suites |
@@ -15,20 +15,22 @@ Native test results and unverified external steps are kept distinct.
 | Cloudflare remotely managed tunnel token | Implemented | Implemented in main | Windows token-file process tests, not live Cloudflare account verification |
 | Cloudflare named tunnel management | Implemented | Implemented in main | Fake Cloudflare CLI process integration; real account test still needed |
 | Cloudflare OAuth PKCE and per-client permissions | Implemented | Implemented in main | Real Windows HTTP test with two OAuth clients, not WAN provider E2E |
-| Credentials | macOS Keychain | Windows Credential Manager | Independent new product namespace |
+| Credentials | macOS Keychain | Windows Credential Manager | Windows product namespace is independent; Mac still uses legacy identity for credential continuity |
 | Login start, auto-connect, crash recovery, always-on | launchd user LaunchAgent | HKCU user startup supervisor | Explicit opt-in; not pre-login Windows system services |
 | npm local source installer and updater | Implemented | Implemented | Shared CLI and local native compile |
 | GUI check/install update | Implemented | Implemented | AppKit and WPF tests; never restarts active jobs |
 | Durable command receipts and replay prevention | Implemented | Implemented | Incomplete commands marked interrupted, not replayed |
 | Restart-safe owner-scoped command receipt status | Implemented | Implemented | New command_receipt_status tool binds salted owner identities to authenticated clients; receipt alone is status only; opted-in live workers support reattachment |
-| Independent task execution and reattachment after gateway crash | Implemented; SIGKILL test passed | Implemented; native test added | Opt-in; OS reboot or worker death is interrupted, not replayed |
+| Independent task execution and reattachment after gateway crash | Implemented; SIGKILL test passed | Implemented; Windows x64 native regression executed | Opt-in; OS reboot or worker death is interrupted, not replayed |
 | Restricted Linux container shell | Implemented | Implemented | Docker Desktop and approved image required; actual engine validation pending |
-| Seven-area native GUI | Implemented | Implemented | 210 Mac layout cases, WPF build; manual Windows acceptance pending |
+| Seven-area native GUI | Implemented | Implemented | 210 Mac layout cases, native x64 WPF smoke; manual device acceptance pending |
 | Per-ChatGPT-conversation cryptographic identity in shared OpenAI Tunnel | NOT available | NOT available | Shared tunnel credential is not a per-conversation principal |
+| Bounded HTTP connections and absolute read/write deadlines | 32 / 15s / 15s | 32 / 15s / 15s | Windows C# real loopback regression on Mac; native CI gate |
+| CPU-specific base tool packaging | Apple Silicon / Intel | x64 / ARM64 | Official pinned vendor binaries; Intel Rosetta version checks and native CI gate; native architecture acceptance separate |
 | Windows ARM64 native execution | N/A | NOT tested | ARM64 package cross-compile alone cannot verify runtime |
 | Signed/native notarized public installers | NOT completed | NOT completed | Source-only npm distribution is not signed native distribution |
 
-## Windows parity completion — 2026-11-24
+## Windows parity implementation — 2026-11-24
 
 The Windows runtime now probes the bundled tunnel client's
 `control_plane_poll` metric using the per-run private health locator and
@@ -54,9 +56,7 @@ errors; the portable C# policy regression executes on the development Mac
 and checks poll freshness/invalid metrics, proxy precedence, fragmented
 secret redaction and Cloudflare registration parsing. The native Windows
 suite additionally contains actual process/reconnect, scoped mutation,
-profile mutex and Cloudflare login rollback fixtures. Those native
-fixtures and interactive WPF acceptance require a Windows host; compilation
-does not establish their runtime results. This section describes pre-CUA Windows parity work. See the following section for the integrated CUA backend.
+profile mutex and Cloudflare login rollback fixtures. The v0.5.1 native Windows gate passed (run 45337700732); the v0.6.0 Windows CUA regression initially failed. The v0.6.1 Verify run 45360668564 passed both native jobs. Hosted CI evidence is not full interactive physical-device acceptance. This section describes pre-CUA Windows parity work. See the following section for the integrated CUA backend.
 
 ## Native CUA (0.6.0)
 
@@ -80,4 +80,18 @@ OS-specific implementations correctly differ (LaunchAgent vs HKCU,
 Keychain vs Credential Manager). The product parity target is equal user
 capability and verified security properties, not identical source code.
 
-The static tool-name guard cannot substitute for either native runtime suite.
+The static tool-name guard and reviewed shared base contract cannot substitute
+for either native runtime suite. The generated [base inventory](BASE_TOOL_CONTRACT.md)
+reports 27 default, 36 fully enabled and 16 read-only base tools for one
+default root (including three routing/identity tools). These counts are not
+the separately maintained 15 CUA tool names. Check both platform fixtures
+with the same contract before changing an interface.
+
+### Evidence links
+
+- [v0.5.1 native release quality gates](https://github.com/jingzhao-l/ChatToComputerMCP/actions/runs/45337700732)
+- [v0.6.0 initial failed Windows gate](https://github.com/jingzhao-l/ChatToComputerMCP/actions/runs/45356657950)
+- [v0.6.1 native verification](https://github.com/jingzhao-l/ChatToComputerMCP/actions/runs/45360668564)
+
+New HTTP and Intel gates must be read at their own commit. The previous
+successful run does not verify changes made after that source snapshot.

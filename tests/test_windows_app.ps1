@@ -38,7 +38,7 @@ foreach ($Control in @("OverviewTab", "OverviewConnectionStatus",
         throw "Missing Windows overview UI control: $Control"
     }
 }
-$Sections = @("Overview", "Connection", "Workspaces", "Command center", "Activity", "Security", "Settings")
+$Sections = @("Overview", "Workspaces", "Connection", "Command center", "Activity", "Security", "Settings")
 $Previous = -1
 foreach ($Section in $Sections) {
     $Index = $Markup.IndexOf('<TabItem Header="' + $Section + '"')

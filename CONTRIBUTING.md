@@ -8,7 +8,7 @@ Contributions to ChatToComputerMCP are welcome. Because this project can read an
 
 - macOS 12 or newer;
 - Xcode or Xcode Command Line Tools with `swiftc`;
-- the vendored `tunnel-client` binary for the current architecture.
+- the vendored `tunnel-client` and ripgrep binaries for Apple Silicon or Intel.
 
 Build and test:
 
@@ -58,7 +58,7 @@ The Windows integration suite intentionally exercises Windows Credential Manager
 - Do not weaken shared-directory containment, symlink/reparse-point handling, Git metadata/config checks, MCP-local authentication, tunnel profile/environment isolation, process cleanup, request-size limits, or argument validation.
 - Keep `run_command` opt-in and clearly destructive.
 - Add or update platform-specific regression tests for behavior/security changes.
-- Do not commit generated `build/`, `dist/`, `bin/`, or `obj/` output.
+- Do not commit generated build/, dist/, nested .NET bin/ or obj/ output. The root bin/ contains tracked source CLI modules.
 - Never commit API keys, OAuth stores, tokens, local Git credentials, Keychain/Credential Manager exports, `.env` files, or archives of a working directory.
 
 ## Vendored tunnel-client updates
@@ -97,4 +97,8 @@ Describe the behavior changed, security impact, affected platforms, and exact ve
 - GitHub releases and npm versions are separate: a tag or GitHub tarball is not npm publication.
 - The trusted release workflow is `.github/workflows/publish-npm.yml`,
   with GitHub OIDC and no npm publish token in repository secrets.
-- Do not bypass Windows real-device tests or the GitHub billing gate to publish a new stable tag.
+- Do not bypass the required native CI quality gates to publish a new stable tag. Physical-device and provider acceptance remain separately documented.
+
+## Shared functional contract
+
+For any base MCP interface change, review `contracts/mcp-tools.json` and both implementations. Export the Mac definitions with `bash tests/dump_swift_tool_contract.sh` and the Windows definitions with `dotnet run -c Release --project windows/tests/FileMCP.Core.Tests -- --dump-base-tool-contract`; use `python3 tests/check_base_tool_contract.py <export.json>` for each. Update the contract deliberately, regenerate `docs/BASE_TOOL_CONTRACT.md` with `python3 tests/check_base_tool_docs.py --write`, and run platform behavior tests. Matching schemas alone do not prove behavior. CUA uses its own implementation and regression gates; changes must retain explicit local authorization and no foreground/Guest fallback.

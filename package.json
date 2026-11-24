@@ -67,7 +67,8 @@
     "docs/INDEPENDENT_TASKS.md",
     "docs/PLATFORM_PARITY.md",
     "docs/BASE_TOOL_CONTRACT.md",
-    "contracts/mcp-tools.json"
+    "contracts/mcp-tools.json",
+    "contracts/desktop-areas.json"
   ],
   "scripts": {
     "test": "node --test npm/installer.test.mjs",

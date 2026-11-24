@@ -6,7 +6,7 @@ pinned tool binaries as the GitHub repository. It compiles the native app
 
 ## Quick installation from npm
 
-Requires Node.js 24 or newer. On macOS with Xcode Command Line Tools, or Windows with .NET 8 SDK:
+Requires Node.js 24 or newer. Use macOS 12+ on Apple Silicon or Intel with Xcode Command Line Tools, or Windows 10/11 x64/ARM64 with .NET 8 SDK and Windows PowerShell. CUA has separate OS prerequisites. See [platform parity](PLATFORM_PARITY.md) for architecture-specific acceptance.
 
     npx --yes chat-to-computer-mcp@latest install
 
@@ -96,27 +96,24 @@ and can restart a prolonged stalled connection when the user has enabled
 a session and no local command is running. A deliberate Disconnect disables
 recovery; no app background-login auto-connect is enabled without opting in.
 The tunnel client handles transient network failures with its own backoff.
-Windows uses its separate native connection and login supervision; this
-macOS health watchdog does not imply equivalent Windows live-network
-failover testing.
+Windows implements the corresponding native poll-health watchdog, resume checks and idle transport recovery. Both need real WAN/provider acceptance beyond process fixtures.
 
 Inspect and opt out:
 
     chat-to-computer-mcp launchagent status
     chat-to-computer-mcp launchagent disable
 
-The Mac GUI offers equivalent next-login settings in Workspaces. To avoid
+The Mac GUI offers equivalent next-login settings in Settings. To avoid
 duplicate instances, the current GUI session is never restarted by the toggle.
 
-## Private release candidates / offline source
+## Offline source packages and release candidates
 
-Until npm Registry publication, install a prebuilt tarball:
+For an explicitly selected, checksum-verified source tarball, install locally:
 
     npm install --global ./chat-to-computer-mcp-0.4.4.tgz
     chat-to-computer-mcp install
 
-A tarball can be attached to a GitHub release. When the GitHub repository
-is private, users require access.
+A tarball can be attached to a GitHub release. A tag alone does not establish npm publication; verify the exact version first.
 
 ## Connect to ChatGPT after installation
 

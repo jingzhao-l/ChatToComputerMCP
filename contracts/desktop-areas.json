@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "areas": [
+    {
+      "name": "Overview",
+      "en": "Connection, workspace and permission summary",
+      "zh": "连接、工作区与权限摘要",
+      "wide": "Overview",
+      "compact": "Overview"
+    },
+    {
+      "name": "Workspaces",
+      "en": "Approved roots, permissions, command capacity and scope instructions",
+      "zh": "已批准目录、权限、命令容量与工作区调用指引",
+      "wide": "Workspaces",
+      "compact": "Folders"
+    },
+    {
+      "name": "Connection",
+      "en": "Providers, credentials, connection and OAuth client grants/revocation",
+      "zh": "服务商、凭据、连接以及 OAuth 客户端授权/撤销",
+      "wide": "Connection",
+      "compact": "Connect"
+    },
+    {
+      "name": "Tasks",
+      "en": "Running/queued jobs, targeted cancellation, output and local history",
+      "zh": "运行中/排队任务、定向取消、输出及本地历史",
+      "wide": "Command center",
+      "compact": "Tasks"
+    },
+    {
+      "name": "Activity",
+      "en": "Redacted logs and structured audit",
+      "zh": "脱敏日志及结构化审计",
+      "wide": "Activity",
+      "compact": "Activity"
+    },
+    {
+      "name": "Security",
+      "en": "Privileged tools, history content and independent worker opt-ins",
+      "zh": "特权工具、历史内容及独立 Worker 授权",
+      "wide": "Security",
+      "compact": "Security"
+    },
+    {
+      "name": "Settings",
+      "en": "Profile, ports, login supervision, updates and preferences",
+      "zh": "Profile、端口、登录保活、更新及偏好",
+      "wide": "Settings",
+      "compact": "Settings"
+    }
+  ]
+}

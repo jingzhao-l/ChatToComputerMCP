@@ -74,7 +74,7 @@ jobs:
             'windows/src/FileMCP.Core/WorkspaceCommandBudget.cs',
             'vendor/tunnel-client/darwin-arm64/tunnel-client',
             'vendor/tunnel-client/darwin-amd64/tunnel-client','vendor/tunnel-client/darwin-amd64/THIRD-PARTY-LICENSES.txt','vendor/ripgrep/darwin-amd64/rg',
-            'docs/PUBLISHING.md','docs/ARCHITECTURE.md','docs/BASE_TOOL_CONTRACT.md','contracts/mcp-tools.json','LICENSE'
+            'docs/PUBLISHING.md','docs/ARCHITECTURE.md','docs/BASE_TOOL_CONTRACT.md','contracts/mcp-tools.json','contracts/desktop-areas.json','LICENSE'
           ]) if(!files.has(required)) throw Error('Missing '+required);
           for(const filename of files)
             if(filename.includes('/obj/') || filename.includes('/bin/Release/') ||

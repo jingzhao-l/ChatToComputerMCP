@@ -31,7 +31,7 @@ To update a globally installed npm CLI separately:
 
 ## Native desktop update controls
 
-macOS Workspaces and Windows Settings have **Check for updates** and
+macOS Settings and Windows Settings have **Check for updates** and
 **Install update** buttons, plus:
 
 - **Check automatically**: optional check at launch and about every 12 hours.
@@ -91,7 +91,7 @@ See [Installation](INSTALL_NPM.md) and [Troubleshooting](TROUBLESHOOTING.md).
 
 After installation, the desktop **Activate update…** action validates the
 versioned release, then atomically closes new local tool admission only if
-all accepted requests and queued/running commands are finished. A busy
+all accepted requests and queued/running commands are finished and no active CUA work/lease remains. A busy
 runtime refuses activation; if scheduling the relaunch fails, admission is
 restored. The helper waits for the old app to exit before opening the selected
 release, and never kills a process. Automatic installation still does not

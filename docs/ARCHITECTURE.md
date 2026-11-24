@@ -1,100 +1,102 @@
 # Architecture
 
-ChatToComputerMCP is a local-first native MCP workspace gateway. The application and its tools run on the user's Mac or Windows computer; models and cloud chat clients remain outside it.
+ChatToComputerMCP is a local-first native MCP gateway. Models and cloud
+conversations remain external. All file, command and optional window actions
+run on the explicitly approved local computer.
 
 ## Components and trust boundaries
 
 ```text
-Remote AI conversation / MCP client
-        │
-        │ approved tunnel; authentication depends on transport
-        ▼
-Outbound OpenAI Secure MCP Tunnel
-(or Cloudflare connection on supported macOS setups)
-        │
-        ▼
-Local loopback HTTP MCP endpoint
-        │
-        ├── tools/list and tools/call
-        │        │
-        │        ├── default workspace tools
-        │        └── workspace_call → approved scoped tools
-        │
-        └── local desktop UI, logs and task controls
-                              │
-                        OS file system
+Remote cloud conversation / MCP client
+    | OpenAI Secure MCP Tunnel (shared principal)
+    | or Cloudflare HTTPS + OAuth (verified client principal)
+    v
+Loopback HTTP MCP gateway (macOS Swift / Windows C#)
+    |-- identity and authorization; bounded HTTP admission
+    |-- approved workspace catalog and direct workspace_id routing
+    |     |-- per-root file, code search and safe Git
+    |     |-- shared command budget, FIFO, cancel/output/receipts
+    |     '-- optional host Shell or restricted Linux container
+    |-- opt-in independent workers and live reattachment
+    |-- optional native background CUA (local app grants)
+    |     '-- separately granted isolated browser / explicit Guest
+    '-- native GUI, local history, audit and update admission
 ```
 
-The tunnel health/admin listener also binds to loopback, not a public interface. Remote callers must not be allowed to add workspaces or rewrite permission settings through MCP.
+Local MCP and tunnel health/admin listeners bind to loopback. Both platform
+HTTP implementations cap accepted active sockets at 32 and bound complete
+request receipt and response writing independently to 15 seconds. A tool
+execution has its own lifecycle and timeout; it is not limited by HTTP
+framing timeouts. Shutdown closes tracked sockets.
 
-## Workspace catalog
+## Workspace and command lifecycle
 
-- The **default** workspace is the compatibility scope for direct tool calls.
-- The user may approve up to **12 additional roots** in the native UI.
-- A scope is a stable ID, friendly name and canonical path.
-- Root validation rejects invalid, overlapping or symlink-aliased folders.
-- `list_workspaces` exposes the approved catalog to authenticated MCP callers.
-- `workspace_call` routes an existing enabled tool to an approved non-default scope.
-- Additional workspace changes may take effect live while the affected scope is idle; the default root and global permissions require reconnection.
+One default plus up to 12 named roots are locally approved, canonical and
+mutually disjoint. Omitting workspace_id selects the default; each scoped
+tool accepts workspace_id directly, with workspace_call retained as a
+compatibility wrapper. An idle additional root can be modified live.
+Default-root/global changes require reconnect, and OAuth policy changes
+invalidate prior tokens. Remote callers cannot approve new scopes.
 
-The shared connection identity may expose the same approved scopes to different remote conversations. Verified OAuth grants restrict catalog access per approved client.
+The 4–16 (default 8) shared command budget covers both synchronous and
+asynchronous jobs. FIFO queue admission is opt-in. Overlapping cwd trees and
+mutations are guarded cooperatively; host Shell still has user-level OS
+permissions. Optional restricted Linux containers need a trusted, locally
+approved Docker image and engine; no fallback to host Shell.
 
-## Commands and task lifecycle
+Durable request tombstones precede dispatch; command receipts are scoped to
+the authenticated connection principal. Ordinary history is local and
+content capture defaults off. Explicitly enabled independent workers can
+reattach a demonstrably live worker after a gateway restart, preserving the
+original session and capacity reservation. Worker death, reboot, and
+unlaunched queue entries are interrupted, not replayed. See
+[worker lifecycle](INDEPENDENT_TASKS.md) and [workspace security](MULTI_WORKSPACE_SECURITY.md).
 
-The default 8 concurrent slots can be configured within the 4–16 range. Sync and long-running commands share the admission budget across all scopes. Overlapping working-directory trees are rejected; independent subtrees can run simultaneously.
+## Identity and authorization
 
-Long-running sessions carry IDs, output cursors, completion states, bounded output and targeted cancellation. A cancelled task must not automatically cancel a sibling in another independent cwd.
+Cloudflare OAuth uses locally approved client IDs, server-issued tokens,
+PKCE, workspace grants, owner-scoped task access and revocation on both
+platforms. The shared OpenAI Tunnel local authentication header does not
+verify the origin of a particular conversation. A trusted client or cloud
+platform must supply authenticated conversation claims. A lease or request
+ID cannot substitute for a principal. See [verified access](VERIFIED_CLIENT_ACCESS.md).
 
-**Important limitations**
+## Native implementations
 
-1. A cwd guard is cooperative. A user-privileged shell may still open absolute paths or spawn unrestricted child processes.
-2. Default sessions remain in-process. Explicitly enabled independent workers store bounded output and metadata in a private profile directory. Recovery verifies the original receipt, owner, current root and execution mode; active workers continue without replay. Queued, worker-lost and rebooted jobs are not silently restarted. The separate receipt journal remains privacy-minimized.
-3. Cloudflare OAuth now derives client identity exclusively from server-issued, validated bearer tokens, with locally approved workspace scopes and command ownership. Client-supplied MCP clientInfo remains untrusted. OpenAI Secure MCP Tunnel currently forwards a shared local authentication header, so it cannot identify individual conversations without an additional authenticated protocol.
+| | macOS | Windows |
+| --- | --- | --- |
+| Desktop | AppKit / Swift | WPF / .NET 8 |
+| CPU targets | Apple Silicon, Intel | x64, ARM64 |
+| Credential store | Keychain | Credential Manager / private OAuth state |
+| User login supervision | launchd LaunchAgent | HKCU Run + user supervisor |
+| Native process containment | process groups | Job Objects |
+| Gateway interface | Shared base JSON Schema contract | Shared base JSON Schema contract |
 
-## Native applications
+Both GUIs have seven areas. The base tool interface is governed by the
+[shared machine-readable contract](../contracts/mcp-tools.json) and
+[generated inventory](BASE_TOOL_CONTRACT.md). Native implementation fixtures
+compare schemas, annotations and permission visibility; actual runtime
+regressions are separate. Windows historical .NET project names remain
+internal implementation details.
 
-| Platform | Implementation | Current verification |
-|---|---|---|
-| macOS | AppKit/Swift app, loopback MCP, Secure MCP Tunnel, optional Cloudflare | Native builds, UI-state and MCP integration tests on Mac |
-| Windows | WPF/.NET 8 app, native Windows APIs and Credential Manager, Secure MCP Tunnel | Windows-targeting compilation on Mac; real Windows execution still required |
+## Installation, recovery and updates
 
-Windows package paths still use the historical FileMCP .NET namespace/project names for source compatibility. The product-facing name and executable are ChatToComputerMCP.
+The npm package provides tracked native source and pinned vendor binaries,
+compiled locally; no postinstall starts services or grants permissions.
+A new version is installed separately. Both GUI/CLI update paths share
+preferences. Explicit activation closes new admission only when idle;
+running/queued tasks and active CUA leases block activation. User-login
+startup and reconnect are opt-in. No pre-login service or hidden updater
+daemon is installed. macOS retains the legacy bundle/Keychain namespace for
+credential continuity until explicit migration is complete. See
+[updates](UPDATES.md), [migration](RELEASE_MIGRATION.md) and
+[platform parity](PLATFORM_PARITY.md).
 
-## Local installation and background lifecycle
+## Optional CUA
 
-The npm wrapper contains application sources and pinned vendor tools. CLI `install` compiles into a versioned per-user release path, not npm's own executable directory. There is **no automatic postinstall** process.
-
-On Mac, an optional dedicated `local.chat-to-computer-mcp` LaunchAgent may start the app after user login and restart it on abnormal exit. The `--always` policy additionally restarts normal exits. Tunnel auto-connect requires a separate opt-in; it is refused while the original `local.filemcp` service is active.
-
-For credentials and safe migration, see [RELEASE_MIGRATION.md](RELEASE_MIGRATION.md) and [SECURITY.md](../SECURITY.md).
-
-## Verification evidence and pending work
-
-The 0.1.0 release has been verified with local Mac Swift/UI tests, npm tarball content checks and an isolated npm-source build/install. Windows cross-target compilation passed, **not** Windows real-device acceptance. Historical issue references; implementation and current acceptance are distinguished in PLATFORM_PARITY.md:
-
-- [Verified client identities and per-client grants](https://github.com/jingzhao-l/ChatToComputerMCP/issues/1)
-- [Durable supervisor and recovery after restart](https://github.com/jingzhao-l/ChatToComputerMCP/issues/2)
-
-
-## Windows receipt parity (2026-11-23)
-
-The Windows command runtime now uses a separate per-user
-`ChatToComputerMCP/receipts/command-receipts-v1.json` store with a protected
-user-only ACL. Request IDs are salted and hashed before persistence; no
-command text, output, credentials or full file paths are persisted.
-Durable tombstones precede launching a command; after an unclean exit a
-`starting` record becomes `interrupted` and cannot be re-executed using the
-same workspace/request ID. Terminal status is saved as a separate step.
-
-The previous Windows FileMCP default settings folder and Credential Manager
-target are not reused; the new product stores its own settings, tunnel profiles
-and runtime key. There is **no automatic import of prior FileMCP credentials**.
-
-This ledger is protection against unintended replays, not a task supervisor.
-The Windows x64 real-device CI must pass before calling runtime parity verified.
-
-Optional background window automation: see [CUA setup and security](CUA.md).
-
-## CUA runtime (0.6.0)
-
-The native host owns the application grant, exact process/window lease, observation nonce, bounded pinned driver subprocess and durable dispatch receipt. It rechecks target ownership and refuses foreground fallback. Browser sessions use separate headless Chromium processes with explicit origin grants. Guest-only relays are isolated optional routes, disabled until a local interactive enablement epoch exists; they cannot invoke host workspace or shell tools. Active CUA calls and leases participate in the idle update gate. See [CUA](CUA.md) and [verified-client boundaries](VERIFIED_CLIENT_ACCESS.md).
+The host owns application grants, exact process/window leases, bounded
+pinned driver subprocesses, one-use observations and durable action receipts.
+The headless browser uses separate origin grants. Guest-only relays are
+default-off until explicit local opt-in and never expose host workspace or
+Shell tools. No automatic foreground/Guest fallback. Details and acceptance
+limits are maintained in [CUA](CUA.md).

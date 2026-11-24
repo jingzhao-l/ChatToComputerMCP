@@ -1490,8 +1490,8 @@ public partial class MainWindow : Window
     {
         var compact = ActualWidth > 0 && ActualWidth < 820;
         MainTabs.TabStripPlacement = compact ? Dock.Top : Dock.Left;
-        string[] names = compact ? ["Overview", "Connect", "Folders", "Tasks", "Activity", "Security", "Settings"] :
-            ["Overview", "Connection", "Workspaces", "Command center", "Activity", "Security", "Settings"];
+        string[] names = compact ? ["Overview", "Folders", "Connect", "Tasks", "Activity", "Security", "Settings"] :
+            ["Overview", "Workspaces", "Connection", "Command center", "Activity", "Security", "Settings"];
         for (var i = 0; i < MainTabs.Items.Count && i < names.Length; i++)
             if (MainTabs.Items[i] is TabItem tab) tab.Header = names[i];
     }

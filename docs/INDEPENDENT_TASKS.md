@@ -37,5 +37,4 @@ approved image and installed engine.
 
 Mac regression kills an actual fixture gateway PID and verifies worker
 survival, original session identity, no duplicate execution, final output,
-terminal receipt and targeted cancellation. Windows equivalent regression
-is included; a Windows-targeting compile is not native execution evidence.
+terminal receipt and targeted cancellation. Windows equivalent regression is included in the native Windows x64 suite; hosted CI has executed it. A Windows-targeting compile alone is not native execution evidence. Physical Windows and reboot/ARM64 scenarios remain separate.

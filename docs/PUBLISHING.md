@@ -16,7 +16,7 @@ After **the first version exists on npm**, open its package settings → **Trust
 
 Do not enter the entire path into the workflow filename field. The file lives at `.github/workflows/publish-npm.yml`. The workflow grants `id-token: write` and runs on a **GitHub-hosted Ubuntu runner**. It uses Node 24 and npm 11+, and publishes **without** `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a stored npm publish secret.
 
-For a private GitHub repository, npm provenance statements are **not** currently generated even when trusted publishing is enabled. Private repository source remains subject to maintainer access permissions; the npm tarball is publicly downloadable if published with public access.
+The repository and npm package are public. Keep historical private-repository notes separate from current OIDC publishing; never include credentials or untracked local files.
 
 See [official npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) for supported providers and limitations.
 
@@ -72,7 +72,7 @@ The job verifies that:
 3. `package.json` version equals the pushed tag without the `v`.
 4. npm CLI and local installer tests pass.
 5. The package content manifest contains required sources (including the CUA backend, optional worker and lockfile) and no generated build artifacts.
-6. Native Mac/Windows quality gates include CUA security, real headless Chromium and loopback Guest transport regression.
+6. Native Mac/Windows quality gates include base schema and permission checks, native HTTP/runtime and installer regressions, Intel Mac vendor integrity and base gateway tests, plus the separately maintained CUA security, Chromium and Guest transport regression.
 7. The same registry version has not already been published.
 
 It then publishes to the npm `latest` dist-tag using GitHub Actions OIDC, followed by a registry read-back. The tag alone does not produce a Mac/Windows installer binary: recipients compile natively from the npm package.
@@ -92,7 +92,7 @@ For a versioned tarball attach `chat-to-computer-mcp-VERSION.tgz` and a SHA-256 
 Before enabling automated tag publication, verify:
 
 - npm Trusted Publisher matches the owner/repo/workflow exactly.
-- GitHub-hosted Actions jobs can actually start. On 2026-11-22 GitHub Verify jobs were blocked before runner assignment by an account billing/spending-limit annotation.
+- GitHub-hosted Actions jobs must run; the 2026-11-22 private-repository billing blockage is historical, not current publication status.
 - macOS and Windows test evidence is reviewable; Windows real-device tests may still be pending.
 - GitHub repository visibility and npm's public package metadata are appropriate for the release; public npm packages expose their packed source even if the GitHub repository is private.
 - No secrets or local credential files are in the packed tarball.
