@@ -61,9 +61,8 @@ restarted. Existing launch settings are preserved for the next login.
 On Windows the CLI selects the highest successfully installed release.
 
 **Quit the current application and reopen it after your AI tasks finish**
-to activate the newly installed native app. Updating does not migrate or
-resume still-running processes; the existing crash-safe receipt ledger is not
-an independent supervisor. Use the old retained version directory only after
+to activate the newly installed native app. Activation refuses while active or queued tasks remain. Independent worker
+mode is separate from the updater; no update restarts or replays commands. Use the old retained version directory only after
 verifying compatibility with existing local data.
 
 ## Security and failure behavior

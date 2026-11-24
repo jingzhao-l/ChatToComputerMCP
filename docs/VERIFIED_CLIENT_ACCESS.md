@@ -1,9 +1,9 @@
-# Verified OAuth client access (macOS, Cloudflare OAuth)
+# Verified OAuth client access (macOS and Windows, Cloudflare OAuth)
 
 This document describes which remote clients have independently verified
 identities and which connections are intentionally shared.
 
-## What v0.3.0 actually provides
+## Verified client authorization
 
 Cloudflare OAuth clients authenticate with **server-issued bearer tokens**
 bound to a locally approved OAuth client ID. A client-supplied display name is
@@ -43,15 +43,16 @@ mode requires a verified transport claim or a separately approved OAuth flow.
 
 ## Other limits
 
-- The macOS native GUI currently manages OAuth clients for Cloudflare only.
-- Windows currently uses the OpenAI Secure MCP Tunnel and retains shared
-  connection-level authorization; it does not implement the Cloudflare OAuth
-  client management page.
-- The shell runs with the computer user's OS privileges. A cwd overlap guard
-  is not an OS sandbox.
-- Command session ownership is still runtime-bound. Durable macOS receipts
-  prevent accidental replay after restart, but cannot reattach orphaned
-  processes or their lost output streams.
+- Both native GUIs manage Cloudflare OAuth clients. The OpenAI shared tunnel
+  remains a single connection principal, not an authenticated chat identity.
+- The default host shell runs with the current user's privileges. Optional
+  isolated Linux execution uses a separately approved Docker image with
+  restricted mounts and no network; the cwd overlap guard is not a sandbox.
+- connection_identity reports the verified principal and grant scope;
+  list_my_commands lists sessions of that principal only.
+- Independent worker mode can recover a live worker across gateway restarts,
+  subject to the original owner, durable receipt and current workspace grant.
+  An OS reboot or worker loss is not live recovery.
 
 ## Testing
 

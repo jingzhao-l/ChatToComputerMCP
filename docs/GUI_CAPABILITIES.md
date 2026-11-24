@@ -1,38 +1,32 @@
 # Native GUI capabilities and design guide
 
-The macOS UI is a native AppKit window with five pages using system controls,
-persistent selected tab and light/dark appearances.
+Both native apps now use seven functional areas. macOS adapts between a
+wide sidebar and compact navigation; Windows uses a resizable sidebar layout.
 
-| Page | GUI controls |
+| Area | Controls |
 |---|---|
-| Overview | Folder and permission summary, tunnel route and quick actions |
-| Workspaces | Default folder, add/rename/remove/reveal multiple approvals, copy scoped invocation, shell/Git/Codex permissions, 4–16 capacity, advanced profile/port/health/Git identity |
-| Connection | Provider, credentials, OAuth pairing, connection save, connect/disconnect and managed reconnect |
-| Tasks | Scoped command sessions, refresh, workspace context and single-session cancellation |
-| Activity | Redacted log output, follow/scroll, copy and clear |
+| Overview | Connection and workspace summary, quick actions |
+| Workspaces | Default and additional approved roots, scoped permissions, capacity |
+| Connection | Provider, credentials, OAuth pairing, verified client grants and revocation |
+| Tasks | Live short/long tasks, queued jobs, scoped cancellation, bounded output, durable history |
+| Activity | Redacted diagnostics and private structured audit |
+| Security | Global permission limits, history content opt-in, independent worker opt-in |
+| Settings | Profile, ports, login behavior, updates and advanced preferences |
 
-## UX and consent
+Shell, remote Git push, history content and independent workers are separate
+opt-in permissions. Per-workspace restrictions include optional Linux
+container execution. The user may alter idle additional workspaces live;
+changes to global permissions require reconnection. The receipt journal
+prevents replay and the optional worker supervisor can recover a live task
+after gateway restart. Neither replays interrupted work.
 
-- Shell and Git push remain separate privileged opt-in controls.
-- Settings affecting permissions are locked while connected.
-- Cancelling a task requires confirmation and targets only that session.
-  Short synchronous commands are counted but cannot be cancelled here yet.
-- AppKit displays the window before requesting Keychain authorization.
-- Advanced network settings are progressively disclosed.
-- System appearance, native keyboard focus and accessibility names remain.
-
-## Next UX milestones
-
-- Authenticated client identities, distinct permission approvals and audit.
-- Mac Tasks now displays prior interrupted/unconfirmed command receipt counts and cautions against automatic replay. It is not full process recovery.
-- Durable jobs, command output retention, progress and actual process reattachment after restart.
-- Native Windows parity for workspaces, task management and permissions.
-- Keyboard, VoiceOver, multi-display and screenshot regression expansion.
-
+Mac UI checks cover 210 appearance/provider/state/tab combinations. Windows
+WPF compilation and native test code are verified separately from actual
+device and external provider acceptance.
 
 ## Portable install and Windows parity
 
-Mac Workspaces now provides optional LaunchAgent login/keep-alive controls.
+Mac Settings provides optional LaunchAgent login/keep-alive controls.
 No background service is enabled implicitly by local npm compile or manual GUI
 launch. The CLI can enable/disable the dedicated local.chat-to-computer-mcp
 LaunchAgent without touching local.filemcp.
@@ -62,7 +56,7 @@ and restart scenarios remain unverified; ARM64 packages build successfully.
 
 ## Native updates (0.3.0)
 
-macOS Workspaces and Windows Settings now include Check for updates,
+macOS Settings and Windows Settings now include Check for updates,
 Install update, Check automatically and Install automatically controls.
 These fetch a verified stable release from the official npm Registry and
 compile a separate versioned native app. All automation is opt-in and
