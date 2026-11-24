@@ -44,7 +44,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
         CommandReceiptLedger? receiptLedger = null,
         WindowsOAuthServer? oauth = null, string? publicHost = null,
         bool enableGitPush = false, bool enableCodexHistory = false,
-        CommandHistoryStore? commandHistory = null)
+        CommandHistoryStore? commandHistory = null,
+        WorkspacePermissions? defaultWorkspacePermissions = null)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         _port = port; _localAuthToken = localAuthToken; _log = log;
@@ -59,9 +60,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
             throw new FileMcpException("Public OAuth hostname must be an exact DNS host");
         var budget = new WorkspaceCommandBudget(maxConcurrentCommands);
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
-            enableCommands, sharedBudget: budget, receiptLedger: receiptLedger,
-            workspaceScopeID: "default", enableGitPush: enableGitPush,
-            enableCodexHistory: enableCodexHistory, commandHistory: commandHistory);
+            enableCommands && (defaultWorkspacePermissions?.AllowShell ?? true), sharedBudget: budget, receiptLedger: receiptLedger,
+            workspaceScopeID: "default", enableGitPush: enableGitPush && (defaultWorkspacePermissions?.AllowGitPush ?? true),
+            enableCodexHistory: enableCodexHistory && (defaultWorkspacePermissions?.AllowCodexHistory ?? true),
+            commandHistory: commandHistory, allowWrite: defaultWorkspacePermissions?.AllowWrite ?? true);
         var roots = new List<string> { _tools.WorkspaceRoot };
         var additional = additionalWorkspaces ?? [];
         if (additional.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
@@ -74,10 +76,13 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 throw new FileMcpException("Invalid or duplicate workspace ID or name");
             if (!Directory.Exists(definition.Path)) throw new FileMcpException("Approved workspace directory is missing");
             var scoped = new LocalTools(definition.Path, gitUserName, gitUserEmail,
-                enableCommands, sharedBudget: budget, receiptLedger: receiptLedger,
+                enableCommands && (definition.Permissions?.AllowShell ?? true),
+                sharedBudget: budget, receiptLedger: receiptLedger,
                 workspaceScopeID: definition.Id,
-                enableGitPush: enableGitPush, enableCodexHistory: enableCodexHistory,
-                workspaceName: definition.Name, commandHistory: commandHistory);
+                enableGitPush: enableGitPush && (definition.Permissions?.AllowGitPush ?? true),
+                enableCodexHistory: enableCodexHistory && (definition.Permissions?.AllowCodexHistory ?? true),
+                workspaceName: definition.Name, commandHistory: commandHistory,
+                allowWrite: definition.Permissions?.AllowWrite ?? true);
             var canonical = Path.TrimEndingDirectorySeparator(scoped.WorkspaceRoot);
             if (roots.Any(root => OverlappingRoots(Path.TrimEndingDirectorySeparator(root), canonical)))
                 throw new FileMcpException("Approved workspace folders must not overlap");
@@ -93,7 +98,12 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     private JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
     {
-        var tools = _tools.ToolDefinitions;
+        var tools = new JsonArray();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var scope in new[] { _tools }.Concat(_approved
+            .Where(item => verified is null || verified.Workspaces.Contains(item.Key)).Select(item => item.Value.Tools)))
+            foreach (var definition in scope.ToolDefinitions.OfType<JsonObject>())
+                if (seen.Add(definition["name"]!.GetValue<string>())) tools.Add(definition.DeepClone());
         foreach (var definition in tools.OfType<JsonObject>())
         {
             definition["inputSchema"]!["properties"]!["workspace_id"] = new JsonObject {
@@ -113,8 +123,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
                         ["properties"] = new JsonObject {
                             ["id"] = new JsonObject { ["type"] = "string" },
                             ["name"] = new JsonObject { ["type"] = "string" },
-                            ["path"] = new JsonObject { ["type"] = "string" } },
-                        ["required"] = new JsonArray("id", "name", "path") } } },
+                            ["path"] = new JsonObject { ["type"] = "string" },
+                            ["allowed_tools"] = new JsonObject { ["type"] = "array",
+                                ["items"] = new JsonObject { ["type"] = "string" } } },
+                        ["required"] = new JsonArray("id", "name", "path", "allowed_tools") } } },
                 ["required"] = new JsonArray("workspaces"), ["additionalProperties"] = false },
             ["annotations"] = new JsonObject { ["readOnlyHint"] = true, ["destructiveHint"] = false,
                 ["openWorldHint"] = false }
@@ -141,6 +153,10 @@ public sealed class LocalMcpServer : IAsyncDisposable
         });
         return tools;
     }
+
+    private static JsonArray AllowedTools(LocalTools tools) => new(tools.ToolDefinitions.OfType<JsonObject>()
+        .Select(item => item["name"]!.GetValue<string>()).OrderBy(name => name, StringComparer.Ordinal)
+        .Select(name => (JsonNode?)JsonValue.Create(name)).ToArray());
 
     internal IReadOnlyList<WindowsOAuthServer.DesktopClient> DesktopOAuthClients() =>
         _oauth?.ApprovedClients() ?? [];
@@ -427,7 +443,9 @@ public sealed class LocalMcpServer : IAsyncDisposable
         CancellationToken cancellationToken, WindowsOAuthServer.VerifiedClient? verified = null)
     {
         if (parameters["name"] is not JsonValue nameNode || !nameNode.TryGetValue<string>(out var name)) return JsonRpcError(id, -32602, "Missing tool name", status: modern ? 400 : 200);
-        if (!_tools.HasTool(name) && name is not ("list_workspaces" or "workspace_call"))
+        if (name is not ("list_workspaces" or "workspace_call") &&
+            !_tools.HasTool(name) && !_approved.Any(item =>
+                (verified is null || verified.Workspaces.Contains(item.Key)) && item.Value.Tools.HasTool(name)))
             return JsonRpcError(id, -32602, $"Unknown tool: {name}");
         JsonObject arguments;
         if (parameters["arguments"] is null) arguments = new JsonObject();
@@ -440,7 +458,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
             if (name == "list_workspaces")
             {
                 var listed = new JsonArray {
-                    new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot }
+                    new JsonObject { ["id"] = "default", ["name"] = "Default workspace", ["path"] = _tools.WorkspaceRoot,
+                        ["allowed_tools"] = AllowedTools(_tools) }
                 };
                 foreach (var (_, item) in _approved
                     .Where(kv => verified is null || verified.Workspaces.Contains(kv.Key))
@@ -448,7 +467,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 {
                     listed.Add(new JsonObject {
                         ["id"] = item.Definition.Id, ["name"] = item.Definition.Name,
-                        ["path"] = item.Tools.WorkspaceRoot });
+                        ["path"] = item.Tools.WorkspaceRoot, ["allowed_tools"] = AllowedTools(item.Tools) });
                 }
                 var text = listed.ToJsonString();
                 output = new ToolCallOutput(new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),

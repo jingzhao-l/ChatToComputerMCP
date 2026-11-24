@@ -254,6 +254,44 @@ extension LocalMCPServer {
             let json = try JSONSerialization.jsonObject(with: response.subdata(in: range.upperBound..<response.count)) as! [String: Any]
             return json["result"] as! [String: Any]
         }
+        func restrictedCall(_ instance: LocalMCPServer, _ name: String, _ arguments: [String: Any]) throws -> [String: Any] {
+            let response = instance.callTool(id: 1, params: ["name": name, "arguments": arguments], modern: false)
+            let separator = response.range(of: Data("\r\n\r\n".utf8))!
+            return (try JSONSerialization.jsonObject(with: response.subdata(in: separator.upperBound..<response.count)) as! [String: Any])["result"] as! [String: Any]
+        }
+        let restrictedServer = try LocalMCPServer(port: 18964, allowedDirectory: defaultRoot.path,
+            gitUserName: "Test", gitUserEmail: "test@example.invalid", enableCommands: true,
+            additionalWorkspaces: [WorkspaceDefinition(id: "second", name: "Second", path: secondRoot.path,
+                permissions: .readOnly)], enableGitPush: true, enableCodexHistory: true,
+            localAuthToken: String(repeating: "c", count: 64), log: { _ in })
+        defer { restrictedServer.stop() }
+        let readOnlyTools = restrictedServer.workspaceTools["second"]!
+        precondition(readOnlyTools.hasTool(named: "read_file") && readOnlyTools.hasTool(named: "workspace_context"))
+        for tool in ["write_file", "delete_file", "edit_file", "git_init", "git_push", "run_command", "start_command", "save_conversation_to_codex"] {
+            precondition(!readOnlyTools.hasTool(named: tool), "Read-only scope advertised " + tool)
+            do {
+                _ = try readOnlyTools.call(name: tool, arguments: [:])
+                fatalError("Read-only scope admitted " + tool)
+            } catch {}
+        }
+        let prohibited = try restrictedCall(restrictedServer, "write_file", ["workspace_id": "second",
+            "relative_path": "forbidden.txt", "content": "must not write"])
+        precondition(prohibited["isError"] as? Bool == true)
+        precondition(!FileManager.default.fileExists(atPath: secondRoot.appendingPathComponent("forbidden.txt").path))
+        let permitted = try restrictedCall(restrictedServer, "read_file", ["workspace_id": "second", "relative_path": "only-second.txt"])
+        precondition(permitted["isError"] as? Bool == false)
+        let defaultRestricted = try LocalMCPServer(port: 18965, allowedDirectory: defaultRoot.path,
+            gitUserName: "Test", gitUserEmail: "test@example.invalid", enableCommands: true,
+            additionalWorkspaces: [scoped], defaultWorkspacePermissions: .readOnly,
+            localAuthToken: String(repeating: "c", count: 64), log: { _ in })
+        defer { defaultRestricted.stop() }
+        precondition(!defaultRestricted.tools.hasTool(named: "start_command"))
+        precondition(defaultRestricted.publishedToolDefinitions.contains { $0["name"] as? String == "start_command" })
+        let otherWrite = try restrictedCall(defaultRestricted, "write_file", ["workspace_id": "second", "relative_path": "allowed.txt", "content": "ok"])
+        precondition(otherWrite["isError"] as? Bool == false)
+        let defaultWrite = try restrictedCall(defaultRestricted, "write_file", ["relative_path": "forbidden.txt", "content": "no"])
+        precondition(defaultWrite["isError"] as? Bool == true)
+        print("PASS: independently restricted workspaces and union tool discovery")
         let listed = try call("list_workspaces")
         let workspaces = (listed["structuredContent"] as! [String: Any])["workspaces"] as! [[String: Any]]
         precondition(workspaces.count == 2)

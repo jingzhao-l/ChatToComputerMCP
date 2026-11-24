@@ -31,6 +31,7 @@ struct LocalMCPConfiguration {
     var enableGitPush: Bool = false
     var enableCodexHistory: Bool = false
     var captureCommandHistoryContent: Bool = false
+    var defaultWorkspacePermissions: WorkspacePermissions? = nil
 }
 
 enum LocalMCPRuntimeState: Equatable {
@@ -379,12 +380,17 @@ final class LocalMCPRuntime {
                     + (configuration.enableCodexHistory ? " Write conversations to Codex history outside the folder." : "")
                 // Authorization is bound to every permitted folder, not only
                 // the default. Changing any scope invalidates the old policy.
-                let approvedPaths = [configuration.allowedDirectory]
-                    + configuration.additionalWorkspaces.map(\.path)
-                let canonicalPaths = approvedPaths.map(Self.canonicalWorkspacePath)
-                let policy = canonicalPaths.sorted().joined(separator: "|") + "|" + permissions
+                let roots = configuration.additionalWorkspaces.sorted { $0.id < $1.id }.map {
+                    [$0.id, Self.canonicalWorkspacePath($0.path), $0.permissions?.fingerprint ?? "inherit"]
+                }
+                let bound = [["default", Self.canonicalWorkspacePath(configuration.allowedDirectory),
+                              configuration.defaultWorkspacePermissions?.fingerprint ?? "inherit", permissions]] + roots
+                let policy = String(decoding: try JSONEncoder().encode(bound), as: UTF8.self)
                 oauth = try LocalMCPOAuthServer(issuer: "https://" + configuration.cloudflareHostname,
-                    pairingSecret: configuration.cloudflarePathSecret, policy: policy, permissionDescription: permissions,
+                    pairingSecret: configuration.cloudflarePathSecret, policy: policy,
+                    permissionDescription: permissions + " Individual workspaces can further restrict these permissions. Default: " +
+                        (configuration.defaultWorkspacePermissions?.summary ?? "Inherit global permissions") + "; " +
+                        configuration.additionalWorkspaces.map { $0.name + ": " + ($0.permissions?.summary ?? "Inherit global permissions") }.joined(separator: "; "),
                     approvedWorkspaces: configuration.additionalWorkspaces,
                     persistedState: configuration.cloudflareOAuthState, persist: configuration.saveCloudflareOAuthState)
             } else { oauth = nil }
@@ -408,6 +414,7 @@ final class LocalMCPRuntime {
                 commandHistory: history,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
+                defaultWorkspacePermissions: configuration.defaultWorkspacePermissions,
                 localAuthToken: localAuthToken,
                 publicHost: isCloudflare ? configuration.cloudflareHostname : nil,
                 pathSecret: isCloudflare && configuration.allowCloudflareURLSecret ? configuration.cloudflarePathSecret : nil,

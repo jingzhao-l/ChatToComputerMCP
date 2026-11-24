@@ -35,6 +35,7 @@ internal sealed partial class LocalTools
     private readonly SafePathResolver _resolver;
     private readonly string _gitUserName;
     private readonly string _gitUserEmail;
+    private readonly bool _allowWrite;
     private readonly bool _enableCommands;
     private readonly bool _enableGitPush;
     private readonly bool _enableCodexHistory;
@@ -91,7 +92,8 @@ internal sealed partial class LocalTools
         bool enableCommands, Ripgrep? ripgrep = null, WorkspaceCommandBudget? sharedBudget = null,
         CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default",
         bool enableGitPush = false, bool enableCodexHistory = false,
-        string workspaceName = "Default workspace", CommandHistoryStore? commandHistory = null)
+        string workspaceName = "Default workspace", CommandHistoryStore? commandHistory = null,
+        bool allowWrite = true)
     {
         _workspaceName = workspaceName;
         _commandHistory = commandHistory;
@@ -103,10 +105,11 @@ internal sealed partial class LocalTools
         _ripgrep = ripgrep ?? new Ripgrep();
         _gitUserName = gitUserName;
         _gitUserEmail = gitUserEmail;
-        _enableCommands = enableCommands;
-        _enableGitPush = enableGitPush;
-        _enableCodexHistory = enableCodexHistory;
-        if (!enableCommands)
+        _allowWrite = allowWrite;
+        _enableCommands = allowWrite && enableCommands;
+        _enableGitPush = allowWrite && enableGitPush;
+        _enableCodexHistory = allowWrite && enableCodexHistory;
+        if (!_enableCommands)
         {
             (_safeGitEmptyFile, _safeGitHooksDirectory) = PrepareSafeGitResources();
         }
@@ -282,6 +285,10 @@ internal sealed partial class LocalTools
                     ("active_total", "integer"),
                     ("available_slots", "integer"),
                     ("accepting_new_commands", "boolean") })));
+            if (!_allowWrite)
+                foreach (var definition in tools.OfType<JsonObject>()
+                    .Where(item => item["annotations"]?["readOnlyHint"]?.GetValue<bool>() != true).ToArray())
+                    tools.Remove(definition);
             return tools;
         }
     }

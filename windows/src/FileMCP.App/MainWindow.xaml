@@ -215,8 +215,11 @@
                             <Button x:Name="AddWorkspaceButton" Content="Add folders…" Click="AddWorkspaces_Click" Margin="0,0,7,5"/>
                             <Button x:Name="RenameWorkspaceButton" Content="Rename" Click="RenameWorkspace_Click" Margin="0,0,7,5"/>
                             <Button x:Name="RemoveWorkspaceButton" Content="Remove approval" Click="RemoveWorkspace_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="WorkspacePermissionButton" Content="Permissions…" Click="WorkspacePermissions_Click" Margin="0,0,7,5"/>
+                            <Button x:Name="DefaultPermissionButton" Content="Default permissions…" Click="DefaultPermissions_Click" Margin="0,0,7,5"/>
                             <Button x:Name="RevealWorkspaceButton" Content="Reveal" Click="RevealWorkspace_Click" Margin="0,0,0,5"/>
                         </WrapPanel>
+                        <TextBlock x:Name="WorkspacePermissionText" Foreground="Gray" TextWrapping="Wrap"/>
                         <TextBlock Text="Only folders approved here are accessible. Removing approval does not delete files. Save and reconnect to apply changes."
                                    Foreground="Gray" TextWrapping="Wrap" Margin="0,4,0,9"/>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">

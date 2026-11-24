@@ -70,10 +70,30 @@ private enum MCPServerError: LocalizedError {
 
 // An explicitly approved folder. IDs are opaque and stable across restarts.
 // Only the GUI can add roots; an MCP client cannot create permissions.
+struct WorkspacePermissions: Codable, Equatable {
+    var allowWrite: Bool
+    var allowShell: Bool
+    var allowGitPush: Bool
+    var allowCodexHistory: Bool
+
+    static let readOnly = WorkspacePermissions(allowWrite: false, allowShell: false,
+        allowGitPush: false, allowCodexHistory: false)
+    var fingerprint: String {
+        [allowWrite, allowShell, allowGitPush, allowCodexHistory].map { $0 ? "1" : "0" }.joined()
+    }
+    var summary: String {
+        guard allowWrite else { return "Read only" }
+        return (["Files read/write"] + (allowShell ? ["Shell"] : []) +
+                (allowGitPush ? ["Git push"] : []) + (allowCodexHistory ? ["Codex import"] : [])).joined(separator: " · ")
+    }
+}
+
 struct WorkspaceDefinition: Codable, Equatable {
     let id: String
     let name: String
     let path: String
+    // Nil preserves the existing global permission configuration for migrated folders.
+    var permissions: WorkspacePermissions? = nil
 }
 
 // Information for local GUI task management; no shell command contents.
@@ -281,6 +301,7 @@ private final class LocalTools {
     private var sessionsStopped = false
     private let gitUserName: String
     private let gitUserEmail: String
+    private let allowWrite: Bool
     private let enableCommands: Bool
     private let enableGitPush: Bool
     private let enableCodexHistory: Bool
@@ -338,7 +359,8 @@ private final class LocalTools {
         receiptLedger: CommandReceiptLedger? = nil,
         workspaceScopeID: String = "default",
         workspaceName: String = "Default workspace",
-        commandHistory: CommandHistoryStore? = nil
+        commandHistory: CommandHistoryStore? = nil,
+        allowWrite: Bool = true
     ) {
         self.workspaceName = workspaceName
         self.commandHistory = commandHistory
@@ -352,9 +374,10 @@ private final class LocalTools {
         self.ripgrep = ripgrep
         self.gitUserName = gitUserName
         self.gitUserEmail = gitUserEmail
-        self.enableCommands = enableCommands
-        self.enableGitPush = enableGitPush
-        self.enableCodexHistory = enableCodexHistory
+        self.allowWrite = allowWrite
+        self.enableCommands = allowWrite && enableCommands
+        self.enableGitPush = allowWrite && enableGitPush
+        self.enableCodexHistory = allowWrite && enableCodexHistory
     }
 
     var workspaceRootPath: String { resolver.root.path }
@@ -685,6 +708,7 @@ private final class LocalTools {
             let name = $0["name"] as? String
             return (name != "git_push" || enableGitPush)
                 && (name != "save_conversation_to_codex" || enableCodexHistory)
+                && (allowWrite || (($0["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true))
         }
     }
 
@@ -3245,6 +3269,7 @@ final class LocalMCPServer {
         commandHistory: CommandHistoryStore? = nil,
         enableGitPush: Bool = false,
         enableCodexHistory: Bool = false,
+        defaultWorkspacePermissions: WorkspacePermissions? = nil,
         localAuthToken: String,
         publicHost: String? = nil,
         pathSecret: String? = nil,
@@ -3291,15 +3316,19 @@ final class LocalMCPServer {
             resolver: resolver,
             gitUserName: gitUserName,
             gitUserEmail: gitUserEmail,
-            enableCommands: enableCommands,
-            enableGitPush: enableGitPush,
-            enableCodexHistory: enableCodexHistory,
+            enableCommands: enableCommands && (defaultWorkspacePermissions?.allowShell ?? true),
+            enableGitPush: enableGitPush && (defaultWorkspacePermissions?.allowGitPush ?? true),
+            enableCodexHistory: enableCodexHistory && (defaultWorkspacePermissions?.allowCodexHistory ?? true),
             globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
             receiptLedger: receiptLedger, workspaceScopeID: "default",
-            commandHistory: commandHistory
+            commandHistory: commandHistory,
+            allowWrite: defaultWorkspacePermissions?.allowWrite ?? true
         )
         // Canonical roots may not overlap, even through symlinks. This rejects
         // accidental cross-workspace access and ambiguous command isolation.
+        guard additionalWorkspaces.count <= 12 else {
+            throw MCPServerError.invalidArguments("At most 12 additional workspaces are supported")
+        }
         var roots = [resolver.root.path]
         var approved: [String: LocalTools] = [:]
         var names = Set<String>()
@@ -3327,11 +3356,13 @@ final class LocalMCPServer {
             names.insert(workspace.id)
             approved[workspace.id] = LocalTools(
                 resolver: scoped, gitUserName: gitUserName, gitUserEmail: gitUserEmail,
-                enableCommands: enableCommands, enableGitPush: enableGitPush,
-                enableCodexHistory: enableCodexHistory, globalBudget: commandBudget,
-                maxConcurrentCommands: configuredLimit,
+                enableCommands: enableCommands && (workspace.permissions?.allowShell ?? true),
+                enableGitPush: enableGitPush && (workspace.permissions?.allowGitPush ?? true),
+                enableCodexHistory: enableCodexHistory && (workspace.permissions?.allowCodexHistory ?? true),
+                globalBudget: commandBudget, maxConcurrentCommands: configuredLimit,
                 receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
-                workspaceName: workspace.name, commandHistory: commandHistory
+                workspaceName: workspace.name, commandHistory: commandHistory,
+                allowWrite: workspace.permissions?.allowWrite ?? true
             )
         }
         self.workspaceDefinitions = additionalWorkspaces
@@ -3718,8 +3749,18 @@ final class LocalMCPServer {
         return difference == 0
     }
 
-    private var publishedToolDefinitions: [[String: Any]] {
-        var definitions = tools.toolDefinitions.map { definition -> [String: Any] in
+    private var publishedToolDefinitions: [[String: Any]] { toolDefinitions(for: nil) }
+
+    private func toolDefinitions(for client: VerifiedOAuthClient?) -> [[String: Any]] {
+        let granted = [tools] + workspaceDefinitions.compactMap { workspace in
+            (client?.approvedWorkspaceIDs.contains(workspace.id) ?? true) ? workspaceTools[workspace.id] : nil
+        }
+        var seen = Set<String>()
+        let union = granted.flatMap { $0.toolDefinitions }.filter {
+            guard let name = $0["name"] as? String else { return false }
+            return seen.insert(name).inserted
+        }
+        var definitions = union.map { definition -> [String: Any] in
             var scoped = definition
             if var schema = scoped["inputSchema"] as? [String: Any],
                var properties = schema["properties"] as? [String: Any] {
@@ -3736,8 +3777,9 @@ final class LocalMCPServer {
                 "properties": ["workspaces": ["type": "array", "items": [
                     "type": "object", "properties": [
                         "id": ["type": "string"], "name": ["type": "string"],
-                        "path": ["type": "string"]],
-                    "required": ["id", "name", "path"], "additionalProperties": false]]],
+                        "path": ["type": "string"],
+                        "allowed_tools": ["type": "array", "items": ["type": "string"]]],
+                    "required": ["id", "name", "path", "allowed_tools"], "additionalProperties": false]]],
                 "required": ["workspaces"], "additionalProperties": false]
             let callSchema: [String: Any] = [
                 "type": "object", "properties": [
@@ -3895,7 +3937,7 @@ final class LocalMCPServer {
         case "ping":
             return jsonRPCResult(id: id, result: [:])
         case "tools/list":
-            return jsonRPCResult(id: id, result: ["tools": publishedToolDefinitions])
+            return jsonRPCResult(id: id, result: ["tools": toolDefinitions(for: verifiedClient)])
         case "tools/call":
             return callTool(id: id, params: params, modern: false,
                             verifiedClient: verifiedClient)
@@ -3918,7 +3960,7 @@ final class LocalMCPServer {
         case "ping":
             return jsonRPCResult(id: id, result: modernCompleteResult([:]))
         case "tools/list":
-            var result = modernCompleteResult(["tools": publishedToolDefinitions])
+            var result = modernCompleteResult(["tools": toolDefinitions(for: verifiedClient)])
             addCacheMetadata(to: &result, ttlMs: 30_000)
             return jsonRPCResult(id: id, result: result)
         case "tools/call":
@@ -3982,7 +4024,7 @@ final class LocalMCPServer {
                 status: modern ? 400 : 200
             )
         }
-        guard publishedToolDefinitions.contains(where: { $0["name"] as? String == toolName }) else {
+        guard toolDefinitions(for: verifiedClient).contains(where: { $0["name"] as? String == toolName }) else {
             return jsonRPCError(id: id, code: -32602, message: "Unknown tool: \(toolName)")
         }
         let arguments: [String: Any]
@@ -4005,11 +4047,14 @@ final class LocalMCPServer {
             if toolName == "list_workspaces" {
                 let list = workspaceDefinitions.filter {
                     verifiedClient?.approvedWorkspaceIDs.contains($0.id) ?? true
-                }.map {
-                    ["id": $0.id, "name": $0.name, "path": workspaceTools[$0.id]!.workspaceRootPath]
+                }.compactMap { workspace -> [String: Any]? in
+                    guard let scoped = workspaceTools[workspace.id] else { return nil }
+                    return ["id": workspace.id, "name": workspace.name, "path": scoped.workspaceRootPath,
+                            "allowed_tools": scoped.toolDefinitions.compactMap { $0["name"] as? String }.sorted()]
                 }
-                let all = [["id": "default", "name": "Default workspace",
-                            "path": tools.workspaceRootPath]] + list
+                let all: [[String: Any]] = [["id": "default", "name": "Default workspace",
+                            "path": tools.workspaceRootPath,
+                            "allowed_tools": tools.toolDefinitions.compactMap { $0["name"] as? String }.sorted()]] + list
                 let payload: [String: Any] = ["workspaces": all]
                 let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
                 output = LocalToolCallOutput(

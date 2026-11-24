@@ -142,7 +142,12 @@ public partial class MainWindow : Window
 
     private void WorkspaceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        WorkspaceNameBox.Text = (WorkspaceListBox.SelectedItem as ApprovedWorkspace)?.Name ?? "";
+        var selected = WorkspaceListBox.SelectedItem as ApprovedWorkspace;
+        WorkspaceNameBox.Text = selected?.Name ?? "";
+        if (WorkspacePermissionText is not null)
+            WorkspacePermissionText.Text = selected is null
+                ? "Default: " + (_settings?.DefaultWorkspacePermissions?.Summary ?? "Inherit global permissions")
+                : selected.Name + ": " + (selected.Permissions?.Summary ?? "Inherit global permissions");
     }
 
     private void AddWorkspaces_Click(object sender, RoutedEventArgs e)
@@ -158,7 +163,7 @@ public partial class MainWindow : Window
         foreach (var folder in picker.FolderNames)
         {
             _workspaces.Add(new ApprovedWorkspace(Guid.NewGuid().ToString("N"),
-                Path.GetFileName(Path.TrimEndingDirectorySeparator(folder)), folder));
+                Path.GetFileName(Path.TrimEndingDirectorySeparator(folder)), folder, WorkspacePermissions.ReadOnly));
         }
         if (!ValidateApprovedFolders())
         {
@@ -191,6 +196,25 @@ public partial class MainWindow : Window
         var index = _workspaces.IndexOf(workspace);
         _workspaces[index] = workspace with { Name = name };
         RefreshWorkspaceList();
+    }
+
+    private void WorkspacePermissions_Click(object sender, RoutedEventArgs e)
+    {
+        if (WorkspaceListBox.SelectedItem is not ApprovedWorkspace workspace) return;
+        var dialog = new WorkspacePermissionWindow(workspace.Name, workspace.Permissions) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        var index = _workspaces.IndexOf(workspace);
+        _workspaces[index] = workspace with { Permissions = dialog.Permissions };
+        RefreshWorkspaceList();
+        WorkspaceListBox.SelectedIndex = index;
+    }
+
+    private void DefaultPermissions_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new WorkspacePermissionWindow("Default workspace", _settings.DefaultWorkspacePermissions) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        _settings.DefaultWorkspacePermissions = dialog.Permissions;
+        WorkspacePermissionText.Text = "Default: " + (dialog.Permissions?.Summary ?? "Inherit global permissions");
     }
 
     private void RevealWorkspace_Click(object sender, RoutedEventArgs e)
@@ -1113,7 +1137,8 @@ public partial class MainWindow : Window
             saved.CloudflareTunnelName,
             saved.EnableGitPush,
             saved.EnableCodexHistory,
-            saved.CaptureCommandHistoryContent);
+            saved.CaptureCommandHistoryContent,
+            saved.DefaultWorkspacePermissions);
     }
 
     private void SaveAllSettings()
@@ -1179,6 +1204,8 @@ public partial class MainWindow : Window
         RenameWorkspaceButton.IsEnabled = editable;
         RemoveWorkspaceButton.IsEnabled = editable;
         RevealWorkspaceButton.IsEnabled = editable;
+        WorkspacePermissionButton.IsEnabled = editable;
+        DefaultPermissionButton.IsEnabled = editable;
         if (state.Status == LocalMcpRuntimeStatus.Running)
         {
             RefreshTasks();

@@ -34,6 +34,29 @@ internal static partial class Program
             var response = await SendHttpAsync(port, "POST", "/mcp", AuthHeaders(token), body.ToJsonString());
             return JsonNode.Parse(HttpBody(response))!["result"]!.AsObject();
         }
+        var restrictedTools = new LocalTools(second, "Test", "test@example.invalid", true,
+            enableGitPush: true, enableCodexHistory: true, allowWrite: false);
+        Assert(restrictedTools.HasTool("read_file") && restrictedTools.HasTool("workspace_context"), "read-only tools available");
+        foreach (var tool in new[] { "write_file", "delete_file", "edit_file", "git_init", "git_push", "run_command", "start_command", "save_conversation_to_codex" })
+            Assert(!restrictedTools.HasTool(tool), "restricted scope does not advertise " + tool);
+        await AssertThrowsAsync(() => restrictedTools.CallAsync("write_file", Obj(("relative_path", "forbidden.txt"), ("content", "no"))),
+            "tool", "read-only workspace rejects mutation");
+        var scopedPort = FreePort();
+        await using var restrictedServer = new LocalMcpServer((ushort)scopedPort, first, "Test",
+            "test@example.invalid", true, token, _ => { }, [secondDefinition],
+            defaultWorkspacePermissions: WorkspacePermissions.ReadOnly);
+        await restrictedServer.StartAsync();
+        async Task<JsonObject> RestrictedRpc(string name, JsonObject args)
+        {
+            var body = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 123, ["method"] = "tools/call",
+                ["params"] = new JsonObject { ["name"] = name, ["arguments"] = args } };
+            var response = await SendHttpAsync(scopedPort, "POST", "/mcp", AuthHeaders(token), body.ToJsonString());
+            return JsonNode.Parse(HttpBody(response))!["result"]!.AsObject();
+        }
+        Assert((await RestrictedRpc("write_file", Obj(("relative_path", "forbidden.txt"), ("content", "no"))))["isError"]!.GetValue<bool>(),
+            "default read-only workspace rejects mutation");
+        Assert(!(await RestrictedRpc("write_file", Obj(("workspace_id", "second"), ("relative_path", "allowed.txt"), ("content", "ok"))))["isError"]!.GetValue<bool>(),
+            "writable secondary scope remains discoverable");
         var listed = await Rpc("list_workspaces");
         Assert(listed["isError"]!.GetValue<bool>() == false, "list workspaces success");
         var workspaces = listed["structuredContent"]!["workspaces"]!.AsArray();

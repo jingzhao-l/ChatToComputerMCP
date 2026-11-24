@@ -41,6 +41,7 @@ private enum ConfigKey {
     static let port = "port"
     static let allowedDirectory = "allowedDirectory"
     static let additionalWorkspaces = "additionalWorkspaces"
+    static let defaultWorkspacePermissions = "defaultWorkspacePermissions"
     static let maxConcurrentCommands = "maxConcurrentCommands"
     static let healthAddress = "healthAddress"
     static let gitUserName = "gitUserName"
@@ -57,7 +58,7 @@ private enum ConfigKey {
     static let publicShellCommandsAcknowledged = "publicShellCommandsAcknowledged"
 
     static let all = [
-        tunnelID, profile, port, allowedDirectory, healthAddress, gitUserName, gitUserEmail,
+        tunnelID, profile, port, allowedDirectory, additionalWorkspaces, defaultWorkspacePermissions, maxConcurrentCommands, healthAddress, gitUserName, gitUserEmail,
         apiKey, provider, cloudflareHostname, cloudflareTunnelSource, enableCommands, enableGitPush, enableCodexHistory, captureCommandHistoryContent, allowCloudflareURLSecret, publicShellCommandsAcknowledged,
     ]
 }
@@ -521,6 +522,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let portField = NSTextField()
     private let directoryField = NSTextField()
     private var additionalWorkspaces: [WorkspaceDefinition] = []
+    private var defaultWorkspacePermissions: WorkspacePermissions?
+    private let workspacePermissionButton = NSButton(title: "Permissions…", target: nil, action: nil)
+    private let workspacePermissionLabel = NSTextField(wrappingLabelWithString: "Inherits global permissions")
     private let workspaceMenu = NSPopUpButton(frame: .zero, pullsDown: false)
     private let workspaceSelectedPath = NSTextField(wrappingLabelWithString: "Default workspace")
     private let workspaceCountLabel = NSTextField(labelWithString: "1 approved workspace")
@@ -1135,7 +1139,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         workspaceCountLabel.textColor = .secondaryLabelColor
         workspaceCountLabel.font = .systemFont(ofSize: 11)
         for button in [addWorkspaceButton, removeWorkspaceButton, renameWorkspaceButton,
-                       revealWorkspaceButton, copyWorkspaceScopeButton] {
+                       revealWorkspaceButton, copyWorkspaceScopeButton, workspacePermissionButton] {
             button.bezelStyle = .rounded
             button.target = self
             button.setAccessibilityLabel(button.title)
@@ -1145,6 +1149,13 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         renameWorkspaceButton.action = #selector(renameApprovedWorkspace)
         revealWorkspaceButton.action = #selector(revealApprovedWorkspace)
         copyWorkspaceScopeButton.action = #selector(copyApprovedWorkspaceScope)
+        workspacePermissionButton.action = #selector(editWorkspacePermissions)
+        workspacePermissionLabel.textColor = .secondaryLabelColor
+        workspacePermissionLabel.font = .systemFont(ofSize: 12)
+        workspacePermissionLabel.widthAnchor.constraint(lessThanOrEqualToConstant: Layout.contentWidth).isActive = true
+        let permissionRow = NSStackView(views: [workspacePermissionButton, workspacePermissionLabel])
+        permissionRow.orientation = .horizontal
+        permissionRow.spacing = 8
         let workspaceActions = NSStackView(views: [
             addWorkspaceButton, renameWorkspaceButton, removeWorkspaceButton,
             revealWorkspaceButton, copyWorkspaceScopeButton
@@ -1213,6 +1224,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             workspaceMenu,
             workspaceSelectedPath,
             workspaceActions,
+            permissionRow,
             workspaceSafety,
             capacityRow,
             enableCommandsCheckbox,
@@ -2069,6 +2081,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         profileField.stringValue = defaults.string(forKey: ConfigKey.profile) ?? "chat-to-computer-mcp"
         portField.stringValue = defaults.string(forKey: ConfigKey.port) ?? "8008"
         directoryField.stringValue = defaults.string(forKey: ConfigKey.allowedDirectory) ?? defaultDirectory()
+        defaultWorkspacePermissions = defaults.data(forKey: ConfigKey.defaultWorkspacePermissions)
+            .flatMap { try? JSONDecoder().decode(WorkspacePermissions.self, from: $0) }
         if let data = defaults.data(forKey: ConfigKey.additionalWorkspaces),
            let decoded = try? JSONDecoder().decode([WorkspaceDefinition].self, from: data) {
             additionalWorkspaces = decoded
@@ -2582,6 +2596,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         defaults.set(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.port)
         defaults.set(directoryField.stringValue, forKey: ConfigKey.allowedDirectory)
         defaults.set(commandCapacityMenu.selectedTag(), forKey: ConfigKey.maxConcurrentCommands)
+        if let permissions = defaultWorkspacePermissions, let data = try? JSONEncoder().encode(permissions) {
+            defaults.set(data, forKey: ConfigKey.defaultWorkspacePermissions)
+        } else { defaults.removeObject(forKey: ConfigKey.defaultWorkspacePermissions) }
         if let encoded = try? JSONEncoder().encode(additionalWorkspaces) {
             defaults.set(encoded, forKey: ConfigKey.additionalWorkspaces)
         }
@@ -2678,7 +2695,8 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 enableCommands: enableCommandsCheckbox.state == .on,
                 enableGitPush: enableGitPushCheckbox.state == .on,
                 enableCodexHistory: enableCodexHistoryCheckbox.state == .on,
-                captureCommandHistoryContent: captureCommandHistoryCheckbox.state == .on
+                captureCommandHistoryContent: captureCommandHistoryCheckbox.state == .on,
+                defaultWorkspacePermissions: defaultWorkspacePermissions
             ))
         } catch {
             showError(error.localizedDescription)
@@ -3247,6 +3265,9 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
             ? directoryField.stringValue : additionalWorkspaces[selected - 1].path
         workspaceSelectedPath.stringValue = path
         workspaceSelectedPath.toolTip = path
+        let permissions = selected > 0 && additionalWorkspaces.indices.contains(selected - 1)
+            ? additionalWorkspaces[selected - 1].permissions : defaultWorkspacePermissions
+        workspacePermissionLabel.stringValue = permissions?.summary ?? "Inherits global permissions"
         refreshWorkspaceActionButtons()
     }
 
@@ -3254,6 +3275,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let scoped = workspaceMenu.indexOfSelectedItem > 0
         removeWorkspaceButton.isEnabled = scoped && configurationIsEditable
         renameWorkspaceButton.isEnabled = scoped && configurationIsEditable
+        workspacePermissionButton.isEnabled = configurationIsEditable
         revealWorkspaceButton.isEnabled = !workspaceSelectedPath.stringValue.isEmpty
         copyWorkspaceScopeButton.isEnabled = scoped
     }
@@ -3270,7 +3292,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         for url in dialog.urls {
             let path = canonicalApprovedPath(url.path)
             additionalWorkspaces.append(WorkspaceDefinition(id: UUID().uuidString.lowercased(),
-                name: url.lastPathComponent, path: path))
+                name: url.lastPathComponent, path: path, permissions: .readOnly))
         }
         do { try validateApprovedWorkspacePaths() }
         catch {
@@ -3316,9 +3338,43 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 64 else { showError("Name must be 1–64 characters."); return }
         let old = additionalWorkspaces[selected]
-        additionalWorkspaces[selected] = WorkspaceDefinition(id: old.id, name: name, path: old.path)
+        additionalWorkspaces[selected] = WorkspaceDefinition(id: old.id, name: name, path: old.path, permissions: old.permissions)
         refreshApprovedWorkspaceMenu()
         showFeedback("Workspace renamed. Save workspace to apply.")
+    }
+
+    @objc private func editWorkspacePermissions() {
+        guard configurationIsEditable else { return }
+        let index = workspaceMenu.indexOfSelectedItem - 1
+        let scoped = additionalWorkspaces.indices.contains(index)
+        let current = scoped ? additionalWorkspaces[index].permissions : defaultWorkspacePermissions
+        let alert = NSAlert()
+        alert.messageText = "Workspace permissions"
+        alert.informativeText = "Global shell, Git push and Codex switches remain upper bounds. Shell uses your OS user privileges, not a filesystem sandbox. Read-only disables all writes and privileged tools."
+        let inherit = NSButton(checkboxWithTitle: "Inherit global settings", target: nil, action: nil)
+        let write = NSButton(checkboxWithTitle: "Allow file and local Git changes", target: nil, action: nil)
+        let shell = NSButton(checkboxWithTitle: "Allow shell (if globally enabled)", target: nil, action: nil)
+        let push = NSButton(checkboxWithTitle: "Allow Git push (if globally enabled)", target: nil, action: nil)
+        let codex = NSButton(checkboxWithTitle: "Allow Codex import (if globally enabled)", target: nil, action: nil)
+        inherit.state = current == nil ? .on : .off
+        write.state = (current?.allowWrite ?? true) ? .on : .off
+        shell.state = (current?.allowShell ?? true) ? .on : .off
+        push.state = (current?.allowGitPush ?? true) ? .on : .off
+        codex.state = (current?.allowCodexHistory ?? true) ? .on : .off
+        let stack = NSStackView(views: [inherit, write, shell, push, codex])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
+        stack.frame = NSRect(x: 0, y: 0, width: 330, height: 140)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let permission: WorkspacePermissions? = inherit.state == .on ? nil :
+            write.state != .on ? .readOnly : WorkspacePermissions(allowWrite: true,
+                allowShell: shell.state == .on, allowGitPush: push.state == .on, allowCodexHistory: codex.state == .on)
+        if scoped { additionalWorkspaces[index].permissions = permission }
+        else { defaultWorkspacePermissions = permission }
+        workspaceSelectionChanged()
+        showFeedback("Permissions edited. Save workspace to apply on the next connection.")
     }
 
     @objc private func revealApprovedWorkspace() {
