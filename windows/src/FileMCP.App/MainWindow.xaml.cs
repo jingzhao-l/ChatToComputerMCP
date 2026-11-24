@@ -173,6 +173,7 @@ public partial class MainWindow : Window
         GitEmailBox.Text = settings.GitUserEmail;
         EnableCommandsCheckBox.IsChecked = settings.EnableCommands;
         CaptureCommandHistoryBox.IsChecked = settings.CaptureCommandHistoryContent;
+        PersistLongTasksBox.IsChecked = settings.PersistLongTasks;
         EnableGitPushBox.IsChecked = settings.EnableGitPush;
         EnableCodexHistoryBox.IsChecked = settings.EnableCodexHistory;
         ApplyProviderSelection();
@@ -1234,7 +1235,7 @@ public partial class MainWindow : Window
             saved.EnableGitPush,
             saved.EnableCodexHistory,
             saved.CaptureCommandHistoryContent,
-            saved.DefaultWorkspacePermissions);
+            saved.DefaultWorkspacePermissions, saved.PersistLongTasks);
     }
 
     private void SaveAllSettings()
@@ -1258,6 +1259,7 @@ public partial class MainWindow : Window
         _settings.GitUserEmail = GitEmailBox.Text.Trim();
         _settings.EnableCommands = EnableCommandsCheckBox.IsChecked == true;
         _settings.CaptureCommandHistoryContent = CaptureCommandHistoryBox.IsChecked == true;
+        _settings.PersistLongTasks = PersistLongTasksBox.IsChecked == true;
         _settings.EnableGitPush = EnableGitPushBox.IsChecked == true;
         _settings.EnableCodexHistory = EnableCodexHistoryBox.IsChecked == true;
         _settings.AdditionalWorkspaces = _workspaces.ToList();
@@ -1305,6 +1307,7 @@ public partial class MainWindow : Window
         EnableGitPushBox.IsEnabled = editable;
         EnableCodexHistoryBox.IsEnabled = editable;
         CaptureCommandHistoryBox.IsEnabled = editable;
+        PersistLongTasksBox.IsEnabled = editable;
         UpdateWorkspaceActionStates();
         DefaultPermissionButton.IsEnabled = editable;
         if (state.Status == LocalMcpRuntimeStatus.Running)

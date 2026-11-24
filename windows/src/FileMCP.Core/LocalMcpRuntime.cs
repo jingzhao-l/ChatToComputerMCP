@@ -175,6 +175,8 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     Path.Combine(_dataDirectoryOverride, "history", configuration.Profile), configuration.CaptureCommandHistoryContent) : null;
                 var audit = new ActivityAuditStore(_dataDirectoryOverride is null ? ActivityAuditStore.DirectoryFor(configuration.Profile) :
                     Path.Combine(_dataDirectoryOverride, "audit", configuration.Profile));
+                var supervisorDirectory = _dataDirectoryOverride is null ? CommandSupervisor.DirectoryFor(configuration.Profile) : Path.Combine(_dataDirectoryOverride, "supervised-jobs", configuration.Profile);
+                var supervisor = (configuration.PersistLongTasks && configuration.EnableCommands) || Directory.Exists(supervisorDirectory) ? new CommandSupervisor(supervisorDirectory, configuration.PersistLongTasks && configuration.EnableCommands) : null;
                 _server = new LocalMcpServer(configuration.Port, configuration.AllowedDirectory, configuration.GitUserName,
                     configuration.GitUserEmail, configuration.EnableCommands, localAuthToken, EmitLog,
                     configuration.AdditionalWorkspaces, configuration.MaxConcurrentCommands,
@@ -182,7 +184,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     publicHost: isCloudflare ? configuration.CloudflareHostname : null,
                     enableGitPush: configuration.EnableGitPush,
                     enableCodexHistory: configuration.EnableCodexHistory, commandHistory: history,
-                    defaultWorkspacePermissions: configuration.DefaultWorkspacePermissions, activityAudit: audit);
+                    defaultWorkspacePermissions: configuration.DefaultWorkspacePermissions, activityAudit: audit, commandSupervisor: supervisor);
                 await _server.StartAsync(cancellationToken).ConfigureAwait(false);
                 _activeConfiguration = configuration;
 
@@ -334,7 +336,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     {
         _requestedStop = true; _startupCts?.Cancel();
         await _serial.WaitAsync().ConfigureAwait(false);
-        try { _tunnelProcess?.StopSynchronously(); FinishStop(); }
+        try { _tunnelProcess?.StopSynchronously(); FinishStop(preserveSupervised: true); }
         finally { _serial.Release(); }
     }
 
@@ -397,9 +399,9 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         });
     }
 
-    private void FinishStop()
+    private void FinishStop(bool preserveSupervised = false)
     {
-        CleanupRuntime(); _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n");
+        CleanupRuntime(preserveSupervised); _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); EmitLog("Tunnel stopped.\n");
     }
 
     private void CleanupTransport()
@@ -414,11 +416,11 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         }
     }
 
-    private void CleanupRuntime()
+    private void CleanupRuntime(bool preserveSupervised = false)
     {
         _recoveryGeneration = Guid.NewGuid(); _transportStarted = false;
         CleanupTransport();
-        _server?.Stop(); _server = null;
+        _server?.Stop(preserveSupervised); _server = null;
         _activeConfiguration = null; _localAuthToken = null; _activeHealthAddress = null;
         _profileLock?.Dispose(); _profileLock = null;
     }

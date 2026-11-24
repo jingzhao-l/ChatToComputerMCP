@@ -72,7 +72,7 @@ internal sealed partial class LocalTools
         {
             Add("string", "session_id", "request_id", "output"); Add("integer", "next_cursor", "last_cursor", "timeout_seconds"); Add("boolean", "has_more", "truncated");
             fields["exit_code"] = new JsonObject { ["type"] = new JsonArray("integer", "null") };
-            fields["state"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("queued", "running", "stopping", "exited", "cancelled", "timed_out", "launch_failed") };
+            fields["state"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("queued", "running", "stopping", "exited", "cancelled", "timed_out", "launch_failed", "interrupted") };
         }
         return new JsonObject { ["type"] = "object", ["properties"] = fields, ["required"] = JsonStringArray(fields.Select(field => field.Key).OrderBy(key => key, StringComparer.Ordinal)), ["additionalProperties"] = false };
     }
@@ -360,7 +360,7 @@ internal sealed partial class LocalTools
             var existing = _sessions.FirstOrDefault(session => session.RequestId == key);
             if (existing is not null)
             {
-                if (existing.Command != command || existing.Cwd != cwd || existing.Timeout != timeout || existing.QueueIfBusy != queueIfBusy)
+                if (existing.OwnerId != verifiedOwnerID || existing.CommandDigest != SupervisedCommandRecord.Digest(command) || existing.Cwd != cwd || existing.Timeout != timeout || existing.QueueIfBusy != queueIfBusy)
                     throw new FileMcpException("request_id already used with different arguments");
                 return existing.Snapshot(0);
             }
@@ -393,16 +393,24 @@ internal sealed partial class LocalTools
                 historyReserved = _commandHistory is not null;
                 ShellExecutionPlan MakePlan() => ShellExecutionPlan.Build(_resolver.Root, cwd, command,
                     PowerShellPath(), timeout, _isolatedShellImage);
+                var supervisor = _commandSupervisor;
+                var record = new SupervisedCommandRecord(session.Id, key, scopeID, verifiedOwnerID, _resolver.Root, cwd,
+                    PowerShellPath(), _isolatedShellImage, timeout, queueIfBusy, session.CommandDigest, historyID, DateTimeOffset.UtcNow);
                 if (queueIfBusy)
                 {
                     var relativeCwd = _resolver.RelativePath(cwd);
-                    _commandBudget.Enqueue(session, () => session.LaunchQueued(MakePlan, () => {
+                    _commandBudget.Enqueue(session, () => {
+                    Action validate = () => {
                         var resolved = _resolver.Resolve(relativeCwd);
                         if (!string.Equals(resolved, cwd, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(resolved))
                             throw new FileMcpException("Queued working directory changed");
                         _commandHistory?.MarkRunning(historyID);
-                    }));
+                    };
+                    if (supervisor is null) session.LaunchQueued(MakePlan, validate);
+                    else session.LaunchQueuedSupervised(supervisor, record, validate);
+                    });
                 }
+                else if (supervisor is not null) session.LaunchSupervised(supervisor, record);
                 else session.Launch(MakePlan);
             }
             catch
@@ -474,6 +482,42 @@ internal sealed partial class LocalTools
         foreach (var task in longJobs) task.Cancel(synchronously: true);
     }
 
+    internal bool OwnsCommandSession(string id, string owner)
+    {
+        lock (_sessionGate) return _sessions.Any(session => session.Id == id && session.OwnerId == owner);
+    }
+
+    private JsonObject OwnCommandReceipt(string request, string owner)
+    {
+        var result = _receiptLedger?.OwnReceipt(_workspaceScopeID, request, owner) ?? throw new FileMcpException("Durable command receipts are unavailable");
+        lock (_sessionGate) result["reattachable"] = _sessions.Any(session => session.RequestId == request && session.OwnerId == owner && session.Supervised && session.Active && session.WorkerAlive);
+        return result;
+    }
+
+    internal bool CanRestore(SupervisedCommandJob job) =>
+        _enableCommands && _commandSupervisor is not null &&
+        string.Equals(job.Record.Root, _resolver.Root, StringComparison.OrdinalIgnoreCase) && job.Record.Image == _isolatedShellImage &&
+        string.Equals(_resolver.Resolve(Path.GetRelativePath(job.Record.Root, job.Record.Cwd)), job.Record.Cwd, StringComparison.OrdinalIgnoreCase);
+
+    internal void Restore(SupervisedCommandJob job, SupervisedCommandStatus status)
+    {
+        var record = job.Record;
+        var ledger = _receiptLedger ?? throw new FileMcpException("Worker receipt ledger missing");
+        ledger.ReconcileSupervised(record, status);
+        _commandHistory?.ReconcileSupervised(record, status);
+        var restored = new CommandSession(record.RequestId, "", record.Cwd, record.Timeout,
+            (state, code) => {
+                try { var final = job.ReadStatus(); ledger.ReconcileSupervised(record, final); _commandHistory?.ReconcileSupervised(record, final); }
+                catch (Exception ex) { System.Diagnostics.Trace.WriteLine("Worker reconciliation failed: " + ex.GetType().Name); }
+            }, queueIfBusy: record.QueueIfBusy, ownerId: record.OwnerId, restoredId: record.SessionId, restoredDigest: record.CommandDigest);
+        restored.Attach(job);
+        if (restored.Active) _commandBudget.TrackRecovered(restored);
+        _usedRequestIds.Add(record.RequestId); _sessions.Add(restored);
+        while (_sessions.Count(item => !item.Active) > 8) {
+            var oldest = _sessions.First(item => !item.Active); oldest.Dispose(); _sessions.Remove(oldest);
+        }
+    }
+
     private JsonObject OwnCommandSessions(string ownerID)
     {
         lock (_sessionGate)
@@ -507,22 +551,23 @@ internal sealed partial class LocalTools
                 throw new FileMcpException("Command session is active in this workspace; finish it before modifying files or Git state");
     }
 
-    public void StopCommandSessions()
+    public void StopCommandSessions(bool preserveSupervised = false)
     {
         CommandSession[] sessions;
         SynchronousTaskControl[] synchronous;
         lock (_sessionGate) { _sessionsStopped = true; sessions = _sessions.ToArray(); synchronous = _synchronousTasks.ToArray(); }
         foreach (var task in synchronous) task.Cancel();
-        foreach (var session in sessions) { session.Cancel(synchronously: true); session.Dispose(); }
+        foreach (var session in sessions) { if (!preserveSupervised || !session.Supervised) session.Cancel(synchronously: true); session.Dispose(); }
     }
 }
 
 internal sealed class CommandSession(string requestId, string command, string cwd, int timeout,
     Action<string, int?>? onFinish = null,
     Action<string, int?, string, bool>? onHistoryFinish = null,
-    bool queueIfBusy = false, string? ownerId = null) : IDisposable
+    bool queueIfBusy = false, string? ownerId = null, string? restoredId = null, string? restoredDigest = null) : IDisposable
 {
-    public string Id { get; } = Guid.NewGuid().ToString();
+    public string Id { get; } = restoredId ?? Guid.NewGuid().ToString();
+    public string CommandDigest { get; } = restoredDigest ?? SupervisedCommandRecord.Digest(command);
     public string RequestId { get; } = requestId;
     public string Command { get; } = command;
     public string Cwd { get; } = cwd;
@@ -530,6 +575,8 @@ internal sealed class CommandSession(string requestId, string command, string cw
     private readonly object _gate = new();
     private ManagedProcess? _process;
     private Timer? _deadline;
+    private Timer? _workerTimer;
+    private SupervisedCommandJob? _worker;
     public bool QueueIfBusy { get; } = queueIfBusy;
     public string? OwnerId { get; } = ownerId;
     private string _state = queueIfBusy ? "queued" : "running";
@@ -541,6 +588,52 @@ internal sealed class CommandSession(string requestId, string command, string cw
     private bool _disposed;
 
     public bool Active { get { lock (_gate) return _state is "queued" or "running" or "stopping"; } }
+
+    public bool Supervised { get { lock (_gate) return _worker is not null; } }
+    public bool WorkerAlive { get { lock (_gate) return _worker?.WorkerAlive() == true; } }
+
+    public void LaunchSupervised(CommandSupervisor supervisor, SupervisedCommandRecord record, Action? validate = null)
+    {
+        lock (_gate)
+        {
+            if (_disposed || _state is not ("queued" or "running")) return;
+            validate?.Invoke(); _state = "running";
+            _worker = supervisor.Create(record, Command);
+            StartWorkerTimer();
+        }
+    }
+
+    public void LaunchQueuedSupervised(CommandSupervisor supervisor, SupervisedCommandRecord record, Action validate)
+    {
+        try { LaunchSupervised(supervisor, record, validate); }
+        catch { Complete(null, "launch_failed"); }
+    }
+
+    public void Attach(SupervisedCommandJob job)
+    {
+        lock (_gate) { _worker = job; _state = "running"; StartWorkerTimer(); }
+        RefreshWorker();
+    }
+
+    private void StartWorkerTimer() => _workerTimer = new Timer(_ => RefreshWorker(), null, 0, 150);
+
+    private void RefreshWorker()
+    {
+        SupervisedCommandJob? worker;
+        lock (_gate) { if (_disposed || _workerTimer is null) return; worker = _worker; }
+        if (worker is null) return;
+        SupervisedCommandStatus status;
+        try { status = worker.ReadStatus(); } catch { return; }
+        lock (_gate)
+        {
+            if (_disposed || _workerTimer is null || _state is not ("queued" or "running" or "stopping") || status.LastCursor < _sequence) return;
+            _chunks.Clear();
+            foreach (var chunk in status.Chunks) _chunks.Enqueue((chunk.Cursor, chunk.Text));
+            _sequence = status.LastCursor; _bytes = status.Chunks.Sum(chunk => Encoding.UTF8.GetByteCount(chunk.Text));
+            if (!status.Terminal) _state = status.State == "starting" ? "running" : status.State;
+        }
+        if (status.Terminal) Complete(status.ExitCode, status.State);
+    }
 
     public void Launch(Func<ShellExecutionPlan> plan, Action? beforeLaunch = null)
     {
@@ -589,6 +682,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
             _exitCode = code; _state = _stopReason ?? fallback;
             terminalState = _state;
             _deadline?.Dispose(); _deadline = null;
+            _workerTimer?.Dispose(); _workerTimer = null;
             historyOutput = onHistoryFinish is null ? "" : string.Concat(_chunks.Select(chunk => chunk.Text));
             historyTruncated = (_chunks.TryPeek(out var first) ? first.Cursor : _sequence + 1) > 1;
         }
@@ -600,6 +694,14 @@ internal sealed class CommandSession(string requestId, string command, string cw
 
     public void Cancel(string reason = "cancelled", bool synchronously = false)
     {
+        SupervisedCommandJob? worker;
+        lock (_gate) worker = _worker;
+        if (worker is not null) {
+            if (!Active) return;
+            worker.RequestCancel();
+            if (synchronously) { var until = DateTime.UtcNow.AddSeconds(8); while (Active && DateTime.UtcNow < until) { RefreshWorker(); Thread.Sleep(50); } }
+            return;
+        }
         ManagedProcess? child;
         bool wasQueued;
         lock (_gate)
@@ -639,7 +741,7 @@ internal sealed class CommandSession(string requestId, string command, string cw
         lock (_gate)
         {
             if (_disposed) return;
-            _disposed = true; _deadline?.Dispose(); _process?.Dispose();
+            _disposed = true; _deadline?.Dispose(); _workerTimer?.Dispose(); _workerTimer = null; _process?.Dispose();
         }
     }
 }

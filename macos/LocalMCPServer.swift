@@ -292,6 +292,14 @@ private final class WorkspaceCommandBudget {
         for launch in launches { launch() }
     }
 
+    func trackRecovered(_ session: CommandSession) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !activePaths().contains(where: { overlaps($0, session.cwd) }) else {
+            throw MCPServerError.operationFailed("Recovered jobs have overlapping directories")
+        }
+        longJobs[ObjectIdentifier(session)] = (session, session.cwd)
+    }
+
     func forget(_ session: CommandSession) {
         lock.lock(); defer { lock.unlock() }
         longJobs.removeValue(forKey: ObjectIdentifier(session))
@@ -374,7 +382,7 @@ private final class SynchronousTaskControl {
 
 /// An opt-in VM/container execution backend. No remote caller can choose the
 /// image, daemon, mount, privileges or environment. Host shell is never a fallback.
-private struct ShellExecutionPlan {
+struct ShellExecutionPlan {
     let executable: String
     let arguments: [String]
     let cwd: String
@@ -446,6 +454,7 @@ private final class LocalTools {
     private let workspaceScopeID: String
     private let workspaceName: String
     private let commandHistory: CommandHistoryStore?
+    private let commandSupervisor: CommandSupervisor?
     private var globalSynchronousLeases: [UUID: UUID] = [:]
     // Bounded concurrency across independent working directories. These are
     // cooperative collision checks, not a shell sandbox (commands can use
@@ -525,10 +534,12 @@ private final class LocalTools {
         workspaceName: String = "Default workspace",
         commandHistory: CommandHistoryStore? = nil,
         allowWrite: Bool = true,
-        isolatedShellImage: String? = nil
+        isolatedShellImage: String? = nil,
+        commandSupervisor: CommandSupervisor? = nil
     ) {
         self.workspaceName = workspaceName
         self.commandHistory = commandHistory
+        self.commandSupervisor = commandSupervisor?.allowsNew == true ? commandSupervisor : nil
         self.globalBudget = globalBudget
         self.receiptLedger = receiptLedger
         self.workspaceScopeID = workspaceScopeID
@@ -912,8 +923,13 @@ private final class LocalTools {
         case "start_command": return objectOutput(try startCommand(arguments, ownerID: verifiedOwnerID ?? "__local_admin__"))
         case "command_receipt_status":
             guard let receiptLedger else { throw MCPServerError.operationFailed("Durable command receipts are unavailable") }
-            return objectOutput(try receiptLedger.ownReceipt(scopeID: workspaceScopeID,
-                requestID: requiredString(arguments, "request_id"), ownerID: verifiedOwnerID ?? "__local_admin__"))
+            let request = try requiredString(arguments, "request_id")
+            let owner = verifiedOwnerID ?? "__local_admin__"
+            var receipt = try receiptLedger.ownReceipt(scopeID: workspaceScopeID, requestID: request, ownerID: owner)
+            sessionLock.lock()
+            receipt["reattachable"] = sessions.contains { $0.requestID == request && $0.ownerID == owner && $0.supervised && $0.active && $0.workerAlive }
+            sessionLock.unlock()
+            return objectOutput(receipt)
         case "command_capacity_status": return objectOutput(commandCapacityStatus())
         case "list_my_commands": return objectOutput(ownCommandSessions(verifiedOwnerID ?? "__local_admin__"))
         case "read_command_output":
@@ -3464,6 +3480,7 @@ final class LocalMCPServer {
         receiptLedger: CommandReceiptLedger? = nil,
         commandHistory: CommandHistoryStore? = nil,
         activityAudit: ActivityAuditStore? = nil,
+        commandSupervisor: CommandSupervisor? = nil,
         enableGitPush: Bool = false,
         enableCodexHistory: Bool = false,
         defaultWorkspacePermissions: WorkspacePermissions? = nil,
@@ -3521,7 +3538,8 @@ final class LocalMCPServer {
             receiptLedger: receiptLedger, workspaceScopeID: "default",
             commandHistory: commandHistory,
             allowWrite: defaultWorkspacePermissions?.allowWrite ?? true,
-            isolatedShellImage: defaultWorkspacePermissions?.isolatedShellImage
+            isolatedShellImage: defaultWorkspacePermissions?.isolatedShellImage,
+            commandSupervisor: commandSupervisor
         )
         // Canonical roots may not overlap, even through symlinks. This rejects
         // accidental cross-workspace access and ambiguous command isolation.
@@ -3543,7 +3561,8 @@ final class LocalMCPServer {
                 receiptLedger: receiptLedger, workspaceScopeID: workspace.id,
                 workspaceName: workspace.name, commandHistory: commandHistory,
                 allowWrite: workspace.permissions?.allowWrite ?? true,
-                isolatedShellImage: workspace.permissions?.isolatedShellImage)
+                isolatedShellImage: workspace.permissions?.isolatedShellImage,
+                commandSupervisor: commandSupervisor)
         }
         self.makeWorkspaceTools = makeTools
         var roots = [resolver.root.path]
@@ -3566,6 +3585,27 @@ final class LocalMCPServer {
         }
         self.catalogDefinitions = additionalWorkspaces
         self.catalogTools = approved
+        if let commandSupervisor {
+            for job in try commandSupervisor.jobs() {
+                let record = job.record
+                let scoped = record.scopeID == "default" ? tools : approved[record.scopeID]
+                let permitted = record.ownerID == "__local_admin__" ? oauth == nil :
+                    (oauth?.desktopApprovedClients().contains {
+                        $0.id == record.ownerID && $0.approvedWorkspaces.contains(record.scopeID)
+                    } ?? false)
+                let status = try job.readStatus()
+                if let scoped, permitted, scoped.canRestore(job) {
+                    try scoped.restore(job, status: status)
+                } else if !status.terminal {
+                    try job.requestCancel()
+                    let deadline = Date().addingTimeInterval(8)
+                    while !(try job.readStatus().terminal), Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+                    guard try job.readStatus().terminal else {
+                        throw MCPServerError.operationFailed("Unapproved supervised job did not stop")
+                    }
+                }
+            }
+        }
     }
 
     private static func overlappingRoots(_ a: String, _ b: String) -> Bool {
@@ -3769,7 +3809,7 @@ final class LocalMCPServer {
         log("MCP server listening on http://127.0.0.1:\(port)/mcp\n")
     }
 
-    func stop() {
+    func stop(preserveSupervised: Bool = false) {
         listener?.cancel()
         listener = nil
         stateLock.lock()
@@ -3785,8 +3825,8 @@ final class LocalMCPServer {
         catalogStopped = true
         let scopes = Array(catalogTools.values)
         workspaceGate.unlock()
-        tools.stopCommandSessions()
-        for scoped in scopes { scoped.stopCommandSessions() }
+        tools.stopCommandSessions(preserveSupervised: preserveSupervised)
+        for scoped in scopes { scoped.stopCommandSessions(preserveSupervised: preserveSupervised) }
     }
 
     private func closeConnection(_ connection: NWConnection) {
@@ -4293,7 +4333,7 @@ final class LocalMCPServer {
             // client names, request IDs or tool arguments as identity.
             let sessionID = arguments["session_id"] as? String ?? ""
             taskOwnershipLock.lock()
-            let allowed = ownerBySessionID[sessionID] == client.id
+            let allowed = scoped.ownsCommandSession(sessionID, ownerID: client.id)
             taskOwnershipLock.unlock()
             guard allowed else {
                 throw MCPServerError.operationFailed(
@@ -4737,7 +4777,8 @@ private struct PatchFileState {
 
 // A bounded, runtime-owned job. Cursors count output chunks, not characters.
 private final class CommandSession {
-    let id = UUID().uuidString.lowercased()
+    let id: String
+    let commandDigest: String
     let requestID: String
     let command: String
     let cwd: String
@@ -4746,6 +4787,8 @@ private final class CommandSession {
     let ownerID: String?
     private let lock = NSLock()
     private var process: ManagedProcess?
+    private var worker: SupervisedCommandJob?
+    private var workerTimer: DispatchSourceTimer?
     private var deadline: DispatchWorkItem?
     private var state: String
     private var stopReason: String?
@@ -4758,8 +4801,11 @@ private final class CommandSession {
 
     init(requestID: String, command: String, cwd: String, timeout: Int,
          queueIfBusy: Bool = false, ownerID: String? = nil,
+         restoredID: String? = nil, restoredDigest: String? = nil,
          onFinish: ((String, Int32?) -> Void)? = nil,
          onHistoryFinish: ((String, Int32?, String, Bool) -> Void)? = nil) {
+        self.id = restoredID ?? UUID().uuidString.lowercased()
+        self.commandDigest = restoredDigest ?? SupervisedCommandRecord.digest(command)
         self.queueIfBusy = queueIfBusy
         self.ownerID = ownerID
         self.state = queueIfBusy ? "queued" : "running"
@@ -4771,6 +4817,58 @@ private final class CommandSession {
     var active: Bool {
         lock.lock(); defer { lock.unlock() }
         return state == "queued" || state == "running" || state == "stopping"
+    }
+
+    var supervised: Bool { lock.lock(); defer { lock.unlock() }; return worker != nil }
+    var workerAlive: Bool { lock.lock(); defer { lock.unlock() }; return (try? worker?.workerAlive()) == true }
+
+    func launchSupervised(supervisor: CommandSupervisor, record: SupervisedCommandRecord,
+                          beforeLaunch: () throws -> Void = {}) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard state == "queued" || state == "running" else { return }
+        try beforeLaunch()
+        state = "running"
+        worker = try supervisor.create(record: record, command: command)
+        startWorkerTimerUnderLock()
+    }
+
+    func launchQueuedSupervised(supervisor: CommandSupervisor, record: SupervisedCommandRecord,
+                                beforeLaunch: () throws -> Void) {
+        do { try launchSupervised(supervisor: supervisor, record: record, beforeLaunch: beforeLaunch) }
+        catch { complete(nil, fallback: "launch_failed") }
+    }
+
+    func attach(_ job: SupervisedCommandJob) {
+        lock.lock(); worker = job; state = "running"; startWorkerTimerUnderLock(); lock.unlock()
+        refreshWorker()
+    }
+
+    private func startWorkerTimerUnderLock() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + .milliseconds(150), repeating: .milliseconds(150))
+        timer.setEventHandler { [weak self] in self?.refreshWorker() }
+        workerTimer = timer; timer.resume()
+    }
+
+    func detachWorker() {
+        lock.lock(); defer { lock.unlock() }
+        workerTimer?.cancel(); workerTimer = nil
+    }
+
+    private func refreshWorker() {
+        lock.lock()
+        guard let worker, workerTimer != nil else { lock.unlock(); return }
+        lock.unlock()
+        guard let status = try? worker.readStatus() else { return }
+        lock.lock()
+        guard workerTimer != nil, ["queued", "running", "stopping"].contains(state),
+              status.lastCursor >= sequence else { lock.unlock(); return }
+        chunks = status.chunks.map { ($0.cursor, $0.text) }
+        sequence = status.lastCursor
+        bytes = chunks.reduce(0) { $0 + $1.1.utf8.count }
+        if !status.terminal { state = status.state == "starting" ? "running" : status.state }
+        lock.unlock()
+        if status.terminal { complete(status.exitCode, fallback: status.state) }
     }
 
     func launch(plan: () throws -> ShellExecutionPlan, beforeLaunch: () throws -> Void = {}) throws {
@@ -4818,6 +4916,7 @@ private final class CommandSession {
         state = stopReason ?? fallback
         let terminalState = state
         deadline?.cancel(); deadline = nil
+        workerTimer?.cancel(); workerTimer = nil
         let historyOutput = onHistoryFinish == nil ? "" : chunks.map { $0.1 }.joined()
         let historyTruncated = (chunks.first?.0 ?? (sequence + 1)) > 1
         lock.unlock()
@@ -4830,6 +4929,19 @@ private final class CommandSession {
     func cancel(reason: String = "cancelled", synchronously: Bool = false) {
         lock.lock()
         guard ["queued", "running", "stopping"].contains(state) else { lock.unlock(); return }
+        if let worker {
+            lock.unlock()
+            do { try worker.requestCancel() } catch { NSLog("Supervised task cancellation could not persist") }
+            if synchronously {
+                let deadline = Date().addingTimeInterval(8)
+                while Date() < deadline {
+                    refreshWorker()
+                    if !active { break }
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            }
+            return
+        }
         if stopReason == nil { stopReason = reason }
         let wasQueued = state == "queued"
         state = "stopping"
@@ -4915,7 +5027,7 @@ private extension LocalTools {
             add(["next_cursor", "last_cursor", "timeout_seconds"], "integer")
             add(["has_more", "truncated"], "boolean")
             fields["exit_code"] = ["type": ["integer", "null"]]
-            fields["state"] = ["type": "string", "enum": ["queued", "running", "stopping", "exited", "cancelled", "timed_out", "launch_failed"]]
+            fields["state"] = ["type": "string", "enum": ["queued", "running", "stopping", "exited", "cancelled", "timed_out", "launch_failed", "interrupted"]]
         }
         return ["type": "object", "properties": fields, "required": fields.keys.sorted(), "additionalProperties": false]
     }
@@ -5208,7 +5320,7 @@ private extension LocalTools {
         guard !sessionsStopped else { throw MCPServerError.operationFailed("Runtime has stopped") }
         guard !revokedSynchronousOwners.contains(ownerID) else { throw MCPServerError.operationFailed("Client authorization was revoked") }
         if let existing = sessions.first(where: { $0.requestID == key }) {
-            guard existing.command == command, existing.cwd == cwd.path, existing.timeout == timeout, existing.queueIfBusy == queueIfBusy else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
+            guard existing.ownerID == ownerID, existing.commandDigest == SupervisedCommandRecord.digest(command), existing.cwd == cwd.path, existing.timeout == timeout, existing.queueIfBusy == queueIfBusy else { throw MCPServerError.invalidArguments("request_id already used with different arguments") }
             return try existing.snapshot(cursor: 0)
         }
         if !queueIfBusy {
@@ -5251,6 +5363,11 @@ private extension LocalTools {
             historyReserved = commandHistory != nil
             let shell = preferredShell()
             let image = isolatedShellImage
+            let supervisedRecord = SupervisedCommandRecord(sessionID: session.id, requestID: key,
+                scopeID: scopeID, ownerID: ownerID, root: resolver.root.path, cwd: cwd.path,
+                shell: shell, image: image, timeout: timeout, queueIfBusy: queueIfBusy,
+                commandDigest: session.commandDigest, historyID: historyID, createdAt: Date())
+            let supervisor = commandSupervisor
             let makePlan = { [resolver] in
                 try ShellExecutionPlan.build(root: resolver.root.path, cwd: cwd.path, command: command,
                     shell: shell, timeout: timeout, image: image)
@@ -5259,7 +5376,7 @@ private extension LocalTools {
                 let relativeCwd = relativePath(for: cwd)
                 let history = commandHistory
                 try globalBudget?.enqueue(session) { [resolver, session] in
-                    session.launchQueued(plan: makePlan) {
+                    let validate = {
                         let resolved = try resolver.resolve(relativeCwd)
                         var isDirectory: ObjCBool = false
                         guard resolved.path == cwd.path,
@@ -5268,7 +5385,12 @@ private extension LocalTools {
                         }
                         try history?.markRunning(id: historyID)
                     }
+                    if let supervisor {
+                        session.launchQueuedSupervised(supervisor: supervisor, record: supervisedRecord, beforeLaunch: validate)
+                    } else { session.launchQueued(plan: makePlan, beforeLaunch: validate) }
                 }
+            } else if let supervisor {
+                try session.launchSupervised(supervisor: supervisor, record: supervisedRecord)
             } else { try session.launch(plan: makePlan) }
         } catch {
             globalBudget?.forget(session)
@@ -5293,6 +5415,41 @@ private extension LocalTools {
             sessions.remove(at: oldestFinished)
         }
         return try session.snapshot(cursor: 0)
+    }
+
+    func ownsCommandSession(_ id: String, ownerID: String) -> Bool {
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        return sessions.contains { $0.id == id && $0.ownerID == ownerID }
+    }
+
+    func canRestore(_ job: SupervisedCommandJob) -> Bool {
+        let record = job.record
+        return enableCommands && commandSupervisor != nil && record.root == resolver.root.path &&
+            record.image == isolatedShellImage && (record.cwd == record.root || record.cwd.hasPrefix(record.root + "/"))
+    }
+
+    func restore(_ job: SupervisedCommandJob, status: SupervisedCommandStatus) throws {
+        let record = job.record
+        guard let ledger = receiptLedger else { throw CommandReceiptLedger.LedgerError.invalidStore }
+        try ledger.reconcileSupervised(scopeID: record.scopeID, requestID: record.requestID,
+            ownerID: record.ownerID, state: status.state, exitCode: status.exitCode, active: !status.terminal)
+        try commandHistory?.reconcileSupervised(job, status: status)
+        let history = commandHistory
+        let restored = CommandSession(requestID: record.requestID, command: "", cwd: record.cwd,
+            timeout: record.timeout, queueIfBusy: record.queueIfBusy, ownerID: record.ownerID,
+            restoredID: record.sessionID, restoredDigest: record.commandDigest,
+            onFinish: { _, _ in
+                guard let final = try? job.readStatus() else { return }
+                try? ledger.reconcileSupervised(scopeID: record.scopeID, requestID: record.requestID,
+                    ownerID: record.ownerID, state: final.state, exitCode: final.exitCode, active: !final.terminal)
+                try? history?.reconcileSupervised(job, status: final)
+            })
+        restored.attach(job)
+        if restored.active { try globalBudget?.trackRecovered(restored) }
+        usedRequestIDs.insert(record.requestID)
+        sessions.append(restored)
+        while sessions.filter({ !$0.active }).count > 8,
+              let oldest = sessions.firstIndex(where: { !$0.active }) { sessions.remove(at: oldest) }
     }
 
     func ownCommandSessions(_ ownerID: String) -> [String: Any] {
@@ -5457,14 +5614,17 @@ private extension LocalTools {
         jobs.forEach { $0.cancel(synchronously: true) }
     }
 
-    func stopCommandSessions() {
+    func stopCommandSessions(preserveSupervised: Bool = false) {
         sessionLock.lock()
         sessionsStopped = true
         let active = sessions
         let shortTasks = synchronousTasks
         sessionLock.unlock()
         shortTasks.forEach { $0.cancel() }
-        for session in active { session.cancel(synchronously: true) }
+        for session in active {
+            if preserveSupervised && session.supervised { session.detachWorker() }
+            else { session.cancel(synchronously: true) }
+        }
     }
 }
 

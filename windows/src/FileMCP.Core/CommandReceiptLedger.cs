@@ -125,7 +125,7 @@ public sealed class CommandReceiptLedger
 
     internal void Finish(string scopeID, string requestID, string state, int? code)
     {
-        if (state is not ("exited" or "cancelled" or "timed_out" or "launch_failed"))
+        if (state is not ("exited" or "cancelled" or "timed_out" or "launch_failed" or "interrupted"))
             throw new FileMcpException("Invalid terminal receipt state");
         lock (_gate)
         {
@@ -146,6 +146,25 @@ public sealed class CommandReceiptLedger
                 receipt.UpdatedAt = oldDate;
                 throw;
             }
+        }
+    }
+
+    internal void ReconcileSupervised(SupervisedCommandRecord record, SupervisedCommandStatus status)
+    {
+        lock (_gate)
+        {
+            var receipt = _store.Entries.FirstOrDefault(entry => entry.Identity == Identity(record.ScopeId, record.RequestId));
+            if (receipt is null || receipt.OwnerHash != OwnerIdentity(record.OwnerId))
+                throw new FileMcpException("Worker receipt does not belong to the original owner");
+            var state = status.Terminal ? status.State : "starting";
+            if (receipt.State is not ("starting" or "interrupted"))
+            {
+                if (receipt.State != state || receipt.ExitCode != status.ExitCode) throw new FileMcpException("Worker receipt mismatch");
+                return;
+            }
+            var oldState = receipt.State; var oldCode = receipt.ExitCode; var oldDate = receipt.UpdatedAt;
+            receipt.State = state; receipt.ExitCode = status.ExitCode; receipt.UpdatedAt = DateTimeOffset.UtcNow;
+            try { Persist(); } catch { receipt.State = oldState; receipt.ExitCode = oldCode; receipt.UpdatedAt = oldDate; throw; }
         }
     }
 

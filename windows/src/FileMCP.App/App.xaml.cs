@@ -24,6 +24,12 @@ public partial class App : System.Windows.Application
             Shutdown(1);
             return;
         }
+        if (e.Args.Length == 2 && e.Args[0] == "--command-worker")
+        {
+            try { FileMCP.Core.CommandSupervisor.RunWorker(e.Args[1]); Shutdown(0); }
+            catch { Shutdown(1); }
+            return;
+        }
         if (e.Args.Contains("--selftest-startup", StringComparer.Ordinal))
         {
             try { WindowsStartup.SelfTestIsolatedPolicy(); Shutdown(0); }

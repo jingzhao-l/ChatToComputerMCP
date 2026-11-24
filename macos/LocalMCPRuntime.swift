@@ -31,6 +31,7 @@ struct LocalMCPConfiguration {
     var enableGitPush: Bool = false
     var enableCodexHistory: Bool = false
     var captureCommandHistoryContent: Bool = false
+    var persistLongTasks: Bool = false
     var defaultWorkspacePermissions: WorkspacePermissions? = nil
 }
 
@@ -391,7 +392,7 @@ final class LocalMCPRuntime {
         transportRecoveryID = UUID()
         restartTransport = nil
         tunnelProcess?.stopSynchronously()
-        finishStop()
+        finishStop(preserveSupervised: true)
     }
 
     private func startOnQueue(_ configuration: LocalMCPConfiguration) {
@@ -461,6 +462,8 @@ final class LocalMCPRuntime {
                 captureContent: configuration.captureCommandHistoryContent) : nil
             let audit = try ActivityAuditStore(directory: dataDirectoryOverride?.appendingPathComponent("audit/" + configuration.profile)
                 ?? ActivityAuditStore.directory(for: configuration.profile))
+            let supervisorDirectory = dataDirectoryOverride?.appendingPathComponent("supervised-jobs/" + configuration.profile) ?? CommandSupervisor.directory(for: configuration.profile)
+            let supervisor = (configuration.persistLongTasks && configuration.enableCommands) || FileManager.default.fileExists(atPath: supervisorDirectory.path) ? try CommandSupervisor(directory: supervisorDirectory, allowsNew: configuration.persistLongTasks && configuration.enableCommands) : nil
             let server = try LocalMCPServer(
                 port: configuration.port,
                 allowedDirectory: configuration.allowedDirectory,
@@ -472,6 +475,7 @@ final class LocalMCPRuntime {
                 receiptLedger: commandReceiptLedger,
                 commandHistory: history,
                 activityAudit: audit,
+                commandSupervisor: supervisor,
                 enableGitPush: configuration.enableGitPush,
                 enableCodexHistory: configuration.enableCodexHistory,
                 defaultWorkspacePermissions: configuration.defaultWorkspacePermissions,
@@ -890,14 +894,14 @@ final class LocalMCPRuntime {
         }
     }
 
-    private func finishStop() {
+    private func finishStop(preserveSupervised: Bool = false) {
         transportRecoveryID = UUID()
         tunnelAttempt = UUID()
         restartTransport = nil
         transportStarted = false
         removeCloudflaredTokenFile()
         removeTunnelHealthURLFile()
-        server?.stop()
+        server?.stop(preserveSupervised: preserveSupervised)
         server = nil
         tunnelProcess = nil
         profileLock?.release()

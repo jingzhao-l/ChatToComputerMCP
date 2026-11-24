@@ -32,7 +32,7 @@ func runAgentToolChecks(rootPath: String) throws {
     check(!restricted.hasTool(named: "git_push") && !restricted.hasTool(named: "save_conversation_to_codex"))
     rejects("disabled Git push") { _ = try call(restricted, "git_push") }
     rejects("disabled Codex history") { _ = try call(restricted, "save_conversation_to_codex", ["title": "disabled", "messages": [["role": "user", "content": "test"]]]) }
-    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 32)
+    check(safe.toolDefinitions.count == 26 && full.toolDefinitions.count == 33)
     for name in ["file_info", "create_directory", "copy_file", "move_file"] {
         check(safe.hasTool(named: name))
     }

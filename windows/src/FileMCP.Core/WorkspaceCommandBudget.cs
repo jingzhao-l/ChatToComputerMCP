@@ -92,6 +92,15 @@ internal sealed class WorkspaceCommandBudget
         foreach (var launch in launches) launch();
     }
 
+    public void TrackRecovered(CommandSession session)
+    {
+        lock (_gate)
+        {
+            if (ActivePaths().Any(path => Overlaps(path, session.Cwd))) throw new FileMcpException("Recovered jobs have overlapping directories");
+            _long.Add(session, session.Cwd);
+        }
+    }
+
     public void Forget(CommandSession session)
     {
         lock (_gate)

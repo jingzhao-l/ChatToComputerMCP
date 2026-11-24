@@ -115,7 +115,7 @@ final class CommandReceiptLedger {
     }
 
     func finish(scopeID: String, requestID: String, state: String, exitCode: Int32?) throws {
-        guard ["exited", "cancelled", "timed_out", "launch_failed"].contains(state) else {
+        guard ["exited", "cancelled", "timed_out", "launch_failed", "interrupted"].contains(state) else {
             throw LedgerError.invalidStore
         }
         lock.lock()
@@ -129,6 +129,28 @@ final class CommandReceiptLedger {
         store.entries[i].exitCode = exitCode
         store.entries[i].updatedAt = Date()
         do { try persist() } catch { store = old; throw error }
+    }
+
+    /// Reconcile a locally authenticated worker record only after validating
+    /// its original request and owner against the immutable receipt.
+    func reconcileSupervised(scopeID: String, requestID: String, ownerID: String,
+                             state: String, exitCode: Int32?, active: Bool) throws {
+        lock.lock(); defer { lock.unlock() }
+        let identity = digest(scopeID: scopeID, requestID: requestID)
+        guard let i = store.entries.firstIndex(where: { $0.identity == identity }),
+              store.entries[i].ownerHash == digestOwner(ownerID) else { throw LedgerError.receiptNotOwned }
+        let state = active ? "starting" : state
+        guard ["starting", "interrupted", "exited", "cancelled", "timed_out", "launch_failed"].contains(state)
+        else { throw LedgerError.invalidStore }
+        let previous = store.entries[i]
+        if !["starting", "interrupted"].contains(previous.state) {
+            guard previous.state == state && previous.exitCode == exitCode else { throw LedgerError.invalidStore }
+            return
+        }
+        store.entries[i].state = state
+        store.entries[i].exitCode = exitCode
+        store.entries[i].updatedAt = Date()
+        do { try persist() } catch { store.entries[i] = previous; throw error }
     }
 
     /// Only the original, authenticated owner may inspect durable state.

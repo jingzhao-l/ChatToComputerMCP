@@ -76,6 +76,27 @@ final class CommandHistoryStore {
         return id
     }
 
+    func reconcileSupervised(_ job: SupervisedCommandJob, status: SupervisedCommandStatus) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var record = recordsByID[job.record.historyID] else { return }
+        let metadata = job.record
+        guard record.workspaceID == metadata.scopeID, record.cwd == metadata.cwd,
+              record.requestID == metadata.requestID,
+              record.clientID == (metadata.ownerID == "__local_admin__" ? nil : metadata.ownerID)
+        else { throw CommandReceiptLedger.LedgerError.invalidStore }
+        if record.isTerminal && record.state != "interrupted" { return }
+        record.state = status.terminal ? status.state : "running"
+        record.exitCode = status.exitCode
+        record.updatedAt = Date()
+        if captureContent && status.terminal {
+            let output = Self.bounded(status.chunks.map(\.text).joined())
+            record.output = output.0
+            record.truncated = record.truncated || output.1 || (status.chunks.first?.cursor ?? 1) > 1
+        }
+        try persist(record); recordsByID[record.id] = record
+        try prune()
+    }
+
     func markRunning(id: UUID) throws {
         lock.lock(); defer { lock.unlock() }
         guard var record = recordsByID[id], record.state == "queued" else { throw CommandReceiptLedger.LedgerError.missingReceipt }

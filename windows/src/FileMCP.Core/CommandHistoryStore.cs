@@ -67,6 +67,23 @@ public sealed class CommandHistoryStore
         }
     }
 
+    internal void ReconcileSupervised(SupervisedCommandRecord job, SupervisedCommandStatus status)
+    {
+        lock (_gate)
+        {
+            if (!_records.TryGetValue(job.HistoryId, out var record)) return;
+            if (record.WorkspaceId != job.ScopeId || record.Cwd != job.Cwd || record.RequestId != job.RequestId ||
+                record.ClientId != (job.OwnerId == "__local_admin__" ? null : job.OwnerId))
+                throw new FileMcpException("Worker history mismatch");
+            if (record.IsTerminal && record.State != "interrupted") return;
+            var content = CaptureContent && status.Terminal ? Bounded(string.Concat(status.Chunks.Select(chunk => chunk.Text))) : ((string Text, bool Truncated)?)null;
+            var updated = record with { State = status.Terminal ? status.State : "running", ExitCode = status.ExitCode,
+                UpdatedAt = DateTimeOffset.UtcNow, Output = content?.Text,
+                Truncated = record.Truncated || (content is not null && (content.Value.Truncated || (status.Chunks.FirstOrDefault()?.Cursor ?? 1) > 1)) };
+            Persist(updated); _records[record.Id] = updated; Prune();
+        }
+    }
+
     public void MarkRunning(Guid id)
     {
         lock (_gate)

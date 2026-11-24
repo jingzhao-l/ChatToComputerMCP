@@ -56,7 +56,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
         bool enableGitPush = false, bool enableCodexHistory = false,
         CommandHistoryStore? commandHistory = null,
         WorkspacePermissions? defaultWorkspacePermissions = null,
-        ActivityAuditStore? activityAudit = null)
+        ActivityAuditStore? activityAudit = null, CommandSupervisor? commandSupervisor = null)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
         _port = port; _localAuthToken = localAuthToken; _log = log;
@@ -82,14 +82,14 @@ public sealed class LocalMcpServer : IAsyncDisposable
                 enableCodexHistory: enableCodexHistory && (definition.Permissions?.AllowCodexHistory ?? true),
                 workspaceName: definition.Name, commandHistory: commandHistory,
                 allowWrite: definition.Permissions?.AllowWrite ?? true,
-                isolatedShellImage: definition.Permissions?.IsolatedShellImage);
+                isolatedShellImage: definition.Permissions?.IsolatedShellImage, commandSupervisor: commandSupervisor);
         };
         _tools = new LocalTools(allowedDirectory, gitUserName, gitUserEmail,
             enableCommands && (defaultWorkspacePermissions?.AllowShell ?? true), sharedBudget: budget, receiptLedger: receiptLedger,
             workspaceScopeID: "default", enableGitPush: enableGitPush && (defaultWorkspacePermissions?.AllowGitPush ?? true),
             enableCodexHistory: enableCodexHistory && (defaultWorkspacePermissions?.AllowCodexHistory ?? true),
             commandHistory: commandHistory, allowWrite: defaultWorkspacePermissions?.AllowWrite ?? true,
-            isolatedShellImage: defaultWorkspacePermissions?.IsolatedShellImage);
+            isolatedShellImage: defaultWorkspacePermissions?.IsolatedShellImage, commandSupervisor: commandSupervisor);
         var roots = new List<string> { _tools.WorkspaceRoot };
         var additional = additionalWorkspaces ?? [];
         if (additional.Count > 12) throw new FileMcpException("At most 12 additional workspaces are supported");
@@ -107,6 +107,22 @@ public sealed class LocalMcpServer : IAsyncDisposable
             roots.Add(canonical);
             _catalog.Add(definition.Id, (definition, scoped));
         }
+        if (commandSupervisor is not null)
+            foreach (var job in commandSupervisor.Jobs())
+            {
+                var record = job.Record;
+                var scoped = record.ScopeId == "default" ? _tools : _catalog.TryGetValue(record.ScopeId, out var item) ? item.Tools : null;
+                var permitted = record.OwnerId == "__local_admin__" ? oauth is null :
+                    oauth?.ApprovedClients().Any(client => client.Id == record.OwnerId && client.Workspaces.Contains(record.ScopeId)) == true;
+                var status = job.ReadStatus();
+                if (scoped is not null && permitted && scoped.CanRestore(job)) scoped.Restore(job, status);
+                else if (!status.Terminal)
+                {
+                    job.RequestCancel(); var until = DateTime.UtcNow.AddSeconds(8);
+                    while (!job.ReadStatus().Terminal && DateTime.UtcNow < until) Thread.Sleep(50);
+                    if (!job.ReadStatus().Terminal) throw new FileMcpException("Unapproved supervised job did not stop");
+                }
+            }
     }
 
     private static bool OverlappingRoots(string one, string two) =>
@@ -348,12 +364,12 @@ public sealed class LocalMcpServer : IAsyncDisposable
         }
     }
 
-    public void Stop()
+    public void Stop(bool preserveSupervised = false)
     {
         LocalTools[] scopes;
         lock (_workspaceGate) { _catalogStopped = true; scopes = _catalog.Values.Select(item => item.Tools).ToArray(); }
-        _tools.StopCommandSessions();
-        foreach (var scoped in scopes) scoped.StopCommandSessions();
+        _tools.StopCommandSessions(preserveSupervised);
+        foreach (var scoped in scopes) scoped.StopCommandSessions(preserveSupervised);
         IsReady = false;
         try { _cts?.Cancel(); } catch { }
         try { _listener?.Stop(); } catch { }
@@ -707,7 +723,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             var session = args["session_id"]?.GetValue<string>() ?? "";
             lock (_ownerGate)
             {
-                if (!_ownerBySession.TryGetValue(session, out var owner) || owner != verified.Id)
+                if (!scoped.OwnsCommandSession(session, verified.Id))
                     throw new FileMcpException("Command belongs to another authenticated client");
             }
         }

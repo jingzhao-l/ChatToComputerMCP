@@ -57,11 +57,12 @@ private enum ConfigKey {
     static let enableGitPush = "enableGitPush"
     static let enableCodexHistory = "enableCodexHistory"
     static let captureCommandHistoryContent = "captureCommandHistoryContent"
+    static let persistLongTasks = "persistLongTasks"
     static let publicShellCommandsAcknowledged = "publicShellCommandsAcknowledged"
 
     static let all = [
         tunnelID, profile, port, allowedDirectory, additionalWorkspaces, defaultWorkspacePermissions, maxConcurrentCommands, healthAddress, gitUserName, gitUserEmail,
-        apiKey, provider, cloudflareHostname, cloudflareTunnelSource, enableCommands, enableGitPush, enableCodexHistory, captureCommandHistoryContent, allowCloudflareURLSecret, publicShellCommandsAcknowledged,
+        apiKey, provider, cloudflareHostname, cloudflareTunnelSource, enableCommands, enableGitPush, enableCodexHistory, captureCommandHistoryContent, persistLongTasks, allowCloudflareURLSecret, publicShellCommandsAcknowledged,
     ]
 }
 
@@ -566,6 +567,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
     private let enableGitPushCheckbox = NSButton(checkboxWithTitle: "Allow Git push to remote servers", target: nil, action: nil)
     private let enableCodexHistoryCheckbox = NSButton(checkboxWithTitle: "Allow writing to Codex history", target: nil, action: nil)
     private let enableCommandsCheckbox = NSButton(checkboxWithTitle: "Allow shell commands", target: nil, action: nil)
+    private let persistLongTasksCheckbox = NSButton(checkboxWithTitle: "Keep running commands through app restarts (stores bounded output)", target: nil, action: nil)
     private let captureCommandHistoryCheckbox = NSButton(checkboxWithTitle: "Keep command text and output in local history", target: nil, action: nil)
     private var commandHistoryWindow: NSWindow?
     private var activityAuditWindow: NSWindow?
@@ -1286,7 +1288,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         let settingsPage = formPage([workspaceTitle, workspaceHelp, directoryRow, workspaceCountLabel,
             workspaceMenu, workspaceSelectedPath, workspaceActions, permissionRow, workspaceSafety, capacityRow, saveSettingsButton])
         let securityPage = formPage([securityTitle, securityHelp, enableCommandsCheckbox, commandWarning,
-            captureCommandHistoryCheckbox, enableGitPushCheckbox, extraPermissionsHelp, saveSecurityButton])
+            captureCommandHistoryCheckbox, persistLongTasksCheckbox, enableGitPushCheckbox, extraPermissionsHelp, saveSecurityButton])
         let preferencesPage = formPage([preferencesTitle, loginItemTitle, loginItemHelp, loginStartCheckbox,
             loginAutoConnectCheckbox, loginAlwaysCheckbox, applyLoginSettingsButton, loginItemStatusLabel,
             updateTitle, updateHelp, updateStatusLabel, updateAutoCheckCheckbox, updateAutoInstallCheckbox,
@@ -1397,6 +1399,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         taskOutputScroll.documentView = taskOutputView
         taskOutputScroll.widthAnchor.constraint(equalToConstant: Layout.contentWidth).isActive = true
         taskOutputScroll.heightAnchor.constraint(equalToConstant: 160).isActive = true
+        persistLongTasksCheckbox.toolTip = "Independent workers retain bounded output on disk. Disconnect cancels tasks; quitting preserves launched tasks. Queued tasks are never replayed."
         captureCommandHistoryCheckbox.toolTip = "Command content and output may contain secrets. Off by default; only local metadata is recorded unless you opt in."
         captureCommandHistoryCheckbox.setAccessibilityLabel("Keep command text and output in local history")
         let historyButton = NSButton(title: "Open command history…", target: self, action: #selector(openCommandHistory))
@@ -2196,6 +2199,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         gitUserNameField.stringValue = defaults.string(forKey: ConfigKey.gitUserName) ?? ""
         gitUserEmailField.stringValue = defaults.string(forKey: ConfigKey.gitUserEmail) ?? ""
         enableCommandsCheckbox.state = defaults.bool(forKey: ConfigKey.enableCommands) ? .on : .off
+        persistLongTasksCheckbox.state = defaults.bool(forKey: ConfigKey.persistLongTasks) ? .on : .off
         captureCommandHistoryCheckbox.state = defaults.bool(forKey: ConfigKey.captureCommandHistoryContent) ? .on : .off
         enableGitPushCheckbox.state = defaults.bool(forKey: ConfigKey.enableGitPush) ? .on : .off
         enableCodexHistoryCheckbox.state = defaults.bool(forKey: ConfigKey.enableCodexHistory) ? .on : .off
@@ -2708,6 +2712,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         defaults.set(gitUserNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.gitUserName)
         defaults.set(gitUserEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: ConfigKey.gitUserEmail)
         defaults.set(enableCommandsCheckbox.state == .on, forKey: ConfigKey.enableCommands)
+        defaults.set(persistLongTasksCheckbox.state == .on, forKey: ConfigKey.persistLongTasks)
         defaults.set(captureCommandHistoryCheckbox.state == .on, forKey: ConfigKey.captureCommandHistoryContent)
         defaults.set(enableGitPushCheckbox.state == .on, forKey: ConfigKey.enableGitPush)
         defaults.set(enableCodexHistoryCheckbox.state == .on, forKey: ConfigKey.enableCodexHistory)
@@ -2798,6 +2803,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
                 enableGitPush: enableGitPushCheckbox.state == .on,
                 enableCodexHistory: enableCodexHistoryCheckbox.state == .on,
                 captureCommandHistoryContent: captureCommandHistoryCheckbox.state == .on,
+                persistLongTasks: persistLongTasksCheckbox.state == .on,
                 defaultWorkspacePermissions: defaultWorkspacePermissions
             ))
         } catch {
@@ -3223,6 +3229,7 @@ private final class MainViewController: NSViewController, NSTabViewDelegate, NST
         overviewChangeButton.isEnabled = configurationIsEditable
         enableCommandsCheckbox.isEnabled = configurationIsEditable
         captureCommandHistoryCheckbox.isEnabled = configurationIsEditable
+        persistLongTasksCheckbox.isEnabled = configurationIsEditable
         enableGitPushCheckbox.isEnabled = configurationIsEditable
         enableCodexHistoryCheckbox.isEnabled = configurationIsEditable
         saveConnectionButton.setLoading(false)

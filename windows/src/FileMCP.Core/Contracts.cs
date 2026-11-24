@@ -76,7 +76,8 @@ public sealed record LocalMcpConfiguration(
     bool EnableGitPush = false,
     bool EnableCodexHistory = false,
     bool CaptureCommandHistoryContent = false,
-    WorkspacePermissions? DefaultWorkspacePermissions = null);
+    WorkspacePermissions? DefaultWorkspacePermissions = null,
+    bool PersistLongTasks = false);
 
 public enum LocalMcpRuntimeStatus
 {
@@ -114,6 +115,7 @@ public sealed class FileMcpSettings
     public bool EnableGitPush { get; set; }
     public bool EnableCodexHistory { get; set; }
     public bool CaptureCommandHistoryContent { get; set; }
+    public bool PersistLongTasks { get; set; }
     public WorkspacePermissions? DefaultWorkspacePermissions { get; set; }
     public int MaxConcurrentCommands { get; set; } = 8;
     public List<ApprovedWorkspace> AdditionalWorkspaces { get; set; } = [];

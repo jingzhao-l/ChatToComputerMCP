@@ -48,6 +48,7 @@ internal sealed partial class LocalTools
     private readonly string _workspaceScopeID;
     private readonly string _workspaceName;
     private readonly CommandHistoryStore? _commandHistory;
+    private readonly CommandSupervisor? _commandSupervisor;
     private readonly SemaphoreSlim _toolSlots = new(16, 16);
     private readonly SemaphoreSlim _serializedSlot = new(1, 1);
     private readonly SemaphoreSlim _commandSlots = new(16, 16);
@@ -95,10 +96,11 @@ internal sealed partial class LocalTools
         CommandReceiptLedger? receiptLedger = null, string workspaceScopeID = "default",
         bool enableGitPush = false, bool enableCodexHistory = false,
         string workspaceName = "Default workspace", CommandHistoryStore? commandHistory = null,
-        bool allowWrite = true, string? isolatedShellImage = null)
+        bool allowWrite = true, string? isolatedShellImage = null, CommandSupervisor? commandSupervisor = null)
     {
         _workspaceName = workspaceName;
         _commandHistory = commandHistory;
+        _commandSupervisor = commandSupervisor?.AllowsNew == true ? commandSupervisor : null;
         _resolver = new SafePathResolver(allowedDirectory);
         _receiptLedger = receiptLedger;
         _workspaceScopeID = workspaceScopeID;
@@ -330,9 +332,7 @@ internal sealed partial class LocalTools
                 "apply_patch" => ObjectOutput(ApplyPatch(arguments)),
                 "workspace_context" => ObjectOutput(await WorkspaceContextAsync(GetString(arguments, "path", ""), cancellationToken).ConfigureAwait(false)),
                 "start_command" => ObjectOutput(StartCommand(arguments, verifiedOwnerID ?? "__local_admin__")),
-                "command_receipt_status" => ObjectOutput(_receiptLedger?.OwnReceipt(_workspaceScopeID,
-                    GetRequiredString(arguments, "request_id"), verifiedOwnerID ?? "__local_admin__")
-                    ?? throw new FileMcpException("Durable command receipts are unavailable")),
+                 "command_receipt_status" => ObjectOutput(OwnCommandReceipt(GetRequiredString(arguments, "request_id"), verifiedOwnerID ?? "__local_admin__")),
                 "read_command_output" => ObjectOutput(FindSession(GetRequiredString(arguments, "session_id")).Snapshot(GetInt(arguments, "cursor", 0))),
                 "cancel_command" => ObjectOutput(CancelCommand(GetRequiredString(arguments, "session_id"))),
                 "command_capacity_status" => ObjectOutput(_commandBudget.Status()),

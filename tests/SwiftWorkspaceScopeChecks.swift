@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 extension LocalMCPServer {
     static func verifyOAuthRevocationCancelsOwnedJobs() throws {
@@ -170,6 +171,83 @@ extension LocalMCPServer {
         try checkCall("cancel_command", ["session_id": sessionID],
                       alice, expectedError: false, "Owner may cancel task")
         print("PASS: per-OAuth-client authorized scopes, session ownership, cancellation and request-ID collision isolation")
+    }
+
+    static func supervisorFixture(_ root: URL) throws {
+        let workspace = root.appendingPathComponent("workspace")
+        let server = try LocalMCPServer(port: 18969, allowedDirectory: workspace.path,
+            gitUserName: "", gitUserEmail: "", enableCommands: true,
+            receiptLedger: CommandReceiptLedger(fileURL: root.appendingPathComponent("receipts/ledger.json")),
+            commandHistory: CommandHistoryStore(directory: root.appendingPathComponent("history/profile"), captureContent: false),
+            commandSupervisor: CommandSupervisor(directory: root.appendingPathComponent("workers/profile")),
+            localAuthToken: String(repeating: "a", count: 64), log: { _ in })
+        let result = try server.tools.startCommand(["request_id": "crash-recovery",
+            "command": "printf started; while [ ! -f release ]; do sleep 0.1; done; printf finished",
+            "timeout_seconds": 60], ownerID: "__local_admin__")
+        try (result["session_id"] as! String).write(to: root.appendingPathComponent("session-id"), atomically: true, encoding: .utf8)
+        // Deliberately no graceful cleanup. The test kills only this fixture PID.
+        while true { Thread.sleep(forTimeInterval: 1) }
+    }
+
+    static func verifySupervisedRecovery() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ctcmcp-supervisor-" + UUID().uuidString)
+        let workspace = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        let fixture = Process()
+        fixture.executableURL = executable
+        fixture.arguments = ["--supervisor-fixture", root.path]
+        fixture.standardOutput = FileHandle.nullDevice; fixture.standardError = FileHandle.nullDevice
+        try fixture.run()
+        defer { if fixture.isRunning { kill(fixture.processIdentifier, SIGKILL); fixture.waitUntilExit() } }
+        let idURL = root.appendingPathComponent("session-id")
+        let launchDeadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: idURL.path), fixture.isRunning, Date() < launchDeadline { Thread.sleep(forTimeInterval: 0.05) }
+        precondition(FileManager.default.fileExists(atPath: idURL.path), "Worker fixture failed to launch")
+        let id = try String(contentsOf: idURL, encoding: .utf8)
+        kill(fixture.processIdentifier, SIGKILL); fixture.waitUntilExit()
+        let supervisor = try CommandSupervisor(directory: root.appendingPathComponent("workers/profile"))
+        let jobs = try supervisor.jobs()
+        precondition(jobs.count == 1 && jobs[0].record.sessionID == id)
+        defer { try? jobs[0].requestCancel() }
+        let alive = try jobs[0].workerAlive()
+        precondition(alive, "Worker must survive actual gateway death")
+        let ledger = try CommandReceiptLedger(fileURL: root.appendingPathComponent("receipts/ledger.json"))
+        let history = try CommandHistoryStore(directory: root.appendingPathComponent("history/profile"), captureContent: false)
+        let server = try LocalMCPServer(port: 18969, allowedDirectory: workspace.path,
+            gitUserName: "", gitUserEmail: "", enableCommands: true, receiptLedger: ledger,
+            commandHistory: history, commandSupervisor: supervisor,
+            localAuthToken: String(repeating: "a", count: 64), log: { _ in })
+        defer { server.stop() }
+        let original = try server.tools.findSession(id)
+        precondition(original.active)
+        let retry = try server.tools.startCommand(["request_id": "crash-recovery",
+            "command": "printf started; while [ ! -f release ]; do sleep 0.1; done; printf finished",
+            "timeout_seconds": 60], ownerID: "__local_admin__")
+        precondition(retry["session_id"] as? String == id)
+        do {
+            _ = try server.tools.startCommand(["request_id": "crash-recovery", "command": "printf changed", "timeout_seconds": 60], ownerID: "__local_admin__")
+            preconditionFailure("Changed command must not reuse a restored receipt")
+        } catch {}
+        try Data().write(to: workspace.appendingPathComponent("release"))
+        let finishDeadline = Date().addingTimeInterval(10)
+        while original.active, Date() < finishDeadline { Thread.sleep(forTimeInterval: 0.05) }
+        let snapshot = try original.snapshot(cursor: 0)
+        precondition(snapshot["state"] as? String == "exited")
+        precondition(snapshot["output"] as? String == "startedfinished")
+        let receiptDeadline = Date().addingTimeInterval(3)
+        while Date() < receiptDeadline {
+            if (try ledger.ownReceipt(scopeID: "default", requestID: "crash-recovery", ownerID: "__local_admin__"))["state"] as? String == "exited" { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let receipt = try ledger.ownReceipt(scopeID: "default", requestID: "crash-recovery", ownerID: "__local_admin__")
+        precondition(receipt["state"] as? String == "exited")
+        let cancelled = try server.tools.startCommand(["request_id": "cancel-recovered", "command": "sleep 30", "timeout_seconds": 45], ownerID: "__local_admin__")
+        let session = try server.tools.findSession(cancelled["session_id"] as! String)
+        session.cancel(synchronously: true)
+        precondition((try! session.snapshot(cursor: 0))["state"] as? String == "cancelled")
+        print("PASS: actual gateway SIGKILL survival, original task reattachment, no replay, durable terminal receipt and worker cancellation")
     }
 
     static func verifyDurableCommandReceipts() throws {
