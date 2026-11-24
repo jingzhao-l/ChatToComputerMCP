@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @main struct SwiftCUAChecks {
     static func expectFailure(_ label: String, _ operation: () throws -> Void) {
@@ -18,6 +19,27 @@ import Foundation
         expectFailure("guessed session") { _ = try service.call("cua_stop_session",args:["session_id":"fake"],owner:nil) }
         let defs = CUAService.definitions()
         precondition(defs.count == 15 && Set(defs.compactMap { $0["name"] as? String }).count == defs.count)
+        // Real OS metadata only: no screenshots, titles, input, or
+        // app grants. A headless runner may have no eligible windows.
+        let osRows=(CGWindowListCopyWindowInfo(.optionAll,kCGNullWindowID) as? [[String:Any]] ?? []).filter{
+            ($0[kCGWindowLayer as String] as? Int)==0 && ($0[kCGWindowNumber as String] as? Int64 ?? 0)>0
+        }
+        var matched=0,stable=0
+        for row in osRows.prefix(20) {
+            guard let window=row[kCGWindowNumber as String] as? Int64,let pid=row[kCGWindowOwnerPID as String] as? Int32 else{continue}
+            let exact=CUAService.exactWindow(pid,window)
+            let stillExists=(CGWindowListCopyWindowInfo(.optionAll,kCGNullWindowID) as? [[String:Any]] ?? []).contains{
+                ($0[kCGWindowNumber as String] as? Int64)==window && ($0[kCGWindowOwnerPID as String] as? Int32)==pid && ($0[kCGWindowLayer as String] as? Int)==0
+            }
+            if stillExists {
+                stable+=1
+                precondition(exact != nil,"Exact CGWindowID query lost a stable native window")
+                precondition(CUAService.exactWindow(pid == Int32.max ? pid-1 : pid+1,window)==nil)
+                matched+=1
+            }
+        }
+        precondition(CUAService.exactWindow(1,0)==nil)
+        print("PASS exact native window identity metadata: stable=\(stable), matched=\(matched) (no desktop input)")
         let actionID=String(repeating:"r",count:48)
         let validatedID=try CUAService.requestID(actionID); precondition(validatedID == actionID)
         expectFailure("short request ID") { _ = try CUAService.requestID("retry") }

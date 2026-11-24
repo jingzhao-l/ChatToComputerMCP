@@ -625,15 +625,21 @@ final class CUAService {
             return ["window_id":id,"title":row[kCGWindowName as String] as? String ?? "", "bounds":row[kCGWindowBounds as String] as? [String:Any] ?? [:],"on_screen":row[kCGWindowIsOnscreen as String] as? Bool ?? false]
         }
     }
-    private func exactWindow(_ pid:Int32,_ window:Int64)->[String:Any]? {
-        guard window>0,window<=Int64(UInt32.max),
-              let rows=CGWindowListCreateDescriptionFromArray([NSNumber(value:window)] as CFArray) as? [[String:Any]],
+    /// CGWindowListCreateDescriptionFromArray takes the raw CGWindowID
+    /// array format returned by the C API, NOT an NSArray of NSNumber.
+    /// Null CFArray callbacks store the opaque integer value without
+    /// retaining or dereferencing it as a CF object.
+    static func exactWindow(_ pid:Int32,_ window:Int64)->[String:Any]? {
+        guard window>0,window<=Int64(UInt32.max) else{return nil}
+        var raw=UnsafeRawPointer(bitPattern:UInt(window))
+        guard let ids=CFArrayCreate(kCFAllocatorDefault,&raw,1,nil),
+              let rows=CGWindowListCreateDescriptionFromArray(ids) as? [[String:Any]],
               let row=rows.first(where:{($0[kCGWindowNumber as String] as? Int64)==window &&
                 ($0[kCGWindowOwnerPID as String] as? Int32)==pid && ($0[kCGWindowLayer as String] as? Int)==0}) else{return nil}
         return row
     }
     private func windowGeometry(_ target:CUATarget)->CUAWindowGeometry? {
-        guard let row=exactWindow(target.pid,target.window),
+        guard let row=Self.exactWindow(target.pid,target.window),
               let bounds=row[kCGWindowBounds as String] as? [String:Any],
               let x=bounds["X"] as? Double,let y=bounds["Y"] as? Double,
               let w=bounds["Width"] as? Double,let h=bounds["Height"] as? Double else{return nil}
@@ -641,7 +647,7 @@ final class CUAService {
     }
     private func target(_ pid: Int32, _ window: Int64, policy: CUAPolicy, owner: String) throws -> CUATarget {
         let (app,launch) = try approvedApp(pid,policy:policy,owner:owner)
-        guard exactWindow(pid,window) != nil else {
+        guard Self.exactWindow(pid,window) != nil else {
             throw CUAFailure("cua_window_not_owned_or_unavailable")
         }
         return CUATarget(pid:pid,window:window,application:app,launched:launch)
@@ -651,7 +657,7 @@ final class CUAService {
         guard live, s.worker.isAlive, s.worker.ageSeconds<6900, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
               let (app,launch)=try? approvedApp(s.target.pid,policy:policy,owner:s.owner),
               app==s.target.application,launch==s.target.launched else {return false}
-        if requireWindow && exactWindow(s.target.pid,s.target.window)==nil {return false}
+        if requireWindow && Self.exactWindow(s.target.pid,s.target.window)==nil {return false}
         if mutation && !guestMode {
             guard let foreground = NSWorkspace.shared.frontmostApplication, foreground.processIdentifier != s.target.pid else { return false }
         }

@@ -1056,7 +1056,7 @@ internal sealed class CuaService : IDisposable
             try{
                 var evidence=new JsonObject();
                 if(!transferred){
-                    var probe=await created.Worker.CallAsync("check_permissions",new JsonObject{["prompt"]=false},()=>StillAllowed(created,false),cancellation).ConfigureAwait(false);
+                    var probe=await created.Worker.CallAsync("check_permissions",new JsonObject{["prompt"]=false},()=>StillAllowed(created,false),cancellation,timeoutMs:_guestMode?10000:25000).ConfigureAwait(false);
                     if(probe["isError"]?.GetValue<bool>()==true||probe["content"] is not JsonArray {Count:>0}||!created.Worker.Advertises("get_window_state"))
                         throw Fail("cua_driver_preflight_failed");
                     evidence=PermissionEvidence(probe["structuredContent"] as JsonObject??new());
@@ -1278,7 +1278,7 @@ internal sealed class CuaService : IDisposable
                     RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true,
                     WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
                 info.ArgumentList.Add(runtime?.worker??"mcp");
-                if(runtime is null)info.ArgumentList.Add("--direct");
+                if(runtime is null){info.ArgumentList.Add("--direct");info.ArgumentList.Add("--no-overlay");}
                 var keep = new[] {"SYSTEMROOT","WINDIR","SYSTEMDRIVE","USERPROFILE","USERNAME","APPDATA","LOCALAPPDATA","TEMP","TMP","PATH","PATHEXT","COMSPEC","PROGRAMDATA","HOMEDRIVE","HOMEPATH"};
                 foreach (var key in info.Environment.Keys.Where(k => !keep.Contains(k,StringComparer.OrdinalIgnoreCase)).ToArray()) info.Environment.Remove(key);
                 info.Environment["CUA_DRIVER_PERMISSION_MODE"] = "bounded";
@@ -1375,8 +1375,11 @@ internal sealed class CuaService : IDisposable
         {
             var started=Environment.TickCount64;
             LastHandshakeMs=0;
+            string stage="admission";
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation,_stop.Token);
-            deadline.CancelAfter(TimeSpan.FromMilliseconds(Math.Clamp(timeoutMs,0,10000)));
+            // Only cold, read-only permission preflight may have a separate startup budget.
+            int ceiling=!_initialized&&!_isExtension&&tool=="check_permissions"?25000:10000;
+            deadline.CancelAfter(TimeSpan.FromMilliseconds(Math.Clamp(timeoutMs,0,ceiling)));
             using var abort = deadline.Token.Register(() => { try { if (!_process.HasExited) _process.Kill(entireProcessTree:_job is not null); } catch { } });
             int checking=0;
             using var watchdog=new Timer(_=>{
@@ -1390,13 +1393,16 @@ internal sealed class CuaService : IDisposable
                 if (!allowed()) throw Fail("cua_session_revoked");
                 if (!_initialized)
                 {
+                    stage="initialize";
                     var init = await RpcAsync("initialize",new JsonObject { ["protocolVersion"] = "2025-06-18",
                         ["capabilities"] = new JsonObject(), ["clientInfo"] = new JsonObject { ["name"] = "ChatToComputerMCP", ["version"] = "1" } },deadline.Token).ConfigureAwait(false);
                     if (init["protocolVersion"]?.GetValue<string>() != "2025-06-18" || init["serverInfo"] is not JsonObject info ||
                         info["name"]?.GetValue<string>() != (_isExtension?"ctcmcp-cua-extension":"cua-driver") || info["version"]?.GetValue<string>() != (_isExtension?"1.0.0":"0.61.0"))
                         throw Fail("cua_driver_protocol_or_version_mismatch");
+                    stage="initialize_notification";
                     await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/initialized" },deadline.Token).ConfigureAwait(false);
                     if(!_isExtension){
+                        stage="tools_list";
                         var listed=await RpcAsync("tools/list",new(),deadline.Token).ConfigureAwait(false);
                         if(listed["tools"] is not JsonArray definitions||definitions.Count is <1 or >256||listed["nextCursor"] is not null)throw Fail("cua_driver_schema_missing");
                         foreach(var item in definitions){
@@ -1413,9 +1419,10 @@ internal sealed class CuaService : IDisposable
                 if(!allowed())throw Fail("cua_session_revoked");
                 deadline.Token.ThrowIfCancellationRequested();
                 beforeDispatch?.Invoke();
+                stage="tool_call:"+tool;
                 return await RpcAsync("tools/call",new JsonObject { ["name"] = tool, ["arguments"] = checkedArgs },deadline.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { throw Fail("cua_driver_timeout_or_revoked: action outcome may be unknown; observe again in a new session"); }
+            catch (OperationCanceledException) { throw Fail("cua_driver_timeout_or_revoked ("+stage+"): action outcome may be unknown; observe again in a new session"); }
             finally{LastCallMs=Environment.TickCount64-started;}
         }
     }

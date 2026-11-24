@@ -158,7 +158,7 @@ internal static partial class Program
         Assert(!Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase), "CUA fixture requires test apphost");
         if(Environment.GetEnvironmentVariable("CTCMCP_REAL_CUA_DRIVER") is string driver){
             using var actual=new CuaService.Worker(driver,exe);
-            var permissions=await actual.CallAsync("check_permissions",J("""{"prompt":false}"""),()=>true,default);
+            var permissions=await actual.CallAsync("check_permissions",J("""{"prompt":false}"""),()=>true,default,timeoutMs:25000);
             Assert(permissions["isError"]?.GetValue<bool>()!=true&&permissions["content"] is JsonArray {Count:>0},"pinned real Windows driver read-only probe");
             Assert(actual.Advertises("get_window_state"),"native observation contract");
             var permissionEvidence=CuaService.PermissionEvidence(J("""{"uia":true,"integrity_level":"Medium","path":"private"}"""));
@@ -194,7 +194,7 @@ internal static partial class Program
 
     private static async Task<int> RunCuaFixtureAsync()
     {
-        if(!Environment.GetCommandLineArgs().Skip(1).SequenceEqual(new[]{"mcp","--direct"}))return 4;
+        if(!Environment.GetCommandLineArgs().Skip(1).SequenceEqual(new[]{"mcp","--direct","--no-overlay"}))return 4;
         if (Environment.GetEnvironmentVariable("CUA_DRIVER_PERMISSION_MODE") != "bounded" ||
             Environment.GetEnvironmentVariable("DO_NOT_TRACK") != "1") return 2;
         var path=Environment.GetEnvironmentVariable("CUA_DRIVER_CAPABILITY_MANIFEST_FILE");
