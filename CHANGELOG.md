@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.6.2] — 2026-11-24
+
 - Fix Intel SDK process working-directory compatibility without changing gateway cwd; reject already-cancelled subprocesses before spawn.
 - Prevent stale queued Mac starts from surviving an explicit stop, cancel bootstrap safely, and verify restart of the same profile and listener.
 - Preserve Windows early HTTP rejection delivery when requests are fragmented; add OAuth protected-resource discovery and security response headers.
