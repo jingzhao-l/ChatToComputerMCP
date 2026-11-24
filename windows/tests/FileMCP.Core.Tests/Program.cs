@@ -48,6 +48,14 @@ internal static partial class Program
         }
         if (args.Length > 0 && args[0] == "mcp") return await RunCuaFixtureAsync();
 
+        if (args.Length == 1 && args[0] == "--http-resource-check")
+        {
+            var isolated = Path.Combine(Path.GetTempPath(), "ctcmcp-http-limit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(isolated);
+            try { await TestHttpResourceLimitsAsync(isolated); return 0; }
+            finally { Directory.Delete(isolated, true); }
+        }
+
         if (!OperatingSystem.IsWindows())
         {
             Console.WriteLine("windows-tests: skipped (Windows required)");
@@ -68,6 +76,7 @@ internal static partial class Program
             await TestCodexHistoryAsync(root);
             await TestGitSafetyAsync(root);
             await TestHttpAndMcpAsync(root);
+            await TestHttpResourceLimitsAsync(root);
             await TestWorkspaceScopeAsync(root);
             await TestWindowsOAuthAsync(root);
             CheckTunnelHealthPolicy();
