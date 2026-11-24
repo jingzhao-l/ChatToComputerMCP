@@ -408,3 +408,37 @@ test('CUA guest transport pins the host and provisions only explicit local templ
     assert.throws(()=>vmProvisionPlan(winArgs,'win32'));
   }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });
+
+test('CUA relay registry separates domain credentials and refuses duplicate guest bindings', async()=>{
+  const {extensionCommand}=await import('../bin/cua-extension-support.mjs');
+  const {createHash}=await import('node:crypto');
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'ctcmcp-relay-registry-'));
+  try{
+    // Fixture for the CLI registry only; real native HTTP tests use separate guest listeners.
+    const source=path.join(root,'cua-runtime','worker.mjs');
+    const digest=p=>createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+    const workerHash=digest(source),nodeHash=digest(process.execPath);
+    const runtimeDir=path.join(tmp,'cua-extension','1.0.0-'+workerHash.slice(0,16));
+    fs.mkdirSync(runtimeDir,{recursive:true});
+    fs.copyFileSync(source,path.join(runtimeDir,'worker.mjs'));
+    fs.writeFileSync(path.join(runtimeDir,'runtime.json'),JSON.stringify({workerSHA256:workerHash,nodeSHA256:nodeHash}));
+    const h={root:()=>tmp,hashFile:digest,installedDriver:()=>({driver:process.execPath,driverSHA256:nodeHash}),
+      readPolicy:()=>null,writePrivate:(p,data)=>fs.writeFileSync(p,data,{mode:0o600,flag:'wx'})};
+    const tokenA=path.join(tmp,'guest-a'),tokenB=path.join(tmp,'guest-b'),copyA=path.join(tmp,'copy-a');
+    fs.writeFileSync(tokenA,'a'.repeat(64)+'\n',{mode:0o600});
+    fs.writeFileSync(tokenB,'b'.repeat(64)+'\n',{mode:0o600});
+    fs.writeFileSync(copyA,'a'.repeat(64)+'\n',{mode:0o600});
+    const args=(id,port,guest,file)=>['--domain',id,'--port',String(port),'--guest-port',String(guest),'--token-file',file,'--confirm-dedicated-guest'];
+    extensionCommand('relay-init',args('one',18801,18766,tokenA),h);
+    extensionCommand('relay-init',args('two',18802,18767,tokenB),h);
+    const read=(id,file)=>fs.readFileSync(path.join(tmp,'cua-relays',id,file),'utf8');
+    assert.notEqual(read('one','relay-token'),read('two','relay-token'));
+    const policy=JSON.parse(read('one','cua-policy.json'));
+    assert.deepEqual(policy.grants,[]);
+    assert.equal(policy.profiles.length,1);assert.equal(policy.profiles[0].kind,'guest');
+    assert.throws(()=>extensionCommand('relay-init',args('three',18803,18768,copyA),h),/distinct/);
+    assert.throws(()=>extensionCommand('relay-init',args('three',18801,18768,tokenB),h),/distinct/);
+    assert.throws(()=>extensionCommand('guest-grant',['--profile','oops','--port','18769','--token-file',copyA,'--client','shared-connection'],h),/reserved/);
+    assert.equal(fs.existsSync(path.join(tmp,'cua-relays','three')),false);
+  }finally{fs.rmSync(tmp,{recursive:true,force:true})}
+});

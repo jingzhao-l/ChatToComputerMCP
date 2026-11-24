@@ -95,6 +95,8 @@ function guestGrant(args,h){
   const stat=fs.lstatSync(tokenFile);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.size!==65||process.platform!=='win32'&&(stat.mode&0o077)!==0)
     throw Error('Guest credential must be a private regular file created by guest-init');
+  const digest=guestDigestFor(tokenFile);
+  if(relayRecords(h).some(x=>x.guestPort===p||x.port===p||x.guestDigest===digest))throw Error('Guest is reserved for a dedicated relay execution domain');
   const existing=h.readPolicy()?.profiles??[];
   if(existing.some(x=>x.kind==='guest'&&x.port===p&&x.id!==profile))throw Error('Guest endpoint is already registered');
   const grant={id:profile,kind:'guest',port:p,tokenFile,clients:[client(o['--client'])]};
@@ -115,6 +117,28 @@ function guestInit(args,h){
   catch(e){fs.rmSync(credential,{force:true});throw e}
   console.log('Dedicated guest configured. Keep its credential file private.');
 }
+function relayRecords(h){
+  const parent=path.join(h.root(),'cua-relays');
+  if(!fs.existsSync(parent))return [];
+  if(fs.lstatSync(parent).isSymbolicLink())throw Error('Unsafe relay registry directory');
+  return fs.readdirSync(parent,{withFileTypes:true}).filter(item=>item.name!=='.registry-lock').map(item=>{
+    if(!item.isDirectory()||item.isSymbolicLink())throw Error('Unsafe relay registry entry');
+    const file=path.join(parent,item.name,'relay.json');
+    const info=fs.lstatSync(file);
+    if(!info.isFile()||info.isSymbolicLink()||info.size>4096)throw Error('Unsafe relay registry configuration');
+    const record=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(record.domain!==item.name||record.dedicatedGuestConfirmed!==true||!Number.isInteger(record.port)||!Number.isInteger(record.guestPort)||
+        !/^[a-f0-9]{64}$/.test(record.guestDigest??''))throw Error('Invalid relay registry configuration');
+    return record;
+  });
+}
+function guestDigestFor(file){
+  const info=fs.lstatSync(file);
+  if(!info.isFile()||info.isSymbolicLink()||info.size!==65)throw Error('Invalid dedicated guest token file');
+  const bytes=fs.readFileSync(file);
+  if(!/^[a-f0-9]{64}\n$/.test(bytes.toString('utf8')))throw Error('Invalid dedicated guest credential format');
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
 function relayDirectory(h,domain){
   return path.join(h.root(),'cua-relays',id(domain));
 }
@@ -127,7 +151,7 @@ function relayInit(args,h){
   const st=fs.lstatSync(tokenFile);
   if(st.size!==65||process.platform!=='win32'&&((st.mode&0o077)!==0||st.uid!==process.getuid()))
     throw Error('Use a private dedicated guest credential file');
-  const guestDigest=crypto.createHash('sha256').update(fs.readFileSync(tokenFile)).digest('hex');
+  const guestDigest=guestDigestFor(tokenFile);
   const parent=path.join(h.root(),'cua-relays');
   fs.mkdirSync(parent,{recursive:true,mode:0o700});
   const lock=path.join(parent,'.registry-lock');
@@ -135,15 +159,13 @@ function relayInit(args,h){
   let created=false;
   const destination=relayDirectory(h,domain);
   try{
-    for(const item of fs.readdirSync(parent,{withFileTypes:true})){
-      if(item.name==='.registry-lock')continue;
-      if(!item.isDirectory()||item.isSymbolicLink())throw Error('Unsafe relay registry entry');
-      const old=JSON.parse(fs.readFileSync(path.join(parent,item.name,'relay.json'),'utf8'));
+    for(const old of relayRecords(h)){
       if(old.port===listener||old.port===guestPort||old.guestPort===listener||old.guestPort===guestPort||old.guestDigest===guestDigest)
         throw Error('Each execution domain requires distinct ports and a distinct dedicated guest credential');
     }
     const ordinary=h.readPolicy();
-    if((ordinary?.profiles??[]).some(p=>p.kind==='guest'&&(p.port===guestPort||p.tokenFile===tokenFile)))
+    if((ordinary?.profiles??[]).some(p=>p.kind==='guest'&&(p.port===guestPort||p.port===listener||p.tokenFile===tokenFile||
+        guestDigestFor(p.tokenFile)===guestDigest)))
       throw Error('Guest is already registered with the ordinary gateway; use a different dedicated guest');
     fs.mkdirSync(destination,{mode:0o700});created=true;
     h.writePrivate(path.join(destination,'relay-token'),crypto.randomBytes(32).toString('hex')+'\n');
