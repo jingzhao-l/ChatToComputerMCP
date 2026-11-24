@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## [0.5.0] — 2026-11-24
+
+- Make approved workspaces first-class MCP routing targets, with local live
+  add/revoke, per-workspace policies and verified OAuth grant binding.
+- Add bounded shared FIFO scheduling, local command history, structured activity
+  audit, and live cancellation/output for short and long commands.
+- Add opt-in independent long-task workers with original-session recovery after
+  gateway restart, durable receipt reconciliation and no blind replay.
+- Add opt-in restricted Linux container shell for locally approved immutable
+  Docker images; missing engines/images fail closed rather than run host shell.
+- Add connection identity and owner-scoped task discovery; a shared OpenAI
+  tunnel remains a shared principal, not an authenticated conversation.
+- Preserve local jobs when a transport exits, and align Windows cloud-poll
+  health, wake/recovery, proxy discovery, fragmented log redaction and
+  directory-level command collision checks with macOS.
+- Reorganize both native desktops into seven sections, with adaptive navigation,
+  remembered geometry, diagnostic log controls and idle update activation.
+- Add Windows Cloudflare login cancellation, certificate rollback and profile
+  mutex ownership fixes. Keep OS-specific implementations native.
+- This independent release excludes the separate experimental CUA branch.
+  Local Docker and live provider/Windows device acceptance are not implied by
+  source compilation; see the platform parity and independent-task docs.
+
 ## [0.4.4] — 2026-11-23
 
 - Fix macOS GUI being permanently stuck on **Connecting to OpenAI** even

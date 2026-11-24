@@ -65,6 +65,10 @@ jobs:
             'macos/AppUpdates.swift','macos/LaunchAgentService.swift',
             'windows/src/FileMCP.App/DesktopUpdates.cs',
             'macos/ChatToComputerMCPApp.swift',
+            'macos/CommandSupervisor.swift','macos/CommandHistoryStore.swift',
+            'windows/src/FileMCP.Core/CommandSupervisor.cs',
+            'windows/src/FileMCP.Core/TunnelCloudHealth.cs',
+            'docs/INDEPENDENT_TASKS.md','docs/PLATFORM_PARITY.md',
             'windows/src/FileMCP.Core/WorkspaceCommandBudget.cs',
             'vendor/tunnel-client/darwin-arm64/tunnel-client',
             'docs/PUBLISHING.md','docs/ARCHITECTURE.md','LICENSE'
