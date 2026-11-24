@@ -520,8 +520,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
         // token, never a self-reported MCP implementation name or request ID.
         var verified = _oauth?.VerifyBearer(
             request.Headers.GetValueOrDefault("authorization"));
-        if (_oauth is not null && !HasValidLocalAdmin(request.Headers) &&
-            verified is null)
+        if (_oauth is not null && verified is null &&
+            (!HasValidLocalAdmin(request.Headers) || (IsCuaRequest(request) && request.Headers.ContainsKey("authorization"))))
             return HttpResponse(401, Encoding.UTF8.GetBytes("Unauthorized"), "text/plain");
         var headerVersion = request.Headers.GetValueOrDefault("mcp-protocol-version");
         var headerModern = headerVersion is not null && !FileMcpConstants.LegacySupportedVersions.Contains(headerVersion);

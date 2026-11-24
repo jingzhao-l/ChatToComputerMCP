@@ -1,9 +1,9 @@
-# Verified OAuth client access (macOS, Cloudflare OAuth)
+# Verified OAuth client access and conversation identity boundaries
 
 This document describes which remote clients have independently verified
 identities and which connections are intentionally shared.
 
-## What v0.3.0 actually provides
+## What verified OAuth actually provides
 
 Cloudflare OAuth clients authenticate with **server-issued bearer tokens**
 bound to a locally approved OAuth client ID. A client-supplied display name is
@@ -36,20 +36,24 @@ conversation identity** to this local server. Different chats using one tunnel
 may therefore share the same approved workspace and command session controls.
 
 Do not use self-reported MCP clientInfo, tool arguments, headers with arbitrary
-names or request IDs as authentication. Real per-conversation isolation in this
-mode requires a verified transport claim or a separately approved OAuth flow.
+names or request IDs as authentication. A separately approved OAuth flow proves a distinct OAuth client, not necessarily a distinct conversation. Secure MCP Tunnel can forward Authorization headers, but the present shared configuration does not bind every request to a particular ChatGPT conversation. A platform-verified identity claim or a trusted client that binds unique authorization to each conversation is required.
+
+## Design for true conversation isolation
+
+Distinguish four principals: tunnel connection, verified OAuth client, verified cloud conversation, and execution lease. Never promote a weaker principal into a stronger one. A server-generated opaque lease is a capability for a resource, not evidence of a conversation's origin. MCP transport session identifiers likewise do not prove cloud conversation identity.
+
+A platform-supported claim must bind the authenticated account/tenant, conversation identifier, audience, expiry and request context, with verified issuer/signature and replay protection. A cooperating client can instead obtain separate, short-lived authorization for each conversation and attach it outside model-controlled tool arguments. The server must validate this binding on each operation, including reads, cancellation, receipts and revocation, and reject missing/invalid claims without falling back to shared identity. Until a trusted Chat client supplies such evidence, do not advertise verified conversation isolation. Independent connector registrations alone do not prove one registration per chat.
+
+CUA offers a local fail-closed option, `chat-to-computer-mcp cua require-verified enable`, requiring independently verified OAuth clients; it does not invent a cloud conversation identifier. See [CUA](CUA.md). The project also needs an OS security boundary (e.g. distinct restricted OS accounts or dedicated guests) if it must isolate an untrusted shell from another client's files, credentials or desktop. App-level authorization and path checks are not that boundary.
 
 [OpenAI Secure MCP Tunnel documentation](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 
 ## Other limits
 
-- The macOS native GUI currently manages OAuth clients for Cloudflare only.
-- Windows currently uses the OpenAI Secure MCP Tunnel and retains shared
-  connection-level authorization; it does not implement the Cloudflare OAuth
-  client management page.
+- Both native platforms implement Cloudflare OAuth client authorization and local client management. The shared OpenAI Secure MCP Tunnel configuration remains connection-level.
 - The shell runs with the computer user's OS privileges. A cwd overlap guard
   is not an OS sandbox.
-- Command session ownership is still runtime-bound. Durable macOS receipts
+- Command session ownership is still runtime-bound. Durable command receipts
   prevent accidental replay after restart, but cannot reattach orphaned
   processes or their lost output streams.
 

@@ -6,18 +6,19 @@ import {fileURLToPath} from 'node:url';
 
 export const extensionHelp=[
   'cua extension-install              Install pinned Playwright and headless Chromium',
-  'cua browser-grant --profile <id> --origin <origin> --client <id> (repeat --origin)',
+  'cua browser-grant --profile <id> --origin <origin> --client <id> (repeat --origin; optional --allow-files)',
   'cua guest-init --port <port> --confirm-isolated-desktop (inside a dedicated guest)',
   'cua guest-serve                    Run CUA-only guest listener inside that guest',
   'cua guest-grant --profile <id> --port <forwarded-port> --token-file <file> --client <id>',
   'cua profile-revoke --profile <id> --client <id>',
   'cua vm status|start|stop --profile <id> (registered Lume/Hyper-V VM)'
 ];
-function dir(h){return path.join(h.root(),'cua-extension','1.0.0')}
+const source=path.join(path.dirname(fileURLToPath(import.meta.url)),'..','cua-runtime');
+function dir(h){return path.join(h.root(),'cua-extension','1.0.0-'+h.hashFile(path.join(source,'worker.mjs')).slice(0,16))}
 function runtime(h){
   const d=dir(h),worker=fs.realpathSync(path.join(d,'worker.mjs')),node=fs.realpathSync(process.execPath);
   const marker=JSON.parse(fs.readFileSync(path.join(d,'runtime.json'),'utf8'));
-  if(marker.workerSHA256!==h.hashFile(worker)||marker.nodeSHA256!==h.hashFile(node))
+  if(marker.workerSHA256!==h.hashFile(path.join(source,'worker.mjs'))||marker.workerSHA256!==h.hashFile(worker)||marker.nodeSHA256!==h.hashFile(node))
     throw Error('CUA extension runtime integrity mismatch; reinstall explicitly');
   return {node,nodeSHA256:marker.nodeSHA256,worker,workerSHA256:marker.workerSHA256};
 }
@@ -28,7 +29,6 @@ function install(args,h){
   fs.mkdirSync(path.dirname(destination),{recursive:true,mode:0o700});
   const stage=fs.mkdtempSync(path.join(path.dirname(destination),'.extension-'));
   try{
-    const source=path.join(path.dirname(fileURLToPath(import.meta.url)),'..','cua-runtime');
     for(const f of ['package.json','package-lock.json','worker.mjs'])fs.copyFileSync(path.join(source,f),path.join(stage,f));
     const env={...process.env,PLAYWRIGHT_BROWSERS_PATH:path.join(stage,'browsers')};
     h.run(process.platform==='win32'?'npm.cmd':'npm',['ci','--ignore-scripts','--no-audit','--no-fund','--registry','https://registry.npmjs.org/'],
@@ -60,6 +60,7 @@ function exactOrigin(v){
 }
 function saveProfile(profile,h){
   const p=h.readPolicy()??{grants:[]},existing=(p.profiles??[]).find(x=>x.id===profile.id);
+  if(p.requireVerifiedClient===true&&profile.clients.includes('shared-connection'))throw Error('Verified-client-only mode refuses shared profile grants');
   if(existing){
     const {clients:a,...old}=existing,{clients:b,...next}=profile;
     if(JSON.stringify(old)!==JSON.stringify(next))throw Error('Revoke existing profile before changing its scope');
@@ -71,10 +72,11 @@ function saveProfile(profile,h){
   console.log('Local profile grant saved; all previous leases are invalidated.');
 }
 function browserGrant(args,h){
-  const o=options(args,['--profile','--client','--origin']);
+  const allowFiles=args.includes('--allow-files');
+  const o=options(args.filter(a=>a!=='--allow-files'),['--profile','--client','--origin']);
   const origins=[...new Set((o['--origin']??[]).map(exactOrigin))].sort();
   if(!origins.length||origins.length>32)throw Error('One to 32 exact origins required');
-  saveProfile({id:id(o['--profile']),kind:'browser',origins,clients:[client(o['--client'])]},h);
+  saveProfile({id:id(o['--profile']),kind:'browser',origins,allowFiles,clients:[client(o['--client'])]},h);
 }
 function guestGrant(args,h){
   const o=options(args,['--profile','--client','--port','--token-file','--vm-provider','--vm-name']);

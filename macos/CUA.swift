@@ -33,10 +33,12 @@ struct CUAPolicy: Decodable {
         let origins: [String]?
         let port: Int?
         let tokenFile: String?
+        let allowFiles: Bool?
     }
     let extensionRuntime: ExtensionRuntime?
     let profiles: [ExtensionProfile]?
     let enabled: Bool
+    let requireVerifiedClient: Bool?
     let driver: String
     let driverSHA256: String
     let grants: [Grant]
@@ -287,7 +289,8 @@ final class CUAService {
             self.owner=owner; self.profile=profile; self.policyBytes=policyBytes; self.worker=worker
         }
     }
-    private let gate = NSLock()
+    private let gate = NSRecursiveLock()
+    private var runtimeLockFD: Int32 = -1
     private var extensions: [String:ExtensionSession] = [:]
     private let guestMode: Bool
     private var sessions: [String: Session] = [:]
@@ -383,8 +386,35 @@ final class CUAService {
         guard hash == policy.driverSHA256.lowercased() else { throw CUAFailure("cua_driver_integrity_mismatch") }
         return policy.driver
     }
+    // Single state authority across processes as well as threads. Prevent a
+    // second listener with the same private receipt store from replaying actions.
+    private func acquireRuntimeLock() throws {
+        gate.lock(); defer { gate.unlock() }
+        guard !stopped else { throw CUAFailure("cua_service_stopped") }
+        if runtimeLockFD >= 0 { return }
+        let folder=policyURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+        let lockPath=folder.appendingPathComponent("cua-runtime.lock").path
+        let fd=Darwin.open(lockPath,O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC,0o600)
+        guard fd>=0 else { throw CUAFailure("cua_runtime_lock_unavailable") }
+        var info=stat()
+        guard fstat(fd,&info)==0,(info.st_mode&S_IFMT)==S_IFREG,info.st_uid==getuid(),info.st_mode&0o077==0,
+              flock(fd,LOCK_EX|LOCK_NB)==0 else { Darwin.close(fd);throw CUAFailure("cua_runtime_already_owned_or_unsafe") }
+        runtimeLockFD=fd
+    }
+    private func reserveReceipt(_ receipt:CommandReceiptLedger,request:String,owner:String) throws {
+        gate.lock();defer{gate.unlock()}
+        guard !stopped,!revoked.contains(owner),runtimeLockFD>=0 else {throw CUAFailure("cua_service_stopped_or_revoked")}
+        try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+    }
+    private func finishReceipt(_ receipt:CommandReceiptLedger,request:String,state:String) throws {
+        gate.lock();defer{gate.unlock()}
+        guard !stopped,runtimeLockFD>=0 else {throw CUAFailure("cua_action_outcome_unknown")}
+        try receipt.finish(scopeID:"cua",requestID:request,state:state,exitCode:nil)
+    }
     private func ledger() throws -> CommandReceiptLedger {
         gate.lock(); defer { gate.unlock() }
+        try acquireRuntimeLock()
         if let receiptLedger { return receiptLedger }
         let ledger = try CommandReceiptLedger(fileURL:policyURL.deletingLastPathComponent().appendingPathComponent("cua-receipts-v1.json"))
         receiptLedger = ledger
@@ -449,10 +479,11 @@ final class CUAService {
         for id in ids { retire(id) }
     }
     func stop() {
-        gate.lock(); stopped = true; let all = Array(sessions.values); let workers = launchWorkers.values.map(\.worker); let ext = Array(extensions.values); extensions.removeAll(); sessions.removeAll(); gate.unlock()
+        gate.lock(); guard !stopped else {gate.unlock();return}; stopped = true; let all = Array(sessions.values); let workers = launchWorkers.values.map(\.worker); let ext = Array(extensions.values); extensions.removeAll(); sessions.removeAll(); gate.unlock()
         for e in ext { e.worker.close() }
         for worker in workers { worker.close() }
         for s in all { s.worker.close() }
+        gate.lock(); if runtimeLockFD>=0 {Darwin.close(runtimeLockFD);runtimeLockFD = -1};gate.unlock()
     }
     private func int(_ raw: Any?, max: Int64) throws -> Int64 {
         guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
@@ -575,6 +606,7 @@ final class CUAService {
             return try output(["closed":true])
         }
         let (policy,bytes) = try loadPolicy()
+        guard guestMode || policy.requireVerifiedClient != true || owner != CUAPolicy.sharedOwner else {throw CUAFailure("cua_verified_client_required")}
         let profiles = (policy.profiles ?? []).filter { $0.clients.contains(owner) }
         if name == "cua_extension_list" {
             return try output(["profiles":profiles.map { ["id":$0.id,"kind":$0.kind,"origins":$0.origins ?? []] as [String:Any] }])
@@ -600,7 +632,7 @@ final class CUAService {
             }
             let worker: CUAWorker
             do {
-                try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+                try reserveReceipt(receipt,request:request,owner:owner)
                 worker = try CUAWorker(driver:runtime.node,application:"",extensionRuntime:runtime,extensionProfile:p)
             } catch { gate.unlock(); throw error }
             let e=ExtensionSession(owner:owner,profile:p,policyBytes:bytes,worker:worker)
@@ -609,7 +641,7 @@ final class CUAService {
                 let reply=try worker.call("extension_open",[:],allowed:{requestAlive() && self.extensionAllowed(e)})
                 guard requestAlive(), extensionAllowed(e) else { throw CUAFailure("extension_open_interrupted") }
                 let out=try extensionResult(reply,id:e.id)
-                try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil)
+                try finishReceipt(receipt,request:request,state:"exited")
                 gate.lock(); e.busy=false; e.last=ProcessInfo.processInfo.systemUptime; gate.unlock()
                 return out
             } catch { retireExtension(e.id); throw error }
@@ -622,22 +654,22 @@ final class CUAService {
         }
         e.busy=true;gate.unlock()
         defer {gate.lock();e.busy=false;e.last=ProcessInfo.processInfo.systemUptime;gate.unlock()}
-        let browserOps=Set(["observe","navigate","click","fill","press","select","scroll","verify","back","forward","hover"])
+        let browserOps=Set(["observe","navigate","click","fill","press","select","scroll","verify","wait_for","back","forward","hover","drag","tab_list","tab_open","tab_select","tab_close","dialog_prepare","upload","download"])
         let guestOps=Set(["cua_capabilities","cua_list_apps","cua_list_windows","cua_launch_app","cua_create_session","cua_observe","cua_act","cua_verify","cua_stop_session","cua_receipt_status"])
         guard (e.profile.kind == "browser" ? browserOps : guestOps).contains(op), extensionAllowed(e),requestAlive() else {throw CUAFailure("extension_operation_not_allowed")}
-        let readOnly=Set(["observe","verify","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"])
+        let readOnly=Set(["observe","verify","wait_for","tab_list","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"])
         let request=try Self.requestID(args["request_id"]),receipt=try ledger()
-        if !readOnly.contains(op) {try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)}
+        if !readOnly.contains(op) {try reserveReceipt(receipt,request:request,owner:owner)}
         var recoverable = false
         do {
             let reply=try e.worker.call("extension_call",["operation":op,"parameters":params],allowed:{requestAlive() && self.extensionAllowed(e)})
             guard requestAlive(),extensionAllowed(e) else {throw CUAFailure("extension_action_outcome_unknown")}
             if reply["isError"] as? Bool == true, (reply["structuredContent"] as? [String:Any])?["recoverable"] as? Bool == true {
                 recoverable = true
-                if !readOnly.contains(op) {try receipt.finish(scopeID:"cua",requestID:request,state:"launch_failed",exitCode:nil)}
+                if !readOnly.contains(op) {try finishReceipt(receipt,request:request,state:"launch_failed")}
             }
             let result=try extensionResult(reply,id:id)
-            if !readOnly.contains(op) {try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil)}
+            if !readOnly.contains(op) {try finishReceipt(receipt,request:request,state:"exited")}
             return result
         }catch{if !recoverable {retireExtension(id)};throw error}
     }
@@ -651,15 +683,21 @@ final class CUAService {
               Set(args.keys).isSubset(of:Set(props.keys)), required.allSatisfy({ args[$0] != nil }) else { throw CUAFailure("cua_invalid_arguments") }
         if name == "cua_capabilities" {
             let policy = try? loadPolicy().0
-            let enabled = policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || (!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true)
-            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client",
-                "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"extension_profiles_enabled":!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true])
+            let requiresVerified = !guestMode && policy?.requireVerifiedClient == true
+            let enabled = (!requiresVerified || owner != CUAPolicy.sharedOwner) && (policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || (!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true))
+            return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":guestMode ? "dedicated_guest_connection" : (owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client"),"conversation_identity_verified":false,"requires_verified_client":requiresVerified,
+                "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"extension_profiles_enabled":enabled && !guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true])
+        }
+        if !guestMode, (try? loadPolicy().0.requireVerifiedClient)==true, owner==CUAPolicy.sharedOwner {
+            throw CUAFailure("cua_verified_client_required")
         }
         if name.hasPrefix("cua_extension_") {
             guard !guestMode else { throw CUAFailure("nested_guest_extensions_disabled") }
             return try extensionCall(name,args:args,owner:owner,requestAlive:requestAlive)
         }
         if name == "cua_receipt_status" {
+            let policy = try loadPolicy().0
+            guard guestMode || policy.requireVerifiedClient != true || owner != CUAPolicy.sharedOwner else {throw CUAFailure("cua_verified_client_required")}
             return try output(try ledger().ownReceipt(scopeID:"cua",requestID:Self.requestID(args["request_id"]),ownerID:owner))
         }
         if name == "cua_stop_session" {
@@ -670,6 +708,7 @@ final class CUAService {
             return try output(["stopped":true])
         }
         let (policy,bytes) = try loadPolicy()
+        guard guestMode || policy.requireVerifiedClient != true || owner != CUAPolicy.sharedOwner else {throw CUAFailure("cua_verified_client_required")}
         guard policy.grants.contains(where: { $0.clients.contains(owner) }) else { throw CUAFailure("cua_client_not_approved") }
         if name == "cua_launch_app" {
             guard let application = args["application"] as? String, Self.allowedApplication(application),
@@ -684,7 +723,7 @@ final class CUAService {
             }
             launching.insert(application); gate.unlock()
             defer { gate.lock(); launching.remove(application); launchWorkers.removeValue(forKey:application); gate.unlock() }
-            try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+            try reserveReceipt(receipt,request:request,owner:owner)
             let worker = try CUAWorker(driver:driver,application:application,launch:true)
             defer { worker.close() }
             gate.lock(); launchWorkers[application] = (owner,worker); gate.unlock()
@@ -699,7 +738,7 @@ final class CUAService {
                   (try? approvedApp(pid,policy:policy,owner:owner).0) == application else {
                 throw CUAFailure("cua_launch_unverified_or_refused: inspect actual state; do not replay")
             }
-            try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil)
+            try finishReceipt(receipt,request:request,state:"exited")
             return try output(["pid":pid,"application":application,"windows":windows(pid),"request_id":request,"background_only":true])
         }
         if name == "cua_list_apps" {
@@ -718,11 +757,14 @@ final class CUAService {
             sweep()
             gate.lock()
             let owned = sessions.values.filter { $0.owner == owner }
-            let list = owner == CUAPolicy.sharedOwner ? [] : owned.map { ["session_id":$0.id,"pid":$0.target.pid,"window_id":$0.target.window] as [String:Any] }
+            let native = owned.map { ["session_id":$0.id,"pid":$0.target.pid,"window_id":$0.target.window,"kind":"native"] as [String:Any] }
+            let extra = extensions.values.filter{$0.owner == owner}.map{["session_id":$0.id,"profile_id":$0.profile.id,"kind":$0.profile.kind] as [String:Any]}
+            let list = owner == CUAPolicy.sharedOwner ? [] : native + extra
             gate.unlock()
             return try output(["sessions":list,"shared_session_ids_hidden":owner == CUAPolicy.sharedOwner])
         }
         if name == "cua_create_session" {
+            try acquireRuntimeLock()
             let pid = Int32(try int(args["pid"],max:Int64(Int32.max)))
             let window = try int(args["window_id"],max:Int64(UInt32.max))
             let t = try target(pid,window,policy:policy,owner:owner)
@@ -753,7 +795,7 @@ final class CUAService {
             if operation != "set_window_frame" { try snapshot.validate(parameters) } else { try snapshot.validate([:]) }
             let request = try Self.requestID(args["request_id"])
             let receipt = try ledger()
-            try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+            try reserveReceipt(receipt,request:request,owner:owner)
             actionReceipt = (receipt,request)
             for (key,value) in parameters where key != "capture_id" || operation == "click" { driverArgs[key] = value }
             if operation != "invoke_menu" && operation != "set_window_frame", let revision = snapshot.revision { driverArgs["ui_tree_revision"] = revision }
@@ -807,7 +849,7 @@ final class CUAService {
             // Images are only returned as MCP image blocks, not duplicated in JSON.
             let metadata = structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path"].contains($0.key) }
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
-            if let (receipt,request) = actionReceipt { try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil) }
+            if let (receipt,request) = actionReceipt { try finishReceipt(receipt,request:request,state:"exited") }
             return (safe,["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation,"driver_result":metadata])
         } catch {
             // Do not replay actions after timeout, loss of transport or

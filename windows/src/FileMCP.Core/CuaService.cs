@@ -18,8 +18,8 @@ internal sealed class CuaService : IDisposable
     internal const string SharedOwner = "shared-connection";
     private sealed record Grant(string application, string[] clients, string[]? launchClients = null);
     internal sealed record ExtensionRuntime(string node,string nodeSHA256,string worker,string workerSHA256);
-    internal sealed record ExtensionProfile(string id,string kind,string[] clients,string[]? origins=null,int? port=null,string? tokenFile=null);
-    private sealed record Policy(bool enabled, string driver, string driverSHA256, Grant[] grants, ExtensionRuntime? extensionRuntime=null, ExtensionProfile[]? profiles=null)
+    internal sealed record ExtensionProfile(string id,string kind,string[] clients,string[]? origins=null,int? port=null,string? tokenFile=null,bool? allowFiles=null);
+    private sealed record Policy(bool enabled, string driver, string driverSHA256, Grant[] grants, ExtensionRuntime? extensionRuntime=null, ExtensionProfile[]? profiles=null,bool? requireVerifiedClient=null)
     {
         public bool PermitsLaunch(string app, string owner) => grants.Any(g => string.Equals(g.application,app,StringComparison.OrdinalIgnoreCase) && g.clients.Contains(owner,StringComparer.Ordinal) && (g.launchClients ?? []).Contains(owner,StringComparer.Ordinal));
         public bool Permits(string app, string owner) =>
@@ -105,6 +105,7 @@ internal sealed class CuaService : IDisposable
     private readonly string _policyPath;
     private readonly Timer _timer;
     private bool _stopped;
+    private FileStream? _runtimeLock;
     private readonly HashSet<string> _launching = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string,(string Owner,Worker Worker)> _launchWorkers = new(StringComparer.OrdinalIgnoreCase);
     private CommandReceiptLedger? _receiptLedger;
@@ -217,10 +218,34 @@ internal sealed class CuaService : IDisposable
         if (!string.Equals(hash,policy.driverSHA256,StringComparison.OrdinalIgnoreCase)) throw Fail("cua_driver_integrity_mismatch");
         return file.FullName;
     }
+    private void AcquireRuntimeLock()
+    {
+        lock(_gate)
+        {
+            if(_stopped)throw Fail("cua_service_stopped");
+            if(_runtimeLock is not null)return;
+            var path=Path.Combine(Path.GetDirectoryName(_policyPath)!,"cua-runtime.lock");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            try
+            {
+                if(File.Exists(path)&&(File.GetAttributes(path)&FileAttributes.ReparsePoint)!=0)
+                    throw Fail("cua_runtime_lock_unsafe");
+                _runtimeLock=new FileStream(path,FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+            }
+            catch(IOException){throw Fail("cua_runtime_already_owned_or_unsafe");}
+        }
+    }
+    private void ReserveReceipt(CommandReceiptLedger receipt,string request,string owner)
+    {
+        lock(_gate){if(_stopped||_revoked.Contains(owner)||_runtimeLock is null)throw Fail("cua_service_stopped_or_revoked");receipt.Reserve("cua",request,owner);}
+    }
+    private void FinishReceipt(CommandReceiptLedger receipt,string request,string state)
+    {
+        lock(_gate){if(_stopped||_runtimeLock is null)throw Fail("cua_action_outcome_unknown");receipt.Finish("cua",request,state,null);}
+    }
     private CommandReceiptLedger Ledger()
     {
-        lock (_gate)
-            return _receiptLedger ??= new CommandReceiptLedger(Path.Combine(Path.GetDirectoryName(_policyPath)!,"cua-receipts-v1.json"));
+        lock (_gate) { AcquireRuntimeLock(); return _receiptLedger ??= new CommandReceiptLedger(Path.Combine(Path.GetDirectoryName(_policyPath)!,"cua-receipts-v1.json")); }
     }
     internal static string RequestId(JsonNode? raw)
     {
@@ -318,11 +343,12 @@ internal sealed class CuaService : IDisposable
     internal void Stop()
     {
         Session[] all; Worker[] workers;ExtensionSession[] ext;
-        lock (_gate) { _stopped = true; all = _sessions.Values.ToArray(); workers=_launchWorkers.Values.Select(w=>w.Worker).ToArray(); ext=_extensions.Values.ToArray();_extensions.Clear();_sessions.Clear(); }
+        lock (_gate) { if(_stopped)return;_stopped = true; all = _sessions.Values.ToArray(); workers=_launchWorkers.Values.Select(w=>w.Worker).ToArray(); ext=_extensions.Values.ToArray();_extensions.Clear();_sessions.Clear(); }
         foreach(var worker in workers) worker.Dispose();
         foreach(var e in ext)e.Worker.Dispose();
         _timer.Dispose();
         foreach (var s in all) s.Worker.Dispose();
+        lock(_gate){_runtimeLock?.Dispose();_runtimeLock=null;}
     }
     public void Dispose() { Stop(); }
 
@@ -463,6 +489,7 @@ internal sealed class CuaService : IDisposable
             RetireExtension(id);return Output(new JsonObject{["closed"]=true});
         }
         var (policy,bytes)=LoadPolicy();
+        if(!_guestMode&&policy.requireVerifiedClient==true&&owner==SharedOwner)throw Fail("cua_verified_client_required");
         var profiles=(policy.profiles??[]).Where(p=>p.clients.Contains(owner,StringComparer.Ordinal)).ToArray();
         if(name=="cua_extension_list")
             return Output(new JsonObject{["profiles"]=new JsonArray(profiles.Select(p=>(JsonNode?)new JsonObject{["id"]=p.id,["kind"]=p.kind,
@@ -496,7 +523,7 @@ internal sealed class CuaService : IDisposable
                 if(_stopped||_revoked.Contains(owner)||_sessions.Count+_extensions.Count+_launching.Count>=8||
                     profile.kind=="guest"&&_extensions.Values.Any(e=>e.Profile.kind=="guest"&&e.Profile.port==profile.port))
                     throw Fail("extension_capacity_or_guest_busy");
-                receipt.Reserve("cua",request,owner);
+                ReserveReceipt(receipt,request,owner);
                 var worker=new Worker(runtime.node,"",false,runtime,profile);
                 created=new ExtensionSession(owner,profile,bytes,worker);
                 _extensions.Add(created.Id,created);
@@ -505,7 +532,7 @@ internal sealed class CuaService : IDisposable
             {
                 var reply=await created.Worker.CallAsync("extension_open",new(),()=>ExtensionAllowed(created),cancellation).ConfigureAwait(false);
                 if(cancellation.IsCancellationRequested||!ExtensionAllowed(created))throw Fail("extension_open_interrupted");
-                var result=ExtensionResult(reply,created.Id);receipt.Finish("cua",request,"exited",null);
+                var result=ExtensionResult(reply,created.Id);FinishReceipt(receipt,request,"exited");
                 lock(_gate){created.Busy=false;created.Last=Environment.TickCount64;}
                 return result;
             }
@@ -523,23 +550,23 @@ internal sealed class CuaService : IDisposable
         }
         try
         {
-            var browserOps=new[]{"observe","navigate","click","fill","press","select","scroll","verify","back","forward","hover"};
+            var browserOps=new[]{"observe","navigate","click","fill","press","select","scroll","verify","wait_for","back","forward","hover","drag","tab_list","tab_open","tab_select","tab_close","dialog_prepare","upload","download"};
             var guestOps=new[]{"cua_capabilities","cua_list_apps","cua_list_windows","cua_launch_app","cua_create_session","cua_observe","cua_act","cua_verify","cua_stop_session","cua_receipt_status"};
             if(!(session.Profile.kind=="browser"?browserOps:guestOps).Contains(op,StringComparer.Ordinal)||!ExtensionAllowed(session)||cancellation.IsCancellationRequested)
                 throw Fail("extension_operation_not_allowed");
-            var readOnly=new[]{"observe","verify","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"}.Contains(op,StringComparer.Ordinal);
+            var readOnly=new[]{"observe","verify","wait_for","tab_list","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"}.Contains(op,StringComparer.Ordinal);
             var request=RequestId(args["request_id"]);var receipt=Ledger();
-            if(!readOnly)receipt.Reserve("cua",request,owner);
+            if(!readOnly)ReserveReceipt(receipt,request,owner);
             bool recoverable=false;
             try
             {
                 var reply=await session.Worker.CallAsync("extension_call",new JsonObject{["operation"]=op,["parameters"]=parameters.DeepClone()},()=>ExtensionAllowed(session),cancellation).ConfigureAwait(false);
                 if(cancellation.IsCancellationRequested||!ExtensionAllowed(session))throw Fail("extension_action_outcome_unknown");
                 if(reply["isError"]?.GetValue<bool>()==true&&reply["structuredContent"]?["recoverable"]?.GetValue<bool>()==true){
-                    recoverable=true;if(!readOnly)receipt.Finish("cua",request,"launch_failed",null);
+                    recoverable=true;if(!readOnly)FinishReceipt(receipt,request,"launch_failed");
                 }
                 var result=ExtensionResult(reply,sessionId);
-                if(!readOnly)receipt.Finish("cua",request,"exited",null);
+                if(!readOnly)FinishReceipt(receipt,request,"exited");
                 return result;
             }
             catch{if(!recoverable)RetireExtension(sessionId);throw;}
@@ -559,16 +586,21 @@ internal sealed class CuaService : IDisposable
         if (name == "cua_capabilities")
         {
             bool enabled = false;
-            bool extEnabled=false;
-            try { var activePolicy=LoadPolicy().Item1;extEnabled=!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal));
-                enabled=extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal)); } catch { }
+            bool extEnabled=false,requiresVerified=false;
+            try { var activePolicy=LoadPolicy().Item1;requiresVerified=!_guestMode&&activePolicy.requireVerifiedClient==true;extEnabled=(!requiresVerified||owner!=SharedOwner)&&!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal));
+                enabled=(!requiresVerified||owner!=SharedOwner)&&(extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal))); } catch { }
             return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",
-                ["identity"] = owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client",
+                ["identity"] = _guestMode?"dedicated_guest_connection":owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client", ["conversation_identity_verified"]=false,["requires_verified_client"]=requiresVerified,
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
                 ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["extension_profiles_enabled"]=extEnabled });
         }
+        if(!_guestMode&&owner==SharedOwner)
+        {
+            bool strict=false;try{strict=LoadPolicy().Item1.requireVerifiedClient==true;}catch{}
+            if(strict)throw Fail("cua_verified_client_required");
+        }
         if(name.StartsWith("cua_extension_",StringComparison.Ordinal)){if(_guestMode)throw Fail("nested_guest_extensions_disabled");return await ExtensionCallAsync(name,args,owner,cancellation).ConfigureAwait(false);}
-        if (name == "cua_receipt_status") return Output(Ledger().OwnReceipt("cua",RequestId(args["request_id"]),owner));
+        if (name == "cua_receipt_status") { var receiptPolicy=LoadPolicy().Item1;if(!_guestMode&&receiptPolicy.requireVerifiedClient==true&&owner==SharedOwner)throw Fail("cua_verified_client_required");return Output(Ledger().OwnReceipt("cua",RequestId(args["request_id"]),owner)); }
         if (name == "cua_stop_session")
         {
             var id = args["session_id"]?.GetValue<string>() ?? throw Fail("cua_invalid_session");
@@ -578,6 +610,7 @@ internal sealed class CuaService : IDisposable
             return Output(new JsonObject { ["stopped"] = true });
         }
         var (policy,bytes) = LoadPolicy();
+        if(!_guestMode&&policy.requireVerifiedClient==true&&owner==SharedOwner)throw Fail("cua_verified_client_required");
         if (!policy.grants.Any(g => g.clients.Contains(owner, StringComparer.Ordinal))) throw Fail("cua_client_not_approved");
         if(name=="cua_launch_app")
         {
@@ -593,7 +626,7 @@ internal sealed class CuaService : IDisposable
             }
             try
             {
-                receipt.Reserve("cua",request,owner);
+                ReserveReceipt(receipt,request,owner);
                 using var worker=new Worker(driver,application,true);
                 lock(_gate) _launchWorkers[application]=(owner,worker);
                 bool Allowed()
@@ -607,7 +640,7 @@ internal sealed class CuaService : IDisposable
                     result["structuredContent"]?["pid"] is not JsonValue p || !p.TryGetValue<int>(out var launchedPid))
                     throw Fail("cua_launch_unverified_or_refused: inspect actual state; do not replay");
                 if(!ApprovedApp(launchedPid,policy,owner).Item1.Equals(application,StringComparison.OrdinalIgnoreCase))throw Fail("cua_launch_target_mismatch");
-                receipt.Finish("cua",request,"exited",null);
+                FinishReceipt(receipt,request,"exited");
                 return Output(new JsonObject {["pid"]=launchedPid,["application"]=application,["windows"]=Windows(launchedPid),["request_id"]=request,["background_only"]=true});
             }
             finally { lock(_gate){_launching.Remove(application);_launchWorkers.Remove(application);} }
@@ -638,11 +671,13 @@ internal sealed class CuaService : IDisposable
             lock (_gate)
                 if (owner != SharedOwner)
                     foreach (var session in _sessions.Values.Where(s => s.Owner == owner))
-                        list.Add(new JsonObject { ["session_id"] = session.Id, ["pid"] = session.Target.Pid, ["window_id"] = session.Target.Window });
+                        list.Add(new JsonObject { ["session_id"] = session.Id, ["pid"] = session.Target.Pid, ["window_id"] = session.Target.Window,["kind"]="native" });
+            lock(_gate)if(owner!=SharedOwner)foreach(var e in _extensions.Values.Where(x=>x.Owner==owner))list.Add(new JsonObject{["session_id"]=e.Id,["profile_id"]=e.Profile.id,["kind"]=e.Profile.kind});
             return Output(new JsonObject { ["sessions"] = list, ["shared_session_ids_hidden"] = owner == SharedOwner });
         }
         if (name == "cua_create_session")
         {
+            AcquireRuntimeLock();
             var pid = (int)Integer(args["pid"], int.MaxValue);
             var window = Integer(args["window_id"], long.MaxValue);
             var target = GetTarget(pid,window,policy,owner);
@@ -680,7 +715,7 @@ internal sealed class CuaService : IDisposable
                 ValidateAction(operation,parameters);
                 if(operation!="set_window_frame") snapshot.Validate(parameters); else snapshot.Validate(new JsonObject());
                 var request=RequestId(args["request_id"]);var receipt=Ledger();
-                receipt.Reserve("cua",request,owner);
+                ReserveReceipt(receipt,request,owner);
                 actionReceipt=(receipt,request);
                 foreach (var (key,value) in parameters)
                     if (key != "capture_id" || operation == "click") driverArgs[key] = value?.DeepClone();
@@ -749,7 +784,7 @@ internal sealed class CuaService : IDisposable
                 var metadata = (JsonObject)structured.DeepClone();
                 foreach (var key in new[] {"screenshot","screenshot_base64","image","image_data","screenshot_file_path"}) metadata.Remove(key);
                 if (Encoding.UTF8.GetByteCount(metadata.ToJsonString()) > 2_000_000) throw Fail("cua_driver_metadata_too_large");
-                if(actionReceipt is { } ar) ar.Ledger.Finish("cua",ar.Id,"exited",null);
+                if(actionReceipt is { } ar) FinishReceipt(ar.Ledger,ar.Id,"exited");
                 return new ToolCallOutput(safe, new JsonObject { ["session_id"] = sessionId, ["operation"] = driverTool,
                     ["background_only"] = true, ["verification_required"] = mutation, ["driver_result"] = metadata });
             }

@@ -162,6 +162,7 @@ export function cuaCommand(action,args) {
       'cua grant --application <id> --client <id> [--allow-launch]    Enable one explicit local grant',
       'cua revoke --application <id> --client <id>   Revoke that grant',
       'cua disable                       Emergency revoke all CUA grants',
+      'cua require-verified enable|disable  Require independently authenticated OAuth client for CUA',
       ...extensionHelp,
       'Mac: application is a bundle identifier; Windows: exact absolute .exe path.',
       'Use shared-connection only if all chats on that tunnel may access this application.',
@@ -169,12 +170,19 @@ export function cuaCommand(action,args) {
     ].join('\n'));return;
   }
   if(extensionCommand(action,args,{root,run,hashFile,readPolicy,writePolicy,writePrivate,installedDriver}))return;
+  if(action==='require-verified'&&args.length===1&&['enable','disable'].includes(args[0])){
+    const p=readPolicy()??{enabled:false,...installedDriver(),grants:[]};
+    p.requireVerifiedClient=args[0]==='enable';
+    writePolicy(p);
+    console.log('CUA verified-client policy '+args[0]+'d; current leases invalidated. This is client identity, not Chat conversation identity.');
+    return;
+  }
   if(action==='install'&&(args.length===0||(args.length===2&&args[0]==='--archive')))return install(args[1]);
   if(action==='status'&&args.length===0){
     let driver='not installed or integrity mismatch';
     try{installedDriver();driver=driverVersion;}catch{}
     const p=readPolicy();
-    console.log(JSON.stringify({driver,enabled:p?.enabled===true,grants:p?.grants??[],profiles:(p?.profiles??[]).map(({tokenFile,...safe})=>safe),
+    console.log(JSON.stringify({driver,enabled:p?.enabled===true,requireVerifiedClient:p?.requireVerifiedClient===true,grants:p?.grants??[],profiles:(p?.profiles??[]).map(({tokenFile,...safe})=>safe),
       note:'Local configuration only; live OS permission and desktop compatibility require an MCP probe/real test.'},null,2));
     return;
   }
@@ -187,6 +195,7 @@ export function cuaCommand(action,args) {
     const {application,client,launch}=parseGrant(args);
     let p=readPolicy();
     if(action==='grant'){
+      if(p?.requireVerifiedClient===true&&client==='shared-connection')throw Error('Verified-client-only mode refuses shared connection grants');
       const driver=installedDriver();
       p={...p,enabled:true,...driver,grants:p?.grants??[]};
       let g=p.grants.find(g=>process.platform==='win32'?g.application.toLowerCase()===application.toLowerCase():g.application===application);
