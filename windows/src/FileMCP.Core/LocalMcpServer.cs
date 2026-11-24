@@ -297,6 +297,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
             scope.CancelOwnedCommands(id);
     }
 
+    internal bool HasActiveCommands() => _commandBudget.HasActiveCommands();
+
     internal void FreezeForIdleActivation(Action schedule)
     {
         lock (_workspaceGate)

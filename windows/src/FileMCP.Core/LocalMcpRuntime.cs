@@ -59,6 +59,27 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private string? _cloudflareTokenFile;
     private readonly SystemSleepGuard _sleepGuard = new();
     private bool _requestedStop;
+    private CancellationTokenSource? _healthCts;
+    private string? _healthDirectory;
+    private readonly SemaphoreSlim _healthWake = new(0, 1);
+    private TunnelCloudHealth _cloudHealth = TunnelCloudHealth.AwaitingPoll;
+    private DateTimeOffset? _stalledSince, _lastStalledRecovery;
+    private volatile bool _automaticHealthRecovery;
+    public bool AutomaticHealthRecovery { get => _automaticHealthRecovery; set => _automaticHealthRecovery = value; }
+    internal TimeProvider HealthClock { get; set; } = TimeProvider.System;
+    public TunnelCloudHealth CloudHealth { get { lock (_stateGate) return _cloudHealth; } }
+    public event Action<TunnelCloudHealth>? CloudHealthChanged;
+
+    public void CheckCloudHealthNow()
+    {
+        try { _healthWake.Release(); } catch (SemaphoreFullException) { }
+    }
+
+    private void SetCloudHealth(TunnelCloudHealth health)
+    {
+        lock (_stateGate) _cloudHealth = health;
+        CloudHealthChanged?.Invoke(health);
+    }
 
     public LocalMcpRuntime(string? profileDirectory = null, string? dataDirectory = null)
     {
@@ -148,6 +169,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             if (_requestedStop) { _requestedStop = false; SetState(LocalMcpRuntimeState.Stopped); return; }
             SetState(LocalMcpRuntimeState.Starting);
             _transportStarted = false; _transportRetryDelay = 2; _recoveryGeneration = Guid.NewGuid();
+            _lastStalledRecovery = null;
             _startupCts?.Dispose(); _startupCts = new CancellationTokenSource();
             var cancellationToken = _startupCts.Token;
             try
@@ -282,14 +304,88 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
         cancellationToken.ThrowIfCancellationRequested(); RequireSuccess(doctorResult, "tunnel-client doctor", sensitive);
 
         }
+        _healthDirectory = Path.Combine(Path.GetTempPath(), "ctcmcp-health-" + Guid.NewGuid().ToString("N"));
+        CommandReceiptLedger.EnsurePrivateFolder(_healthDirectory);
+        var locator = Path.Combine(_healthDirectory, "listener.url");
+        using (File.Create(locator)) { }
+        var started = HealthClock.GetUtcNow();
+        SetCloudHealth(TunnelCloudHealth.AwaitingPoll);
+        _stalledSince = null;
         _tunnelProcess = ProcessRunner.StartManaged(tunnelClient,
-            ["run", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress],
+            ["run", "--profile", configuration.Profile, "--profile-dir", profileDirectory, "--health-listen-addr", healthAddress, "--health.url-file", locator],
             null, environment,
             text => EmitLog(Redact(text, sensitive)),
             exitCode => _ = Task.Run(() => TunnelDidExitAsync(exitCode, attempt)));
         _transportStarted = true;
         SetState(LocalMcpRuntimeState.Running);
-        EmitLog($"OpenAI Secure MCP Tunnel started. Command execution: {(configuration.EnableCommands ? "enabled" : "disabled")}.\n");
+        EmitLog($"OpenAI Secure MCP Tunnel process started; verifying cloud polling. Command execution: {(configuration.EnableCommands ? "enabled" : "disabled")}.\n");
+        _healthCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var healthToken = _healthCts.Token;
+        _ = Task.Run(() => MonitorCloudHealthAsync(attempt, tunnelClient, locator, started, healthToken));
+    }
+
+    private async Task MonitorCloudHealthAsync(Guid attempt, string executable, string locator,
+        DateTimeOffset started, CancellationToken cancellation)
+    {
+        double? lastPoll = null;
+        bool observedMetric = false;
+        try
+        {
+            await _healthWake.WaitAsync(TimeSpan.FromSeconds(5), cancellation).ConfigureAwait(false);
+            while (!cancellation.IsCancellationRequested)
+            {
+                try
+                {
+                    var env = TunnelClientEnvironment("", "");
+                    env.Remove("CONTROL_PLANE_API_KEY"); env.Remove("FILEMCP_LOCAL_AUTH_TOKEN");
+                    var result = await ProcessRunner.RunAsync(executable,
+                        ["health", "--url-file", locator, "--require-control-plane-poll", "--json"],
+                        environment: env, timeoutSeconds: 5, outputLimitBytes: 16_384,
+                        cancellationToken: cancellation).ConfigureAwait(false);
+                    var observation = TunnelCloudHealthPolicy.Parse(result.Stdout);
+                    observedMetric |= observation.HasMetric;
+                    if (observation.Timestamp is double stamp &&
+                        TunnelCloudHealthPolicy.ValidTimestamp(stamp, started, HealthClock.GetUtcNow()))
+                        lastPoll = Math.Max(lastPoll ?? 0, stamp);
+                }
+                catch (OperationCanceledException) { return; }
+                catch { /* Broken local probe is not proof of cloud failure. */ }
+                await _serial.WaitAsync(cancellation).ConfigureAwait(false);
+                try
+                {
+                    if (attempt != _transportAttempt || cancellation.IsCancellationRequested || _requestedStop ||
+                        State.Status != LocalMcpRuntimeStatus.Running) return;
+                    var now = HealthClock.GetUtcNow();
+                    var health = observedMetric ? TunnelCloudHealthPolicy.Evaluate(lastPoll, started, now) : TunnelCloudHealth.AwaitingPoll;
+                    if (health != CloudHealth)
+                    {
+                        if (health == TunnelCloudHealth.Connected) EmitLog("OpenAI control-plane polling verified.\n");
+                        if (health == TunnelCloudHealth.Stalled) EmitLog("WARNING: OpenAI control-plane polling stalled.\n");
+                    }
+                    SetCloudHealth(health);
+                    if (health == TunnelCloudHealth.Connected) { _transportRetryDelay = 2; _stalledSince = null; }
+                    else if (health == TunnelCloudHealth.Stalled)
+                    {
+                        _stalledSince ??= now;
+                        if (AutomaticHealthRecovery && now - _stalledSince >= TimeSpan.FromSeconds(60) &&
+                            (_lastStalledRecovery is null || now - _lastStalledRecovery >= TimeSpan.FromMinutes(5)) &&
+                            _server?.HasActiveCommands() == false)
+                        {
+                            _lastStalledRecovery = now;
+                            EmitLog("Cloud polling stalled; restarting only the transport.\n");
+                            CleanupTransport();
+                            ScheduleTransportRecovery();
+                            return;
+                        }
+                    }
+                    else _stalledSince = null;
+                }
+                finally { _serial.Release(); }
+                await _healthWake.WaitAsync(TimeSpan.FromSeconds(30), cancellation).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
     }
 
     public async Task StopAsync()
@@ -408,7 +504,14 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     {
         // Invalidate any delayed callback before disposing the previous child.
         _transportAttempt = Guid.NewGuid();
+        _healthCts?.Cancel(); _healthCts?.Dispose(); _healthCts = null;
         _tunnelProcess?.Dispose(); _tunnelProcess = null;
+        if (_healthDirectory is { } healthDirectory)
+        {
+            try { Directory.Delete(healthDirectory, true); } catch { }
+            _healthDirectory = null;
+        }
+        SetCloudHealth(TunnelCloudHealth.AwaitingPoll);
         if (_cloudflareTokenFile is { } token)
         {
             WindowsCloudflareRunner.RemovePrivateToken(token);

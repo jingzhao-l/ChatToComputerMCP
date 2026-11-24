@@ -544,11 +544,25 @@ internal sealed partial class LocalTools
         var session = FindSession(id); session.Cancel(); return session.Snapshot(0);
     }
 
-    private void EnsureNoActiveCommand()
+    private void EnsureNoConflictingCommand(string name, JsonObject arguments)
     {
-        lock (_sessionGate)
-            if (_commandBudget.HasActivityUnderRoot(_resolver.Root))
-                throw new FileMcpException("Command session is active in this workspace; finish it before modifying files or Git state");
+        string[] paths = name switch {
+            "write_file" or "edit_file" or "create_directory" =>
+                [_resolver.Resolve(GetRequiredString(arguments, "relative_path"))],
+            "delete_file" or "delete_directory" =>
+                [_resolver.ResolveForDeletion(GetRequiredString(arguments, "relative_path"))],
+            "copy_file" or "move_file" =>
+                [_resolver.ResolveForDeletion(GetRequiredString(arguments, "source_path")),
+                 _resolver.ResolveForDeletion(GetRequiredString(arguments, "destination_path"))],
+            "apply_patch" => (arguments["changes"] as JsonArray ?? throw new FileMcpException("changes must be an array"))
+                .Select(change => _resolver.Resolve(GetRequiredString(change as JsonObject ??
+                    throw new FileMcpException("Invalid patch change"), "relative_path"))).ToArray(),
+            "git_init" or "git_add" or "git_commit" or "git_push" =>
+                [_resolver.Resolve(GetString(arguments, "repo_path", ""))],
+            _ => []
+        };
+        if (_commandBudget.HasConflictingActivity(paths))
+            throw new FileMcpException("Active command session overlaps this working directory; finish or cancel it before modifying files or Git state");
     }
 
     public void StopCommandSessions(bool preserveSupervised = false)

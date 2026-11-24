@@ -25,12 +25,20 @@ internal sealed class WorkspaceCommandBudget
         return _long.Values.Concat(_sync.Values).ToList();
     }
 
+    private static string Prefix(string path) => Path.EndsInDirectorySeparator(path) ? path : path + Path.DirectorySeparatorChar;
     private static bool Overlaps(string lhs, string rhs) =>
         string.Equals(lhs, rhs, StringComparison.OrdinalIgnoreCase) ||
-        lhs.StartsWith(Path.TrimEndingDirectorySeparator(rhs) + Path.DirectorySeparatorChar,
-            StringComparison.OrdinalIgnoreCase) ||
-        rhs.StartsWith(Path.TrimEndingDirectorySeparator(lhs) + Path.DirectorySeparatorChar,
-            StringComparison.OrdinalIgnoreCase);
+        lhs.StartsWith(Prefix(rhs), StringComparison.OrdinalIgnoreCase) ||
+        rhs.StartsWith(Prefix(lhs), StringComparison.OrdinalIgnoreCase);
+
+    public bool HasConflictingActivity(IEnumerable<string> targets)
+    {
+        lock (_gate)
+        {
+            var paths = ActivePaths().Concat(_pending.Where(item => item.Session.Active).Select(item => item.Session.Cwd)).ToArray();
+            return targets.Any(target => paths.Any(path => Overlaps(target, path)));
+        }
+    }
 
     private void Check(string cwd)
     {
