@@ -36,3 +36,6 @@ signed-window-first/
 node_modules/
 # The root bin/ contains the published CLI; nested build bin/ remain ignored.
 !/bin/
+
+# Optional CUA headless browser downloads
+/cua-runtime/browsers/

@@ -24,7 +24,7 @@ def call(name, args):
 schemas = {t['name']: t['outputSchema'] for t in rpc('tools/list', {})['tools']}
 for name in ('edit_file', 'apply_patch', 'workspace_context', 'start_command', 'read_command_output', 'cancel_command'):
     assert name in schemas
-assert all(n in schemas for n in ('cua_capabilities','cua_list_apps','cua_list_windows','cua_create_session','cua_list_sessions','cua_observe','cua_act','cua_verify','cua_stop_session'))
+assert all(n in schemas for n in ('cua_capabilities','cua_list_apps','cua_list_windows','cua_create_session','cua_list_sessions','cua_observe','cua_act','cua_verify','cua_stop_session','cua_launch_app','cua_receipt_status','cua_extension_list','cua_extension_open','cua_extension_call','cua_extension_close'))
 assert call('cua_capabilities', {})['background_only'] is True
 call('write_file', {'relative_path': 'agent-http/file.txt', 'content': 'original\r\n'})
 preview = call('edit_file', {'relative_path': 'agent-http/file.txt', 'old_text': 'original', 'new_text': 'changed', 'dry_run': True})

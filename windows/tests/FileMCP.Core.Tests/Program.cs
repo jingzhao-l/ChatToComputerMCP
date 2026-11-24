@@ -30,6 +30,12 @@ internal static partial class Program
         if (args.Length > 0 && args[0] == "app-server" && Environment.GetEnvironmentVariable("FILEMCP_TEST_FAKE_CODEX") == "1")
             return await RunFakeCodexAppServerAsync();
 
+        if (args.Length == 5 && args[0] == "cua-test-server")
+        {
+            await using var server = new LocalMcpServer(ushort.Parse(args[1]),Path.GetDirectoryName(args[2])!,"","",false,args[3],_=>{},cuaGuest:args[4]=="guest",cuaPolicyPath:args[2]);
+            await server.StartAsync();Console.WriteLine("READY");await Console.Out.FlushAsync();
+            await Console.In.ReadLineAsync();return 0;
+        }
         if (args.Length > 0 && args[0] == "mcp") return await RunCuaFixtureAsync();
 
         if (!OperatingSystem.IsWindows())

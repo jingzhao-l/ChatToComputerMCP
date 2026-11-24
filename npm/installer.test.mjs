@@ -108,6 +108,7 @@ test('macOS local build places a real app bundle under versioned release and can
     path.join(src,'bin','update-support.mjs'));
   fs.copyFileSync(path.join(root,'bin','cua-support.mjs'),
     path.join(src,'bin','cua-support.mjs'));
+  fs.copyFileSync(path.join(root,'bin','cua-extension-support.mjs'),path.join(src,'bin','cua-extension-support.mjs'));
   fs.writeFileSync(path.join(src,'package.json'),JSON.stringify({
     name:'chat-to-computer-mcp',version:version
   }));

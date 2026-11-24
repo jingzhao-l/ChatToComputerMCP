@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import cp from 'node:child_process';
 import crypto from 'node:crypto';
+import {extensionCommand,extensionHelp} from './cua-extension-support.mjs';
 
 export const driverVersion = '0.61.0';
 export const driverAssets = Object.freeze({
@@ -64,16 +65,16 @@ function readPolicy() {
   if(!Array.isArray(result.grants))throw Error('Invalid local CUA policy');
   return result;
 }
-function writePolicy(policy) {
-  const file=policyPath();
+function writePrivate(file,data) {
   fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
   const temp=file+'.'+crypto.randomBytes(12).toString('hex')+'.tmp';
   try{
-    fs.writeFileSync(temp,JSON.stringify(policy,null,2)+'\n',{mode:0o600,flag:'wx'});
+    fs.writeFileSync(temp,data,{mode:0o600,flag:'wx'});
     privateAcl(temp);
     fs.renameSync(temp,file);
   }finally{fs.rmSync(temp,{force:true});}
 }
+function writePolicy(policy) { writePrivate(policyPath(),JSON.stringify(policy,null,2)+"\n"); }
 function findDriver(directory) {
   const exe=process.platform==='win32'?'cua-driver.exe':'cua-driver';
   const matches=[];
@@ -134,6 +135,8 @@ function install(localArchive) {
   }finally{fs.rmSync(stage,{recursive:true,force:true});}
 }
 function parseGrant(args) {
+  const launch=args.includes('--allow-launch');
+  args=args.filter(a=>a!=='--allow-launch');
   const opts={};
   for(let i=0;i<args.length;i+=2){
     if(!['--application','--client'].includes(args[i])||opts[args[i]]!==undefined||!args[i+1])
@@ -149,27 +152,29 @@ function parseGrant(args) {
     application=fs.realpathSync(application);
     if(!fs.statSync(application).isFile())throw Error('Invalid application executable');
   }
-  return {application,client};
+  return {application,client,launch};
 }
 export function cuaCommand(action,args) {
   if(!action||action==='help'){
     console.log([
       'cua install [--archive <file>]     Install the checksum-pinned optional driver',
       'cua status                        Inspect local driver and authorization policy',
-      'cua grant --application <id> --client <id>    Enable one explicit local grant',
+      'cua grant --application <id> --client <id> [--allow-launch]    Enable one explicit local grant',
       'cua revoke --application <id> --client <id>   Revoke that grant',
       'cua disable                       Emergency revoke all CUA grants',
+      ...extensionHelp,
       'Mac: application is a bundle identifier; Windows: exact absolute .exe path.',
       'Use shared-connection only if all chats on that tunnel may access this application.',
       'Grant OS Accessibility and Screen Recording manually to ChatToComputerMCP on Mac.'
     ].join('\n'));return;
   }
+  if(extensionCommand(action,args,{root,run,hashFile,readPolicy,writePolicy,writePrivate,installedDriver}))return;
   if(action==='install'&&(args.length===0||(args.length===2&&args[0]==='--archive')))return install(args[1]);
   if(action==='status'&&args.length===0){
     let driver='not installed or integrity mismatch';
     try{installedDriver();driver=driverVersion;}catch{}
     const p=readPolicy();
-    console.log(JSON.stringify({driver,enabled:p?.enabled===true,grants:p?.grants??[],
+    console.log(JSON.stringify({driver,enabled:p?.enabled===true,grants:p?.grants??[],profiles:(p?.profiles??[]).map(({tokenFile,...safe})=>safe),
       note:'Local configuration only; live OS permission and desktop compatibility require an MCP probe/real test.'},null,2));
     return;
   }
@@ -179,21 +184,22 @@ export function cuaCommand(action,args) {
     return;
   }
   if(action==='grant'||action==='revoke'){
-    const {application,client}=parseGrant(args);
+    const {application,client,launch}=parseGrant(args);
     let p=readPolicy();
     if(action==='grant'){
       const driver=installedDriver();
-      p={enabled:true,...driver,grants:p?.grants??[]};
+      p={...p,enabled:true,...driver,grants:p?.grants??[]};
       let g=p.grants.find(g=>process.platform==='win32'?g.application.toLowerCase()===application.toLowerCase():g.application===application);
       if(!g){g={application,clients:[]};p.grants.push(g);}
       if(!g.clients.includes(client))g.clients.push(client);
+      if(launch){g.launchClients??=[];if(!g.launchClients.includes(client))g.launchClients.push(client);}
       if(p.grants.length>64)throw Error('At most 64 applications are allowed');
     }else{
       if(!p){console.log('No CUA grants exist.');return;}
       for(const g of p.grants)if(process.platform==='win32'?g.application.toLowerCase()===application.toLowerCase():g.application===application)
-        g.clients=g.clients.filter(c=>c!==client);
+        {g.clients=g.clients.filter(c=>c!==client);g.launchClients=(g.launchClients??[]).filter(c=>c!==client);}
       p.grants=p.grants.filter(g=>g.clients.length);
-      p.enabled=p.grants.length>0;
+      p.enabled=p.grants.length>0||(p.profiles??[]).length>0;
     }
     writePolicy(p);
     console.log(action==='grant'?'Explicit local CUA grant saved. Any older leases are invalidated.':'CUA grant revoked; older leases are invalidated.');

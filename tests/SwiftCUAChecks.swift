@@ -17,7 +17,18 @@ import Foundation
         expectFailure("remote policy mutation") { _ = try service.call("cua_capabilities",args:["enabled":true],owner:nil) }
         expectFailure("guessed session") { _ = try service.call("cua_stop_session",args:["session_id":"fake"],owner:nil) }
         let defs = CUAService.definitions()
-        precondition(defs.count == 9 && Set(defs.compactMap { $0["name"] as? String }).count == defs.count)
+        precondition(defs.count == 15 && Set(defs.compactMap { $0["name"] as? String }).count == defs.count)
+        let actionID=String(repeating:"r",count:48)
+        let validatedID=try CUAService.requestID(actionID); precondition(validatedID == actionID)
+        expectFailure("short request ID") { _ = try CUAService.requestID("retry") }
+        try CUAService.validateAction("set_window_frame",["x":10,"y":20,"width":640,"height":480])
+        expectFailure("invalid window geometry") { try CUAService.validateAction("set_window_frame",["x":0,"y":0,"width":0,"height":480]) }
+        precondition(!CUAService.allowedApplication("com.apple.loginwindow"))
+        let receiptURL=temp.appendingPathComponent("test-cua-receipts.json")
+        do { let ledger=try CommandReceiptLedger(fileURL:receiptURL); try ledger.reserve(scopeID:"cua",requestID:actionID,ownerID:"client-one") }
+        let reloaded=try CommandReceiptLedger(fileURL:receiptURL)
+        expectFailure("durable replay") { try reloaded.reserve(scopeID:"cua",requestID:actionID,ownerID:"client-one") }
+        expectFailure("foreign receipt") { _ = try reloaded.ownReceipt(scopeID:"cua",requestID:actionID,ownerID:"client-two") }
         try CUAService.validateAction("click",["element_token":"s00000001:1"])
         try CUAService.validateAction("click",["x":2,"y":3,"capture_id":"capture-1"])
         try CUAService.validateAction("drag",["from_x":2,"from_y":3,"to_x":4,"to_y":5,"capture_id":"capture-1"])

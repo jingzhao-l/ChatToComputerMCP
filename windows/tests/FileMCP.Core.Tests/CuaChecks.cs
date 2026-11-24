@@ -25,10 +25,21 @@ internal static partial class Program
         var status = await service.CallAsync("cua_capabilities", new(), null, default);
         Assert(status.StructuredContent["enabled"]!.GetValue<bool>() == false, "CUA default disabled");
         Assert(status.StructuredContent["identity"]!.GetValue<string>() == "shared_connection_not_chat_identity", "CUA shared connection not chat identity");
-        Assert(CuaService.Definitions().Count == 9, "CUA tool parity");
+        Assert(CuaService.Definitions().Count == 15, "CUA tool parity");
         await RefuseAsync("disabled app enumeration", () => service.CallAsync("cua_list_apps", new(), null, default));
         await RefuseAsync("remote policy mutation", () => service.CallAsync("cua_capabilities", J("""{"enabled":true}"""), null, default));
         await RefuseAsync("unknown session", () => service.CallAsync("cua_stop_session", J("""{"session_id":"fake"}"""), null, default));
+        var actionID=new string('r',48);
+        Assert(CuaService.RequestId(JsonValue.Create(actionID))==actionID,"CUA request identity");
+        Refuse("short request ID",()=>CuaService.RequestId(JsonValue.Create("retry")));
+        CuaService.ValidateAction("set_window_frame",J("""{"x":10,"y":20,"width":640,"height":480}"""));
+        Refuse("invalid window geometry",()=>CuaService.ValidateAction("set_window_frame",J("""{"x":0,"y":0,"width":0,"height":480}""")));
+        var receiptPath=Path.Combine(root,"test-cua-receipts.json");
+        var firstLedger=new CommandReceiptLedger(receiptPath);
+        firstLedger.Reserve("cua",actionID,"client-one");
+        var reloaded=new CommandReceiptLedger(receiptPath);
+        Refuse("durable replay",()=>reloaded.Reserve("cua",actionID,"client-one"));
+        Refuse("foreign receipt",()=>reloaded.OwnReceipt("cua",actionID,"client-two"));
         CuaService.ValidateAction("click", J("""{"element_token":"s00000001:1"}"""));
         CuaService.ValidateAction("click", J("""{"x":2,"y":3,"capture_id":"cap"}"""));
         foreach (var (operation, json) in new[] {

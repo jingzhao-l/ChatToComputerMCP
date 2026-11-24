@@ -16,9 +16,12 @@ namespace FileMCP.Core;
 internal sealed class CuaService : IDisposable
 {
     internal const string SharedOwner = "shared-connection";
-    private sealed record Grant(string application, string[] clients);
-    private sealed record Policy(bool enabled, string driver, string driverSHA256, Grant[] grants)
+    private sealed record Grant(string application, string[] clients, string[]? launchClients = null);
+    internal sealed record ExtensionRuntime(string node,string nodeSHA256,string worker,string workerSHA256);
+    internal sealed record ExtensionProfile(string id,string kind,string[] clients,string[]? origins=null,int? port=null,string? tokenFile=null);
+    private sealed record Policy(bool enabled, string driver, string driverSHA256, Grant[] grants, ExtensionRuntime? extensionRuntime=null, ExtensionProfile[]? profiles=null)
     {
+        public bool PermitsLaunch(string app, string owner) => grants.Any(g => string.Equals(g.application,app,StringComparison.OrdinalIgnoreCase) && g.clients.Contains(owner,StringComparer.Ordinal) && (g.launchClients ?? []).Contains(owner,StringComparer.Ordinal));
         public bool Permits(string app, string owner) =>
             grants.Any(g => string.Equals(g.application, app, StringComparison.OrdinalIgnoreCase) &&
                             g.clients.Contains(owner, StringComparer.Ordinal));
@@ -31,7 +34,7 @@ internal sealed class CuaService : IDisposable
         internal readonly Target Target = target;
         internal readonly byte[] PolicyBytes = policyBytes;
         internal readonly Worker Worker = worker;
-        internal DateTime Last = DateTime.UtcNow;
+        internal long Last = Environment.TickCount64;
         internal bool Busy;
         internal Snapshot? Snapshot;
     }
@@ -41,6 +44,7 @@ internal sealed class CuaService : IDisposable
         internal readonly long? Revision;
         internal readonly string? CaptureId;
         internal readonly uint Width, Height;
+        internal readonly long ObservedAt = Environment.TickCount64;
         internal readonly HashSet<string> Tokens = new(StringComparer.Ordinal);
         internal Snapshot(JsonObject structured, JsonArray blocks)
         {
@@ -68,6 +72,7 @@ internal sealed class CuaService : IDisposable
         }
         internal void Validate(JsonObject args)
         {
+            if (Environment.TickCount64 - ObservedAt > 30000) throw Fail("cua_snapshot_expired");
             if (args["element_token"] is JsonValue t && !Tokens.Contains(t.GetValue<string>()))
                 throw Fail("cua_stale_or_foreign_element_token");
             if (args.ContainsKey("capture_id") && args["capture_id"]?.GetValue<string>() != CaptureId)
@@ -82,12 +87,27 @@ internal sealed class CuaService : IDisposable
             }
         }
     }
+    private sealed class ExtensionSession(string owner, ExtensionProfile profile, byte[] policy, Worker worker)
+    {
+        internal readonly string Id=Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        internal readonly string Owner=owner;
+        internal readonly ExtensionProfile Profile=profile;
+        internal readonly byte[] PolicyBytes=policy;
+        internal readonly Worker Worker=worker;
+        internal long Last=Environment.TickCount64;
+        internal bool Busy=true;
+    }
+    private readonly Dictionary<string,ExtensionSession> _extensions=new(StringComparer.Ordinal);
+    private readonly bool _guestMode;
     private readonly object _gate = new();
     private readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
     private readonly HashSet<string> _revoked = new(StringComparer.Ordinal);
     private readonly string _policyPath;
     private readonly Timer _timer;
     private bool _stopped;
+    private readonly HashSet<string> _launching = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string,(string Owner,Worker Worker)> _launchWorkers = new(StringComparer.OrdinalIgnoreCase);
+    private CommandReceiptLedger? _receiptLedger;
     private static readonly Dictionary<string, string[]> Actions = new(StringComparer.Ordinal)
     {
         ["click"] = ["element_token","x","y","capture_id","button","count","action"],
@@ -96,11 +116,13 @@ internal sealed class CuaService : IDisposable
         ["scroll"] = ["element_token","direction","amount","x","y","capture_id"],
         ["drag"] = ["from_x","from_y","to_x","to_y","duration_ms","capture_id"],
         ["set_value"] = ["element_token","value"],
-        ["invoke_menu"] = ["path"]
+        ["invoke_menu"] = ["path"],
+        ["set_window_frame"] = ["x","y","width","height"]
     };
 
-    internal CuaService(string? policyPath = null)
+    internal CuaService(string? policyPath = null,bool guestMode=false)
     {
+        _guestMode=guestMode;
         _policyPath = policyPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ChatToComputerMCP", "cua-policy.json");
         _timer = new Timer(_ => { try { Sweep(); } catch { /* fail closed at next admission */ } }, null, 1000, 1000);
@@ -120,7 +142,15 @@ internal sealed class CuaService : IDisposable
             ["annotations"] = new JsonObject { ["readOnlyHint"] = read, ["destructiveHint"] = !read, ["openWorldHint"] = true }
         };
         return new JsonArray(
+            Def("cua_extension_list","List locally approved isolated browser and guest profiles.",new(),[],true),
+            Def("cua_extension_open","Open a new isolated browser or a locally registered guest execution lease.",new(){["profile_id"]=String(),["request_id"]=String()},["profile_id","request_id"],false),
+            Def("cua_extension_call","Operate the leased browser or guest using its typed operations. No arbitrary code.",new(){["session_id"]=String(),["operation"]=String(),["parameters"]=new JsonObject{["type"]="object",["additionalProperties"]=true},["request_id"]=String()},["session_id","operation","parameters","request_id"],false),
+            Def("cua_extension_close","Release the isolated browser or guest lease.",new(){["session_id"]=String()},["session_id"],false),
             Def("cua_capabilities", "Report local opt-in and background-only CUA capabilities.", new(), [], true),
+            Def("cua_launch_app","Launch an application with a separate locally granted launch permission; no arbitrary arguments.",
+                new() { ["application"]=String(), ["request_id"]=String() }, ["application","request_id"],false),
+            Def("cua_receipt_status","Read an action dispatch receipt using its unique request ID. Dispatch is not verification.",
+                new() { ["request_id"]=String() }, ["request_id"],true),
             Def("cua_list_apps", "List running applications explicitly granted to this connection.", new(), [], true),
             Def("cua_list_windows", "List windows of an approved running application.", new() { ["pid"] = Integer() }, ["pid"], true),
             Def("cua_create_session", "Acquire an exclusive background window session. Keep its bearer ID private.",
@@ -129,10 +159,10 @@ internal sealed class CuaService : IDisposable
             Def("cua_observe", "Observe the exact leased window, including its accessibility tree and image.",
                 new() { ["session_id"] = String(), ["include_screenshot"] = Bool() }, ["session_id"], false),
             Def("cua_act", "Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
-                new() { ["session_id"] = String(), ["operation"] = new JsonObject { ["type"] = "string",
+                new() { ["session_id"] = String(), ["request_id"] = String(), ["operation"] = new JsonObject { ["type"] = "string",
                     ["enum"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) },
                     ["parameters"] = new JsonObject { ["type"] = "object", ["additionalProperties"] = true } },
-                ["session_id","operation","parameters"], false),
+                ["session_id","request_id","operation","parameters"], false),
             Def("cua_verify", "Verify bounded element predicates in the leased window; unknown is not success.",
                 new() { ["session_id"] = String(), ["expect"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 8, ["items"] = new JsonObject { ["type"] = "object" } },
                     ["timeout_ms"] = new JsonObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 6000 } }, ["session_id","expect"], true),
@@ -161,7 +191,7 @@ internal sealed class CuaService : IDisposable
         var bytes = File.ReadAllBytes(_policyPath);
         var policy = JsonSerializer.Deserialize<Policy>(bytes);
         if (policy is null || !policy.enabled || policy.driver is null || !Path.IsPathFullyQualified(policy.driver) ||
-            policy.grants is null || policy.grants.Length > 64 || policy.grants.Any(g => g is null || g.application is null || g.clients is null) ||
+            policy.grants is null || policy.grants.Length > 64 || (policy.profiles?.Length ?? 0)>32 || (policy.profiles??[]).Select(p=>p.id).Distinct(StringComparer.Ordinal).Count()!=(policy.profiles?.Length??0) || policy.grants.Any(g => g is null || g.application is null || g.clients is null) ||
             policy.driverSHA256 is null || policy.driverSHA256.Length != 64 || !policy.driverSHA256.All(Uri.IsHexDigit))
             throw Fail("cua_disabled: invalid or disabled local policy");
         return (policy, bytes);
@@ -173,6 +203,33 @@ internal sealed class CuaService : IDisposable
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr param);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+    private static bool AllowedApplication(string executable) =>
+        !new[] {"cua-driver","ChatToComputerMCP","FileMCP","consent","LogonUI","CredentialUIBroker","SystemSettings","winlogon","lsass","LockApp","CredentialUIBroker","Taskmgr"}
+            .Contains(Path.GetFileNameWithoutExtension(executable),StringComparer.OrdinalIgnoreCase);
+    private static string CheckedDriver(Policy policy)
+    {
+        var file = new FileInfo(policy.driver);
+        if (!file.Exists || file.Length is <= 0 or > 200_000_000 ||
+            (file.Attributes & FileAttributes.ReparsePoint) != 0 || !string.Equals(file.Extension,".exe",StringComparison.OrdinalIgnoreCase))
+            throw Fail("cua_driver_unavailable");
+        using var stream=file.OpenRead();
+        var hash=Convert.ToHexString(SHA256.HashData(stream));
+        if (!string.Equals(hash,policy.driverSHA256,StringComparison.OrdinalIgnoreCase)) throw Fail("cua_driver_integrity_mismatch");
+        return file.FullName;
+    }
+    private CommandReceiptLedger Ledger()
+    {
+        lock (_gate)
+            return _receiptLedger ??= new CommandReceiptLedger(Path.Combine(Path.GetDirectoryName(_policyPath)!,"cua-receipts-v1.json"));
+    }
+    internal static string RequestId(JsonNode? raw)
+    {
+        if (raw is not JsonValue v || !v.TryGetValue<string>(out var id) || !Regex.IsMatch(id,"^[A-Za-z0-9_-]{32,128}$"))
+            throw Fail("cua_request_id_required: use a unique unpredictable 32-128 character ID");
+        return id;
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct WindowRect { internal int Left,Top,Right,Bottom; }
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd,out WindowRect rect);
     private static (string, long) ApprovedApp(int pid, Policy policy, string owner)
     {
         try
@@ -181,8 +238,7 @@ internal sealed class CuaService : IDisposable
             var executable = process.MainModule?.FileName;
             if (process.HasExited || executable is null || pid == Environment.ProcessId ||
                 !policy.Permits(executable, owner) ||
-                new[] {"cua-driver","ChatToComputerMCP","FileMCP","consent","LogonUI","CredentialUIBroker","SystemSettings","winlogon"}.Contains(
-                    Path.GetFileNameWithoutExtension(executable), StringComparer.OrdinalIgnoreCase))
+                !AllowedApplication(executable))
                 throw Fail("cua_application_not_approved");
             return (executable, process.StartTime.ToUniversalTime().Ticks);
         }
@@ -197,7 +253,9 @@ internal sealed class CuaService : IDisposable
             if (p != (uint)pid || list.Count >= 256) return true;
             var text = new StringBuilder(1024);
             _ = GetWindowText(hwnd, text, text.Capacity);
-            list.Add(new JsonObject { ["window_id"] = hwnd.ToInt64(), ["title"] = text.ToString() });
+            var bounds=new JsonObject();
+            if(GetWindowRect(hwnd,out var rect)) bounds=new JsonObject { ["X"]=rect.Left,["Y"]=rect.Top,["Width"]=rect.Right-rect.Left,["Height"]=rect.Bottom-rect.Top };
+            list.Add(new JsonObject { ["window_id"] = hwnd.ToInt64(), ["title"] = text.ToString(),["bounds"]=bounds });
             return true;
         }, IntPtr.Zero);
         return list;
@@ -220,10 +278,10 @@ internal sealed class CuaService : IDisposable
             var (policy, bytes) = LoadPolicy();
             if (!bytes.AsSpan().SequenceEqual(s.PolicyBytes) || GetTarget(s.Target.Pid, s.Target.Window, policy, s.Owner) != s.Target)
                 return false;
-            if (mutation)
+            if (mutation && !_guestMode)
             {
                 _ = GetWindowThreadProcessId(GetForegroundWindow(), out uint pid);
-                if (pid == (uint)s.Target.Pid) return false;
+                if (pid == 0 || pid == (uint)s.Target.Pid) return false;
             }
             return true;
         }
@@ -231,31 +289,38 @@ internal sealed class CuaService : IDisposable
     }
     private void Sweep()
     {
-        Session[] all;
-        lock (_gate) all = _sessions.Values.ToArray();
+        Session[] all;ExtensionSession[] extended;
+        lock (_gate) {all = _sessions.Values.ToArray();extended=_extensions.Values.ToArray();}
+        foreach(var e in extended)
+        {
+            bool expired;lock(_gate)expired=!e.Busy && Environment.TickCount64-e.Last>300000;
+            if(expired||!ExtensionAllowed(e))RetireExtension(e.Id);
+        }
         foreach (var s in all)
         {
             bool expired;
-            lock (_gate) expired = !s.Busy && DateTime.UtcNow - s.Last > TimeSpan.FromMinutes(5);
+            lock (_gate) expired = !s.Busy && Environment.TickCount64 - s.Last > 300000;
             if (expired || !StillAllowed(s, false)) Retire(s.Id);
         }
     }
     private void Retire(string id)
     {
-        Session? s;
-        lock (_gate) _sessions.Remove(id, out s);
-        s?.Worker.Dispose();
+        lock (_gate) { if (_sessions.TryGetValue(id,out var s)) s.Worker.Dispose(); _sessions.Remove(id); }
     }
     internal void Revoke(string owner)
     {
-        string[] ids;
-        lock (_gate) { _revoked.Add(owner); ids = _sessions.Values.Where(s => s.Owner == owner).Select(s => s.Id).ToArray(); }
+        string[] ids,ext; Worker[] workers;
+        lock (_gate) { _revoked.Add(owner); ids = _sessions.Values.Where(s => s.Owner == owner).Select(s => s.Id).ToArray(); ext=_extensions.Values.Where(e=>e.Owner==owner).Select(e=>e.Id).ToArray(); workers=_launchWorkers.Values.Where(w=>w.Owner==owner).Select(w=>w.Worker).ToArray(); }
+        foreach(var worker in workers) worker.Dispose();
+        foreach(var id in ext)RetireExtension(id);
         foreach (var id in ids) Retire(id);
     }
     internal void Stop()
     {
-        Session[] all;
-        lock (_gate) { _stopped = true; all = _sessions.Values.ToArray(); _sessions.Clear(); }
+        Session[] all; Worker[] workers;ExtensionSession[] ext;
+        lock (_gate) { _stopped = true; all = _sessions.Values.ToArray(); workers=_launchWorkers.Values.Select(w=>w.Worker).ToArray(); ext=_extensions.Values.ToArray();_extensions.Clear();_sessions.Clear(); }
+        foreach(var worker in workers) worker.Dispose();
+        foreach(var e in ext)e.Worker.Dispose();
         _timer.Dispose();
         foreach (var s in all) s.Worker.Dispose();
     }
@@ -274,6 +339,14 @@ internal sealed class CuaService : IDisposable
         if (!Actions.TryGetValue(name, out var allowed) || args.Any(kv => !allowed.Contains(kv.Key, StringComparer.Ordinal)) ||
             Encoding.UTF8.GetByteCount(args.ToJsonString()) > 32768)
             throw Fail("cua_invalid_action_arguments");
+        if (name == "set_window_frame")
+        {
+            if(args.Count!=4 || !new[] {"x","y","width","height"}.All(args.ContainsKey)) throw Fail("cua_invalid_window_frame");
+            foreach(var (key,value) in args)
+                if(value is not JsonValue v || !v.TryGetValue<double>(out var n) || !double.IsFinite(n) || n >32768 ||
+                    n < (key is "width" or "height" ? 1 : -32768)) throw Fail("cua_invalid_window_frame");
+            return;
+        }
         foreach (var (key,value) in args)
         {
             if (key is "x" or "y" or "from_x" or "from_y" or "to_x" or "to_y" or "count" or "amount" or "duration_ms")
@@ -337,6 +410,143 @@ internal sealed class CuaService : IDisposable
         return (JsonArray)predicates.DeepClone();
     }
 
+    private bool ExtensionAllowed(ExtensionSession e)
+    {
+        lock(_gate)if(_stopped||_revoked.Contains(e.Owner)||!_extensions.TryGetValue(e.Id,out var live)||!ReferenceEquals(live,e))return false;
+        try{return LoadPolicy().Item2.AsSpan().SequenceEqual(e.PolicyBytes);}catch{return false;}
+    }
+    private void RetireExtension(string id)
+    {
+        ExtensionSession? e;lock(_gate)_extensions.TryGetValue(id,out e);
+        e?.Worker.Dispose();lock(_gate)_extensions.Remove(id);
+    }
+    private static void CheckFile(string path,string hash)
+    {
+        var file=new FileInfo(path);
+        if(!Path.IsPathFullyQualified(path)||!file.Exists||(file.Attributes&FileAttributes.ReparsePoint)!=0||file.Length is <=0 or >200_000_000)
+            throw Fail("cua_extension_integrity_mismatch");
+        using var stream=file.OpenRead();
+        if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(hash,StringComparison.OrdinalIgnoreCase))throw Fail("cua_extension_integrity_mismatch");
+    }
+    private static ToolCallOutput ExtensionResult(JsonObject reply,string id)
+    {
+        if(reply["isError"]?.GetValue<bool>()==true)
+        {
+            var text=(reply["content"] as JsonArray)?.FirstOrDefault()?["text"]?.GetValue<string>()??"unknown";
+            throw Fail("cua_extension_refused: "+text[..Math.Min(text.Length,1000)]);
+        }
+        if(reply["content"] is not JsonArray content||reply["structuredContent"] is not JsonObject structured||
+            Encoding.UTF8.GetByteCount(structured.ToJsonString())>2_000_000)throw Fail("invalid_extension_response");
+        var safe=new JsonArray();
+        foreach(var item in content.OfType<JsonObject>())
+        {
+            if(item["type"]?.GetValue<string>()=="text"&&item["text"] is JsonValue t&&t.TryGetValue<string>(out var text)&&Encoding.UTF8.GetByteCount(text)<=2_000_000)
+                safe.Add(new JsonObject{["type"]="text",["text"]=text});
+            else if(item["type"]?.GetValue<string>()=="image"&&item["mimeType"]?.GetValue<string>() is "image/png" or "image/jpeg" &&
+                item["data"] is JsonValue d&&d.TryGetValue<string>(out var data)&&data.Length<=8_000_000)
+            {
+                _=Convert.FromBase64String(data);safe.Add(new JsonObject{["type"]="image",["mimeType"]=item["mimeType"]!.DeepClone(),["data"]=data});
+            }
+        }
+        if(safe.Count==0)throw Fail("invalid_extension_content");
+        var outer=new JsonObject{["session_id"]=id,["result"]=structured.DeepClone()};
+        var blocks=new JsonArray(new JsonObject{["type"]="text",["text"]=outer.ToJsonString()});
+        foreach(var image in safe.OfType<JsonObject>())blocks.Add(image.DeepClone());
+        return new ToolCallOutput(blocks,outer);
+    }
+    private async Task<ToolCallOutput> ExtensionCallAsync(string name,JsonObject args,string owner,CancellationToken cancellation)
+    {
+        if(name=="cua_extension_close")
+        {
+            var id=args["session_id"]?.GetValue<string>()??"";
+            lock(_gate)if(!_extensions.TryGetValue(id,out var e)||e.Owner!=owner)throw Fail("unknown_extension_session");
+            RetireExtension(id);return Output(new JsonObject{["closed"]=true});
+        }
+        var (policy,bytes)=LoadPolicy();
+        var profiles=(policy.profiles??[]).Where(p=>p.clients.Contains(owner,StringComparer.Ordinal)).ToArray();
+        if(name=="cua_extension_list")
+            return Output(new JsonObject{["profiles"]=new JsonArray(profiles.Select(p=>(JsonNode?)new JsonObject{["id"]=p.id,["kind"]=p.kind,
+                ["origins"]=new JsonArray((p.origins??[]).Select(o=>(JsonNode?)JsonValue.Create(o)).ToArray())}).ToArray())});
+        if(name=="cua_extension_open")
+        {
+            var profile=profiles.FirstOrDefault(p=>p.id==args["profile_id"]?.GetValue<string>());
+            var runtime=policy.extensionRuntime;
+            if(profile is null||profile.kind is not ("browser" or "guest")||runtime is null)throw Fail("extension_profile_not_approved");
+            if(profile.kind=="guest")
+            {
+                var file=new FileInfo(profile.tokenFile??throw Fail("guest_private_credential_required"));
+                if(!file.Exists||file.Length!=65||(file.Attributes&FileAttributes.ReparsePoint)!=0)
+                    throw Fail("guest_private_credential_required");
+                using var identity=WindowsIdentity.GetCurrent();
+                var current=identity.User??throw Fail("guest_private_credential_required");
+                var acl=file.GetAccessControl(AccessControlSections.Owner|AccessControlSections.Access);
+                if(!current.Equals(acl.GetOwner(typeof(SecurityIdentifier))))throw Fail("guest_private_credential_required");
+                var system=new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null);
+                var admins=new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null);
+                foreach(FileSystemAccessRule rule in acl.GetAccessRules(true,true,typeof(SecurityIdentifier)))
+                    if(rule.AccessControlType==AccessControlType.Allow&&!current.Equals(rule.IdentityReference)&&
+                       !system.Equals(rule.IdentityReference)&&!admins.Equals(rule.IdentityReference))
+                        throw Fail("guest_private_credential_required");
+            }
+            CheckFile(runtime.node,runtime.nodeSHA256);CheckFile(runtime.worker,runtime.workerSHA256);
+            var request=RequestId(args["request_id"]);var receipt=Ledger();Sweep();
+            ExtensionSession created;
+            lock(_gate)
+            {
+                if(_stopped||_revoked.Contains(owner)||_sessions.Count+_extensions.Count+_launching.Count>=8||
+                    profile.kind=="guest"&&_extensions.Values.Any(e=>e.Profile.kind=="guest"&&e.Profile.port==profile.port))
+                    throw Fail("extension_capacity_or_guest_busy");
+                receipt.Reserve("cua",request,owner);
+                var worker=new Worker(runtime.node,"",false,runtime,profile);
+                created=new ExtensionSession(owner,profile,bytes,worker);
+                _extensions.Add(created.Id,created);
+            }
+            try
+            {
+                var reply=await created.Worker.CallAsync("extension_open",new(),()=>ExtensionAllowed(created),cancellation).ConfigureAwait(false);
+                if(cancellation.IsCancellationRequested||!ExtensionAllowed(created))throw Fail("extension_open_interrupted");
+                var result=ExtensionResult(reply,created.Id);receipt.Finish("cua",request,"exited",null);
+                lock(_gate){created.Busy=false;created.Last=Environment.TickCount64;}
+                return result;
+            }
+            catch{RetireExtension(created.Id);throw;}
+        }
+        if(name!="cua_extension_call"||args["operation"] is not JsonValue operation||!operation.TryGetValue<string>(out var op)||
+            args["parameters"] is not JsonObject parameters||Encoding.UTF8.GetByteCount(parameters.ToJsonString())>32768)throw Fail("invalid_extension_call");
+        var sessionId=args["session_id"]?.GetValue<string>()??"";
+        ExtensionSession session;
+        lock(_gate)
+        {
+            if(!_extensions.TryGetValue(sessionId,out var e)||e.Owner!=owner||e.Busy||Environment.TickCount64-e.Last>300000)
+                throw Fail("unknown_or_busy_extension_session");
+            session=e;session.Busy=true;
+        }
+        try
+        {
+            var browserOps=new[]{"observe","navigate","click","fill","press","select","scroll","verify","back","forward","hover"};
+            var guestOps=new[]{"cua_capabilities","cua_list_apps","cua_list_windows","cua_launch_app","cua_create_session","cua_observe","cua_act","cua_verify","cua_stop_session","cua_receipt_status"};
+            if(!(session.Profile.kind=="browser"?browserOps:guestOps).Contains(op,StringComparer.Ordinal)||!ExtensionAllowed(session)||cancellation.IsCancellationRequested)
+                throw Fail("extension_operation_not_allowed");
+            var readOnly=new[]{"observe","verify","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"}.Contains(op,StringComparer.Ordinal);
+            var request=RequestId(args["request_id"]);var receipt=Ledger();
+            if(!readOnly)receipt.Reserve("cua",request,owner);
+            bool recoverable=false;
+            try
+            {
+                var reply=await session.Worker.CallAsync("extension_call",new JsonObject{["operation"]=op,["parameters"]=parameters.DeepClone()},()=>ExtensionAllowed(session),cancellation).ConfigureAwait(false);
+                if(cancellation.IsCancellationRequested||!ExtensionAllowed(session))throw Fail("extension_action_outcome_unknown");
+                if(reply["isError"]?.GetValue<bool>()==true&&reply["structuredContent"]?["recoverable"]?.GetValue<bool>()==true){
+                    recoverable=true;if(!readOnly)receipt.Finish("cua",request,"launch_failed",null);
+                }
+                var result=ExtensionResult(reply,sessionId);
+                if(!readOnly)receipt.Finish("cua",request,"exited",null);
+                return result;
+            }
+            catch{if(!recoverable)RetireExtension(sessionId);throw;}
+        }
+        finally{lock(_gate){session.Busy=false;session.Last=Environment.TickCount64;}}
+    }
+
     internal async Task<ToolCallOutput> CallAsync(string name, JsonObject args, string? verifiedOwner, CancellationToken cancellation)
     {
         var owner = verifiedOwner ?? SharedOwner;
@@ -345,16 +555,20 @@ internal sealed class CuaService : IDisposable
             schema["required"] is not JsonArray required || args.Any(kv => !props.ContainsKey(kv.Key)) ||
             required.Any(x => !args.ContainsKey(x!.GetValue<string>())))
             throw Fail("cua_invalid_arguments");
-        lock (_gate) if (_stopped || _revoked.Contains(owner)) throw Fail("cua_service_stopped_or_revoked");
+        lock (_gate) if (_stopped || _revoked.Contains(owner) || cancellation.IsCancellationRequested) throw Fail("cua_service_stopped_or_revoked");
         if (name == "cua_capabilities")
         {
             bool enabled = false;
-            try { enabled = LoadPolicy().Item1.grants.Any(g => g.clients.Contains(owner, StringComparer.Ordinal)); } catch { }
+            bool extEnabled=false;
+            try { var activePolicy=LoadPolicy().Item1;extEnabled=!_guestMode&&(activePolicy.profiles??[]).Any(p=>p.clients.Contains(owner,StringComparer.Ordinal));
+                enabled=extEnabled||activePolicy.grants.Any(g=>g.clients.Contains(owner,StringComparer.Ordinal)); } catch { }
             return Output(new JsonObject { ["enabled"] = enabled, ["background_only"] = true, ["driver"] = "cua-driver", ["driver_version"] = "0.61.0", ["driver_mode"] = "bounded_direct",
                 ["identity"] = owner == SharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client",
                 ["operations"] = new JsonArray(Actions.Keys.OrderBy(x => x, StringComparer.Ordinal).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
-                ["requires_local_grant"] = true });
+                ["requires_local_grant"] = true, ["interactive_session"] = OperatingSystem.IsWindows() && Environment.UserInteractive, ["snapshot_ttl_seconds"]=30,["guest_mode"]=_guestMode,["extension_profiles_enabled"]=extEnabled });
         }
+        if(name.StartsWith("cua_extension_",StringComparison.Ordinal)){if(_guestMode)throw Fail("nested_guest_extensions_disabled");return await ExtensionCallAsync(name,args,owner,cancellation).ConfigureAwait(false);}
+        if (name == "cua_receipt_status") return Output(Ledger().OwnReceipt("cua",RequestId(args["request_id"]),owner));
         if (name == "cua_stop_session")
         {
             var id = args["session_id"]?.GetValue<string>() ?? throw Fail("cua_invalid_session");
@@ -365,6 +579,39 @@ internal sealed class CuaService : IDisposable
         }
         var (policy,bytes) = LoadPolicy();
         if (!policy.grants.Any(g => g.clients.Contains(owner, StringComparer.Ordinal))) throw Fail("cua_client_not_approved");
+        if(name=="cua_launch_app")
+        {
+            var application=args["application"]?.GetValue<string>() ?? "";
+            if(!AllowedApplication(application) || !policy.PermitsLaunch(application,owner)) throw Fail("cua_launch_not_approved");
+            var request=RequestId(args["request_id"]); var receipt=Ledger(); var driver=CheckedDriver(policy);
+            lock(_gate)
+            {
+                if(_stopped || _revoked.Contains(owner) || _launching.Contains(application) || _sessions.Count+_extensions.Count+_launching.Count>=8 ||
+                    _sessions.Values.Any(s=>s.Target.Application.Equals(application,StringComparison.OrdinalIgnoreCase)))
+                    throw Fail("cua_target_busy_or_capacity");
+                _launching.Add(application);
+            }
+            try
+            {
+                receipt.Reserve("cua",request,owner);
+                using var worker=new Worker(driver,application,true);
+                lock(_gate) _launchWorkers[application]=(owner,worker);
+                bool Allowed()
+                {
+                    lock(_gate) if(_stopped || _revoked.Contains(owner))return false;
+                    try {return !cancellation.IsCancellationRequested && LoadPolicy().Item2.AsSpan().SequenceEqual(bytes);}
+                    catch{return false;}
+                }
+                var result=await worker.CallAsync("launch_app",new JsonObject{["path"]=application,["start_minimized"]=true},Allowed,cancellation).ConfigureAwait(false);
+                if(!Allowed() || result["isError"]?.GetValue<bool>()==true ||
+                    result["structuredContent"]?["pid"] is not JsonValue p || !p.TryGetValue<int>(out var launchedPid))
+                    throw Fail("cua_launch_unverified_or_refused: inspect actual state; do not replay");
+                if(!ApprovedApp(launchedPid,policy,owner).Item1.Equals(application,StringComparison.OrdinalIgnoreCase))throw Fail("cua_launch_target_mismatch");
+                receipt.Finish("cua",request,"exited",null);
+                return Output(new JsonObject {["pid"]=launchedPid,["application"]=application,["windows"]=Windows(launchedPid),["request_id"]=request,["background_only"]=true});
+            }
+            finally { lock(_gate){_launching.Remove(application);_launchWorkers.Remove(application);} }
+        }
         if (name == "cua_list_apps")
         {
             var apps = new JsonArray();
@@ -376,7 +623,7 @@ internal sealed class CuaService : IDisposable
                     catch { }
                 }
             }
-            return Output(new JsonObject { ["apps"] = apps });
+            return Output(new JsonObject { ["apps"] = apps, ["approved_launch_applications"] = new JsonArray(policy.grants.Where(g=>(g.launchClients??[]).Contains(owner,StringComparer.Ordinal)&&AllowedApplication(g.application)).Select(g=>(JsonNode?)JsonValue.Create(g.application)).ToArray()) });
         }
         if (name == "cua_list_windows")
         {
@@ -402,18 +649,9 @@ internal sealed class CuaService : IDisposable
             Sweep();
             lock (_gate)
             {
-                if (_stopped || _revoked.Contains(owner) || _sessions.Count >= 8 || _sessions.Values.Any(s => s.Target.Pid == pid))
+                if (_stopped || _revoked.Contains(owner) || _sessions.Count + _extensions.Count + _launching.Count >= 8 || _launching.Contains(target.Application) || _sessions.Values.Any(s => s.Target.Pid == pid))
                     throw Fail("cua_target_busy_or_capacity");
-                var file = new FileInfo(policy.driver);
-                if (!file.Exists || file.Length is <= 0 or > 200_000_000 ||
-                    (file.Attributes & FileAttributes.ReparsePoint) != 0 || !string.Equals(file.Extension, ".exe", StringComparison.OrdinalIgnoreCase))
-                    throw Fail("cua_driver_unavailable");
-                using (var stream = file.OpenRead())
-                {
-                    var hash = Convert.ToHexString(SHA256.HashData(stream));
-                    if (!string.Equals(hash,policy.driverSHA256,StringComparison.OrdinalIgnoreCase)) throw Fail("cua_driver_integrity_mismatch");
-                }
-                var worker = new Worker(file.FullName,target.Application);
+                var worker = new Worker(CheckedDriver(policy),target.Application);
                 var created = new Session(owner,target,bytes,worker);
                 _sessions.Add(created.Id,created);
                 return Output(new JsonObject { ["session_id"] = created.Id, ["pid"] = pid, ["window_id"] = window,
@@ -425,26 +663,30 @@ internal sealed class CuaService : IDisposable
         lock (_gate)
         {
             if (!_sessions.TryGetValue(sessionId,out var selected) || selected.Owner != owner || selected.Busy || _stopped ||
-                DateTime.UtcNow - selected.Last > TimeSpan.FromMinutes(5)) throw Fail("cua_unknown_unauthorized_or_busy_session");
+                Environment.TickCount64 - selected.Last > 300000) throw Fail("cua_unknown_unauthorized_or_busy_session");
             s = selected; s.Busy = true;
         }
         try
         {
             bool mutation = name == "cua_act";
-            if (!StillAllowed(s,mutation)) throw Fail("cua_target_unavailable_or_user_active");
+            if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested) { s.Snapshot=null; throw Fail("cua_target_unavailable_or_user_active"); }
             var driverArgs = new JsonObject { ["pid"] = s.Target.Pid, ["window_id"] = s.Target.Window };
             string driverTool;
+            (CommandReceiptLedger Ledger,string Id)? actionReceipt=null;
             if (mutation)
             {
                 if (s.Snapshot is not { } snapshot || args["operation"] is not JsonValue op || !op.TryGetValue<string>(out var operation) ||
                     args["parameters"] is not JsonObject parameters) throw Fail("cua_observe_before_action");
                 ValidateAction(operation,parameters);
-                snapshot.Validate(parameters);
+                if(operation!="set_window_frame") snapshot.Validate(parameters); else snapshot.Validate(new JsonObject());
+                var request=RequestId(args["request_id"]);var receipt=Ledger();
+                receipt.Reserve("cua",request,owner);
+                actionReceipt=(receipt,request);
                 foreach (var (key,value) in parameters)
                     if (key != "capture_id" || operation == "click") driverArgs[key] = value?.DeepClone();
-                if (operation != "invoke_menu" && snapshot.Revision is long revision) driverArgs["ui_tree_revision"] = revision;
-                driverArgs["delivery_mode"] = "background";
-                if (operation is not ("set_value" or "invoke_menu")) driverArgs["scope"] = "window";
+                if (operation is not ("invoke_menu" or "set_window_frame") && snapshot.Revision is long revision) driverArgs["ui_tree_revision"] = revision;
+                if(operation!="set_window_frame")driverArgs["delivery_mode"] = "background";
+                if (operation is not ("set_value" or "invoke_menu" or "set_window_frame")) driverArgs["scope"] = "window";
                 driverTool = operation;
                 s.Snapshot = null;
             }
@@ -476,7 +718,7 @@ internal sealed class CuaService : IDisposable
             try
             {
                 var result = await s.Worker.CallAsync(driverTool, driverArgs, () => StillAllowed(s,mutation), cancellation).ConfigureAwait(false);
-                if (!StillAllowed(s,mutation)) throw Fail("cua_action_outcome_unknown");
+                if (!StillAllowed(s,mutation) || cancellation.IsCancellationRequested) throw Fail("cua_action_outcome_unknown");
                 if (result["isError"]?.GetValue<bool>() == true)
                 {
                     var message = (result["content"] as JsonArray)?.FirstOrDefault()?["text"]?.GetValue<string>() ?? "background unavailable";
@@ -507,12 +749,13 @@ internal sealed class CuaService : IDisposable
                 var metadata = (JsonObject)structured.DeepClone();
                 foreach (var key in new[] {"screenshot","screenshot_base64","image","image_data","screenshot_file_path"}) metadata.Remove(key);
                 if (Encoding.UTF8.GetByteCount(metadata.ToJsonString()) > 2_000_000) throw Fail("cua_driver_metadata_too_large");
+                if(actionReceipt is { } ar) ar.Ledger.Finish("cua",ar.Id,"exited",null);
                 return new ToolCallOutput(safe, new JsonObject { ["session_id"] = sessionId, ["operation"] = driverTool,
                     ["background_only"] = true, ["verification_required"] = mutation, ["driver_result"] = metadata });
             }
             catch { Retire(sessionId); throw; }
         }
-        finally { lock (_gate) { s.Busy = false; s.Last = DateTime.UtcNow; } }
+        finally { lock (_gate) { s.Busy = false; s.Last = Environment.TickCount64; } }
     }
 
     internal sealed class Worker : IDisposable
@@ -525,8 +768,11 @@ internal sealed class CuaService : IDisposable
         private int _offset, _length, _id, _closed;
         private bool _initialized;
         private readonly string _manifestDirectory;
-        internal Worker(string path,string application)
+        private readonly WindowsJob? _job;
+        private readonly bool _isExtension;
+        internal Worker(string path,string application,bool launch=false,ExtensionRuntime? runtime=null,ExtensionProfile? profile=null)
         {
+            _isExtension=runtime is not null;
             _manifestDirectory = Path.Combine(Path.GetTempPath(),"ctcmcp-cua-"+Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_manifestDirectory);
             var manifestPath = Path.Combine(_manifestDirectory,"capability.json");
@@ -534,15 +780,15 @@ internal sealed class CuaService : IDisposable
             {
                 var manifest = new {
                     version = 3, expires_after = "2h", idle_timeout = "10m",
-                    allow = new { tools = new[] {"check_permissions","get_window_state","click","type_text","press_key","scroll","drag","set_value","invoke_menu","verify_state"} },
-                    resources = new { apps = new[] { new { executable = application, launch = false, windows = "all" } },
+                    allow = new { tools = new[] {"check_permissions","get_window_state","click","type_text","press_key","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"}.Concat(launch?new[]{"launch_app"}:Array.Empty<string>()).ToArray() },
+                    resources = new { apps = new[] { new { executable = application, launch, windows = "all" } },
                         desktop = new { display = false } }
                 };
-                File.WriteAllText(manifestPath,JsonSerializer.Serialize(manifest));
+                File.WriteAllText(manifestPath,profile is null?JsonSerializer.Serialize(manifest):JsonSerializer.Serialize(profile));
                 var info = new ProcessStartInfo(path) { UseShellExecute = false, RedirectStandardInput = true,
                     RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true,
                     WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
-                info.ArgumentList.Add("mcp");
+                info.ArgumentList.Add(runtime?.worker??"mcp");
                 var keep = new[] {"SYSTEMROOT","WINDIR","SYSTEMDRIVE","USERPROFILE","USERNAME","APPDATA","LOCALAPPDATA","TEMP","TMP","PATH","PATHEXT","COMSPEC","PROGRAMDATA","HOMEDRIVE","HOMEPATH"};
                 foreach (var key in info.Environment.Keys.Where(k => !keep.Contains(k,StringComparer.OrdinalIgnoreCase)).ToArray()) info.Environment.Remove(key);
                 info.Environment["CUA_DRIVER_PERMISSION_MODE"] = "bounded";
@@ -550,7 +796,14 @@ internal sealed class CuaService : IDisposable
                 info.Environment["CUA_DRIVER_CAPABILITY_MANIFEST_APPROVED"] = "1";
                 info.Environment["DO_NOT_TRACK"] = "1";
                 info.Environment["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "false";
+                if(runtime is not null){
+                    info.Environment["CTCMCP_CUA_EXTENSION_MANIFEST"]=manifestPath;
+                    info.Environment["PLAYWRIGHT_BROWSERS_PATH"]=Path.Combine(Path.GetDirectoryName(runtime.worker)!,"browsers");
+                }
                 _process = Process.Start(info) ?? throw Fail("cua_driver_unavailable");
+                // Attach desktop workers to kill-on-close supervision. One-shot
+                // launch workers must not kill the launched user application.
+                if (!launch) _job=WindowsJob.CreateAndAssign(_process);
             }
             catch
             {
@@ -566,7 +819,10 @@ internal sealed class CuaService : IDisposable
         {
             if (Interlocked.Exchange(ref _closed,1) != 0) return;
             _stop.Cancel();
-            try { if (!_process.HasExited) _process.Kill(entireProcessTree:true); } catch { }
+            if(_isExtension){try{_input.Close();_process.WaitForExit(2000);}catch{}}
+            try { _job?.Dispose(); } catch { }
+            try { if (!_process.HasExited) _process.Kill(entireProcessTree:_job is not null); } catch { }
+            try { _process.WaitForExit(2000); } catch { }
             try { _process.Dispose(); } catch { }
             try { Directory.Delete(_manifestDirectory,true); } catch { }
         }
@@ -609,6 +865,7 @@ internal sealed class CuaService : IDisposable
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation,_stop.Token);
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
+            using var abort = deadline.Token.Register(() => { try { if (!_process.HasExited) _process.Kill(entireProcessTree:_job is not null); } catch { } });
             using var watchdog = new Timer(_ => { try { if (!allowed()) deadline.Cancel(); } catch { try { deadline.Cancel(); } catch { } } }, null, 0, 100);
             try
             {
@@ -618,7 +875,7 @@ internal sealed class CuaService : IDisposable
                     var init = await RpcAsync("initialize",new JsonObject { ["protocolVersion"] = "2025-06-18",
                         ["capabilities"] = new JsonObject(), ["clientInfo"] = new JsonObject { ["name"] = "ChatToComputerMCP", ["version"] = "1" } },deadline.Token).ConfigureAwait(false);
                     if (init["protocolVersion"]?.GetValue<string>() != "2025-06-18" || init["serverInfo"] is not JsonObject info ||
-                        info["name"]?.GetValue<string>() != "cua-driver" || info["version"]?.GetValue<string>() != "0.61.0")
+                        info["name"]?.GetValue<string>() != (_isExtension?"ctcmcp-cua-extension":"cua-driver") || info["version"]?.GetValue<string>() != (_isExtension?"1.0.0":"0.61.0"))
                         throw Fail("cua_driver_protocol_or_version_mismatch");
                     await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/initialized" },deadline.Token).ConfigureAwait(false);
                     _initialized = true;

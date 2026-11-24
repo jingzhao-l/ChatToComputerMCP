@@ -3174,7 +3174,8 @@ final class LocalMCPServer {
     private let tools: LocalTools
     private let commandBudget: WorkspaceCommandBudget
     private let receiptLedger: CommandReceiptLedger?
-    private let cua = CUAService()
+    private let cua: CUAService
+    private let cuaGuest: Bool
     private let taskOwnershipLock = NSLock()
     private var ownerByScopedRequest: [String: String] = [:]
     private var ownerBySessionID: [String: String] = [:]
@@ -3215,6 +3216,8 @@ final class LocalMCPServer {
         requestTimeoutSeconds: TimeInterval = 15,
         responseTimeoutSeconds: TimeInterval = 15,
         maxConnections: Int = 32,
+        cuaGuest: Bool = false,
+        cuaPolicyURL: URL? = nil,
         log: @escaping (String) -> Void
     ) throws {
         guard localAuthToken.utf8.count >= 32 else {
@@ -3227,6 +3230,11 @@ final class LocalMCPServer {
               responseTimeoutSeconds > 0, responseTimeoutSeconds.isFinite, maxConnections > 0 else {
             throw MCPServerError.invalidArguments("HTTP resource limits must be positive and finite")
         }
+        if cuaGuest && (enableCommands || enableGitPush || enableCodexHistory || !additionalWorkspaces.isEmpty || publicHost != nil || pathSecret != nil || bearerToken != nil || oauth != nil) {
+            throw MCPServerError.invalidArguments("Isolated guest gateway is CUA-only and loopback-only")
+        }
+        self.cuaGuest = cuaGuest
+        self.cua = CUAService(policyURL:cuaPolicyURL ?? CUAPolicy.defaultURL,guestMode:cuaGuest)
         self.requestTimeoutSeconds = requestTimeoutSeconds
         self.responseTimeoutSeconds = responseTimeoutSeconds
         self.maxConnections = maxConnections
@@ -3507,12 +3515,24 @@ final class LocalMCPServer {
             switch self.parseHTTPRequest(buffer) {
             case let .request(request):
                 self.setDeadline(nil, on: connection)
+                // MCP tool calls are single-request HTTP exchanges. Monitor
+                // CUA calls for premature peer EOF while native input is in
+                // flight; do not interpret normal request completion as a
+                // persistent conversation disconnect.
+                if self.isCUARequest(request) {
+                    connection.receive(minimumIncompleteLength:1,maximumLength:1) { [weak self] data,_,complete,error in
+                        if complete || error != nil || data?.isEmpty == false { self?.closeConnection(connection) }
+                    }
+                }
                 self.workQueue.async {
                     self.stateLock.lock()
                     let isActive = self.ready && self.activeConnections[ObjectIdentifier(connection)] != nil
                     self.stateLock.unlock()
                     guard isActive else { return }
-                    let response = self.process(request)
+                    let response = self.process(request, requestAlive: {
+                        self.stateLock.lock(); defer { self.stateLock.unlock() }
+                        return self.ready && self.activeConnections[ObjectIdentifier(connection)] != nil
+                    })
                     self.send(response, on: connection)
                 }
                 return
@@ -3681,6 +3701,9 @@ final class LocalMCPServer {
     }
 
     private var publishedToolDefinitions: [[String: Any]] {
+        if cuaGuest {
+            return CUAService.definitions().filter { !(($0["name"] as? String) ?? "").hasPrefix("cua_extension_") }
+        }
         var definitions = tools.toolDefinitions + CUAService.definitions()
         if !workspaceDefinitions.isEmpty {
             let readOnlySchema: [String: Any] = [
@@ -3724,7 +3747,13 @@ final class LocalMCPServer {
         }
     }
 
-    private func process(_ request: HTTPRequest) -> Data {
+    private func isCUARequest(_ request: HTTPRequest) -> Bool {
+        guard let message = (try? JSONSerialization.jsonObject(with:request.body)) as? [String:Any],
+              message["method"] as? String == "tools/call",
+              let params = message["params"] as? [String:Any], let name = params["name"] as? String else { return false }
+        return name.hasPrefix("cua_")
+    }
+    private func process(_ request: HTTPRequest, requestAlive: @escaping () -> Bool = {true}) -> Data {
         if let response = oauth?.handle(method: request.method, path: request.path, query: request.query, contentType: request.headers["content-type"], body: request.body) {
             return httpResponse(status: response.status, body: response.body, contentType: response.contentType, extraHeaders: response.headers)
         }
@@ -3815,7 +3844,7 @@ final class LocalMCPServer {
                 let client = oauth?.verifiedClient(
                     forAuthorization: request.headers["authorization"])
                 return processModernRequest(id: id, method: method,
-                                            params: params, verifiedClient: client)
+                                            params: params, verifiedClient: client, requestAlive: requestAlive)
             }
 
             if message["id"] == nil {
@@ -3824,14 +3853,14 @@ final class LocalMCPServer {
             let client = oauth?.verifiedClient(
                 forAuthorization: request.headers["authorization"])
             return processLegacyRequest(id: id, method: method,
-                                        params: params, verifiedClient: client)
+                                        params: params, verifiedClient: client, requestAlive: requestAlive)
         } catch {
             return jsonRPCError(id: NSNull(), code: -32700, message: "Parse error", status: 400)
         }
     }
 
     private func processLegacyRequest(id: Any, method: String, params: [String: Any],
-                                      verifiedClient: VerifiedOAuthClient?) -> Data {
+                                      verifiedClient: VerifiedOAuthClient?, requestAlive: @escaping () -> Bool = {true}) -> Data {
         switch method {
         case "initialize":
             let requestedVersion = params["protocolVersion"] as? String ?? mcpProtocolFallback
@@ -3850,14 +3879,14 @@ final class LocalMCPServer {
             return jsonRPCResult(id: id, result: ["tools": publishedToolDefinitions])
         case "tools/call":
             return callTool(id: id, params: params, modern: false,
-                            verifiedClient: verifiedClient)
+                            verifiedClient: verifiedClient, requestAlive: requestAlive)
         default:
             return jsonRPCError(id: id, code: -32601, message: "Method not found: \(method)")
         }
     }
 
     private func processModernRequest(id: Any, method: String, params: [String: Any],
-                                      verifiedClient: VerifiedOAuthClient?) -> Data {
+                                      verifiedClient: VerifiedOAuthClient?, requestAlive: @escaping () -> Bool = {true}) -> Data {
         switch method {
         case "server/discover":
             var result = modernCompleteResult([
@@ -3875,7 +3904,7 @@ final class LocalMCPServer {
             return jsonRPCResult(id: id, result: result)
         case "tools/call":
             return callTool(id: id, params: params, modern: true,
-                            verifiedClient: verifiedClient)
+                            verifiedClient: verifiedClient, requestAlive: requestAlive)
         default:
             return jsonRPCError(
                 id: id,
@@ -3925,7 +3954,7 @@ final class LocalMCPServer {
     }
 
     private func callTool(id: Any, params: [String: Any], modern: Bool,
-                          verifiedClient: VerifiedOAuthClient? = nil) -> Data {
+                          verifiedClient: VerifiedOAuthClient? = nil, requestAlive: @escaping () -> Bool = {true}) -> Data {
         guard let toolName = params["name"] as? String else {
             return jsonRPCError(
                 id: id,
@@ -3955,7 +3984,7 @@ final class LocalMCPServer {
         do {
             let output: LocalToolCallOutput
             if toolName.hasPrefix("cua_") {
-                let (content, structured) = try cua.call(toolName, args: arguments, owner: verifiedClient?.id)
+                let (content, structured) = try cua.call(toolName, args: arguments, owner: verifiedClient?.id, requestAlive: requestAlive)
                 output = LocalToolCallOutput(content: content, structuredContent: structured)
             } else if toolName == "list_workspaces" {
                 let list = workspaceDefinitions.filter {

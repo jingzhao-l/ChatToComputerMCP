@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreGraphics
 import CoreFoundation
+import ApplicationServices
 import CryptoKit
 import Darwin
 
@@ -17,7 +18,24 @@ struct CUAPolicy: Decodable {
     struct Grant: Decodable {
         let application: String
         let clients: [String]
+        let launchClients: [String]?
     }
+    struct ExtensionRuntime: Codable {
+        let node: String
+        let nodeSHA256: String
+        let worker: String
+        let workerSHA256: String
+    }
+    struct ExtensionProfile: Codable {
+        let id: String
+        let kind: String
+        let clients: [String]
+        let origins: [String]?
+        let port: Int?
+        let tokenFile: String?
+    }
+    let extensionRuntime: ExtensionRuntime?
+    let profiles: [ExtensionProfile]?
     let enabled: Bool
     let driver: String
     let driverSHA256: String
@@ -26,6 +44,9 @@ struct CUAPolicy: Decodable {
     static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/ChatToComputerMCP/cua-policy.json")
+    }
+    func permitsLaunch(_ app: String, owner: String) -> Bool {
+        grants.contains { $0.application == app && $0.clients.contains(owner) && ($0.launchClients ?? []).contains(owner) }
     }
     func permits(_ app: String, owner: String) -> Bool {
         grants.contains { $0.application == app && $0.clients.contains(owner) }
@@ -49,23 +70,25 @@ final class CUAWorker {
     private var nextID = 0
     private var initialized = false
     private let manifestURL: URL
+    private let isExtension: Bool
 
-    init(driver: String, application: String) throws {
+    init(driver: String, application: String, launch: Bool = false, extensionRuntime: CUAPolicy.ExtensionRuntime? = nil, extensionProfile: CUAPolicy.ExtensionProfile? = nil) throws {
+        isExtension = extensionRuntime != nil
         // A private, direct worker per lease. No connection to a preexisting
         // unrestricted daemon, no independently exposed network listener.
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ctcmcp-cua-" + UUID().uuidString)
         try FileManager.default.createDirectory(at:directory, withIntermediateDirectories:false, attributes:[.posixPermissions:0o700])
         manifestURL = directory.appendingPathComponent("capability.json")
         let manifest: [String:Any] = ["version":3,"expires_after":"2h","idle_timeout":"10m",
-            "allow":["tools":["check_permissions","get_window_state","click","type_text","press_key","scroll","drag","set_value","invoke_menu","verify_state"]],
-            "resources":["apps":[["bundle_id":application,"launch":false,"windows":"all"]],"desktop":["display":false]]]
+            "allow":["tools":["check_permissions","get_window_state","click","type_text","press_key","scroll","drag","set_value","invoke_menu","verify_state","set_window_frame"] + (launch ? ["launch_app"] : [])],
+            "resources":["apps":[["bundle_id":application,"launch":launch,"windows":"all"]],"desktop":["display":false]]]
         do {
-            let data = try JSONSerialization.data(withJSONObject:manifest)
+            let data = try extensionProfile.map { try JSONEncoder().encode($0) } ?? JSONSerialization.data(withJSONObject:manifest)
             guard FileManager.default.createFile(atPath:manifestURL.path,contents:data,attributes:[.posixPermissions:0o600]) else {
                 throw CUAFailure("cua_manifest_unavailable")
             }
-            process.executableURL = URL(fileURLWithPath: driver)
-            process.arguments = ["mcp","--direct"]
+            process.executableURL = URL(fileURLWithPath: extensionRuntime?.node ?? driver)
+            process.arguments = extensionRuntime.map { [$0.worker] } ?? ["mcp","--direct"]
             process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
             let envKeys = Set(["HOME","USER","LOGNAME","PATH","TMPDIR","LANG","LC_ALL","LC_CTYPE","TZ"])
             var env = ProcessInfo.processInfo.environment.filter { envKeys.contains($0.key) }
@@ -74,6 +97,10 @@ final class CUAWorker {
             env["CUA_DRIVER_CAPABILITY_MANIFEST_APPROVED"] = "1"
             env["DO_NOT_TRACK"] = "1"
             env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "false"
+            if let runtime = extensionRuntime {
+                env["CTCMCP_CUA_EXTENSION_MANIFEST"] = manifestURL.path
+                env["PLAYWRIGHT_BROWSERS_PATH"] = URL(fileURLWithPath:runtime.worker).deletingLastPathComponent().appendingPathComponent("browsers").path
+            }
             process.environment = env
         } catch {
             try? FileManager.default.removeItem(at:directory)
@@ -94,18 +121,23 @@ final class CUAWorker {
         life.lock(); defer { life.unlock() }
         guard !closed else { return }
         closed = true
-        if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
+        if isExtension && process.isRunning {
+            process.terminate()
+            let end = ProcessInfo.processInfo.systemUptime + 2.0
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < end { usleep(20000) }
+        }
+        if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL); process.waitUntilExit() }
         try? FileManager.default.removeItem(at:manifestURL.deletingLastPathComponent())
     }
     deinit { close() }
 
-    private func check(_ deadline: Date, _ allowed: () -> Bool) throws {
+    private func check(_ deadline: TimeInterval, _ allowed: () -> Bool) throws {
         life.lock(); let stopped = closed; life.unlock()
         guard !stopped, allowed() else { throw CUAFailure("cua_session_revoked") }
-        guard Date() < deadline else { throw CUAFailure("cua_driver_timeout: action outcome may be unknown; observe again in a new session") }
+        guard ProcessInfo.processInfo.systemUptime < deadline else { throw CUAFailure("cua_driver_timeout: action outcome may be unknown; observe again in a new session") }
     }
 
-    private func send(_ message: [String: Any], deadline: Date, allowed: () -> Bool) throws {
+    private func send(_ message: [String: Any], deadline: TimeInterval, allowed: () -> Bool) throws {
         var data = try JSONSerialization.data(withJSONObject: message)
         data.append(10)
         let fd = input.fileHandleForWriting.fileDescriptor
@@ -120,7 +152,7 @@ final class CUAWorker {
         }
     }
 
-    private func receive(id: Int, deadline: Date, allowed: () -> Bool) throws -> [String: Any] {
+    private func receive(id: Int, deadline: TimeInterval, allowed: () -> Bool) throws -> [String: Any] {
         let fd = output.fileHandleForReading.fileDescriptor
         while true {
             try check(deadline, allowed)
@@ -152,20 +184,20 @@ final class CUAWorker {
         }
     }
 
-    private func rpc(_ method: String, _ args: [String: Any], deadline: Date, allowed: () -> Bool) throws -> [String: Any] {
+    private func rpc(_ method: String, _ args: [String: Any], deadline: TimeInterval, allowed: () -> Bool) throws -> [String: Any] {
         nextID += 1
         try send(["jsonrpc":"2.0", "id":nextID, "method":method, "params":args], deadline:deadline, allowed:allowed)
         return try receive(id:nextID, deadline:deadline, allowed:allowed)
     }
 
     func call(_ tool: String, _ args: [String: Any], allowed: () -> Bool) throws -> [String: Any] {
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
         if !initialized {
             let initResult = try rpc("initialize", ["protocolVersion":"2025-06-18", "capabilities":[:],
                 "clientInfo":["name":"ChatToComputerMCP", "version":"1"]], deadline:deadline, allowed:allowed)
             guard initResult["protocolVersion"] as? String == "2025-06-18",
-                  let info = initResult["serverInfo"] as? [String:Any], info["name"] as? String == "cua-driver",
-                  info["version"] as? String == "0.61.0" else { throw CUAFailure("cua_driver_protocol_or_version_mismatch") }
+                  let info = initResult["serverInfo"] as? [String:Any], info["name"] as? String == (isExtension ? "ctcmcp-cua-extension" : "cua-driver"),
+                  info["version"] as? String == (isExtension ? "1.0.0" : "0.61.0") else { throw CUAFailure("cua_driver_protocol_or_version_mismatch") }
             try send(["jsonrpc":"2.0", "method":"notifications/initialized"], deadline:deadline, allowed:allowed)
             initialized = true
         }
@@ -182,6 +214,7 @@ struct CUASnapshot {
     let width: Int?
     let height: Int?
     let tokens: Set<String>
+    let observedAt = ProcessInfo.processInfo.systemUptime
 
     init(structured: [String:Any], blocks: [[String:Any]]) throws {
         guard let id = structured["snapshot_id"] as? String,
@@ -208,6 +241,7 @@ struct CUASnapshot {
         }
     }
     func validate(_ args: [String:Any]) throws {
+        guard ProcessInfo.processInfo.systemUptime - observedAt <= 30 else { throw CUAFailure("cua_snapshot_expired") }
         if let token = args["element_token"] as? String, !tokens.contains(token) {
             throw CUAFailure("cua_stale_or_foreign_element_token")
         }
@@ -234,17 +268,34 @@ final class CUAService {
         let target: CUATarget
         let policyBytes: Data
         let worker: CUAWorker
-        var last = Date()
+        var last = ProcessInfo.processInfo.systemUptime
         var busy = false
         var snapshot: CUASnapshot?
         init(owner: String, target: CUATarget, policyBytes: Data, worker: CUAWorker) {
             self.owner = owner; self.target = target; self.policyBytes = policyBytes; self.worker = worker
         }
     }
+    private final class ExtensionSession {
+        let id = UUID().uuidString + UUID().uuidString
+        let owner: String
+        let profile: CUAPolicy.ExtensionProfile
+        let policyBytes: Data
+        let worker: CUAWorker
+        var last = ProcessInfo.processInfo.systemUptime
+        var busy = true
+        init(owner: String, profile: CUAPolicy.ExtensionProfile, policyBytes: Data, worker: CUAWorker) {
+            self.owner=owner; self.profile=profile; self.policyBytes=policyBytes; self.worker=worker
+        }
+    }
     private let gate = NSLock()
+    private var extensions: [String:ExtensionSession] = [:]
+    private let guestMode: Bool
     private var sessions: [String: Session] = [:]
     private var revoked = Set<String>()
     private var stopped = false
+    private var launching = Set<String>()
+    private var launchWorkers: [String: (owner: String, worker: CUAWorker)] = [:]
+    private var receiptLedger: CommandReceiptLedger?
     private let policyURL: URL
     private var timer: DispatchSourceTimer?
     private static let actions: [String: Set<String>] = [
@@ -254,10 +305,12 @@ final class CUAService {
         "scroll":["element_token","direction","amount","x","y","capture_id"],
         "drag":["from_x","from_y","to_x","to_y","duration_ms","capture_id"],
         "set_value":["element_token","value"],
-        "invoke_menu":["path"]
+        "invoke_menu":["path"],
+        "set_window_frame":["x","y","width","height"]
     ]
-    init(policyURL: URL = CUAPolicy.defaultURL) {
+    init(policyURL: URL = CUAPolicy.defaultURL, guestMode: Bool = false) {
         self.policyURL = policyURL
+        self.guestMode = guestMode
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos:.utility))
         timer.schedule(deadline:.now() + 1, repeating:1)
         timer.setEventHandler { [weak self] in self?.sweep() }
@@ -271,14 +324,20 @@ final class CUAService {
         let integer: [String:Any] = ["type":"integer","minimum":1]
         let boolean: [String:Any] = ["type":"boolean"]
         let items: [(String,String,[String:Any],[String],Bool)] = [
+            ("cua_extension_list","List locally approved isolated browser and guest profiles.",[:],[],true),
+            ("cua_extension_open","Open a new isolated browser or a locally registered guest execution lease.",["profile_id":string,"request_id":string],["profile_id","request_id"],false),
+            ("cua_extension_call","Operate the leased browser or guest using its typed operations. No arbitrary code.",["session_id":string,"operation":string,"parameters":["type":"object","additionalProperties":true],"request_id":string],["session_id","operation","parameters","request_id"],false),
+            ("cua_extension_close","Release the isolated browser or guest lease.",["session_id":string],["session_id"],false),
             ("cua_capabilities","Report local opt-in and background-only CUA capabilities.",[:],[],true),
+            ("cua_launch_app","Launch an application with a separate locally granted launch permission; no arbitrary arguments.",["application":string,"request_id":string],["application","request_id"],false),
+            ("cua_receipt_status","Read an action dispatch receipt using its unique request ID. Dispatch is not verification.",["request_id":string],["request_id"],true),
             ("cua_list_apps","List running applications explicitly granted to this connection.",[:],[],true),
             ("cua_list_windows","List windows of an approved running application.",["pid":integer],["pid"],true),
             ("cua_create_session","Acquire an exclusive background window session. Keep its bearer ID private.",["pid":integer,"window_id":integer],["pid","window_id"],false),
             ("cua_list_sessions","List own session status. Shared connections cannot enumerate session IDs.",[:],[],true),
             ("cua_observe","Observe the exact leased window, including its accessibility tree and image.",["session_id":string,"include_screenshot":boolean],["session_id"],false),
             ("cua_act","Perform one background-only action on the leased window. Observe again to verify. No foreground fallback.",
-                ["session_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true]],["session_id","operation","parameters"],false),
+                ["session_id":string,"request_id":string,"operation":["type":"string","enum":actions.keys.sorted()],"parameters":["type":"object","additionalProperties":true]],["session_id","request_id","operation","parameters"],false),
             ("cua_verify","Verify bounded element predicates in the leased window; unknown is not success.",["session_id":string,"expect":["type":"array","minItems":1,"maxItems":8,"items":["type":"object"]],"timeout_ms":["type":"integer","minimum":0,"maximum":6000]],["session_id","expect"],true),
             ("cua_stop_session","Revoke a leased session; interrupted action outcomes may be unknown.",["session_id":string],["session_id"],false)
         ]
@@ -298,18 +357,50 @@ final class CUAService {
               info.st_size > 0, info.st_size <= 65536 else { throw CUAFailure("cua_disabled: local private policy required") }
         let data = try Data(contentsOf:policyURL)
         let policy = try JSONDecoder().decode(CUAPolicy.self, from:data)
-        guard policy.enabled, policy.driver.hasPrefix("/"), policy.grants.count <= 64,
+        guard policy.enabled, policy.driver.hasPrefix("/"), policy.grants.count <= 64, (policy.profiles ?? []).count <= 32,
+              Set((policy.profiles ?? []).map(\.id)).count == (policy.profiles ?? []).count,
               policy.driverSHA256.range(of:"^[0-9a-fA-F]{64}$",options:.regularExpression) != nil else {
             throw CUAFailure("cua_disabled: invalid or disabled local policy")
         }
         return (policy,data)
     }
+    static func allowedApplication(_ bundle: String) -> Bool {
+        !bundle.lowercased().contains("chat-to-computer-mcp") &&
+        !["com.trycua.driver","com.apple.systempreferences","com.apple.securityagent","com.apple.loginwindow","com.apple.systemuiserver","com.localfilesmcp.app","com.apple.windowserver","com.apple.screensaver.engine"].contains(bundle.lowercased())
+    }
+    private func canonicalRegularFile(_ path: String) -> Bool {
+        guard let raw = realpath(path,nil) else {return false}
+        defer {free(raw)}
+        var info=stat()
+        return String(cString:raw)==path && lstat(path,&info)==0 && (info.st_mode&S_IFMT)==S_IFREG
+    }
+    private func checkedDriver(_ policy: CUAPolicy) throws -> String {
+        let driverURL = URL(fileURLWithPath:policy.driver)
+        guard canonicalRegularFile(policy.driver), FileManager.default.isExecutableFile(atPath:policy.driver),
+              let fileSize = try? driverURL.resourceValues(forKeys:[.fileSizeKey]).fileSize,
+              fileSize > 0, fileSize <= 200_000_000 else { throw CUAFailure("cua_driver_unavailable") }
+        let hash = SHA256.hash(data:try Data(contentsOf:driverURL,options:.mappedIfSafe)).map { String(format:"%02x",$0) }.joined()
+        guard hash == policy.driverSHA256.lowercased() else { throw CUAFailure("cua_driver_integrity_mismatch") }
+        return policy.driver
+    }
+    private func ledger() throws -> CommandReceiptLedger {
+        gate.lock(); defer { gate.unlock() }
+        if let receiptLedger { return receiptLedger }
+        let ledger = try CommandReceiptLedger(fileURL:policyURL.deletingLastPathComponent().appendingPathComponent("cua-receipts-v1.json"))
+        receiptLedger = ledger
+        return ledger
+    }
+    static func requestID(_ raw: Any?) throws -> String {
+        guard let id = raw as? String, id.range(of:"^[A-Za-z0-9_-]{32,128}$",options:.regularExpression) != nil else {
+            throw CUAFailure("cua_request_id_required: use a unique unpredictable 32-128 character ID")
+        }
+        return id
+    }
     private func approvedApp(_ pid: Int32, policy: CUAPolicy, owner: String) throws -> (String,Date) {
         guard let app = NSRunningApplication(processIdentifier:pid), !app.isTerminated,
               let bundle = app.bundleIdentifier, let launched = app.launchDate,
               policy.permits(bundle,owner:owner), pid != getpid(),
-              !bundle.lowercased().contains("chat-to-computer-mcp"),
-              !["com.trycua.driver","com.apple.systempreferences","com.apple.securityagent","com.apple.loginwindow","com.apple.systemuiserver"].contains(bundle.lowercased()) else { throw CUAFailure("cua_application_not_approved") }
+              Self.allowedApplication(bundle) else { throw CUAFailure("cua_application_not_approved") }
         return (bundle,launched)
     }
     private func windows(_ pid: Int32) -> [[String:Any]] {
@@ -318,7 +409,7 @@ final class CUAService {
             guard (row[kCGWindowOwnerPID as String] as? Int32) == pid,
                   (row[kCGWindowLayer as String] as? Int) == 0,
                   let id = row[kCGWindowNumber as String] as? Int64, id > 0 else { return nil }
-            return ["window_id":id,"title":row[kCGWindowName as String] as? String ?? ""]
+            return ["window_id":id,"title":row[kCGWindowName as String] as? String ?? "", "bounds":row[kCGWindowBounds as String] as? [String:Any] ?? [:]]
         }
     }
     private func target(_ pid: Int32, _ window: Int64, policy: CUAPolicy, owner: String) throws -> CUATarget {
@@ -332,26 +423,35 @@ final class CUAService {
         gate.lock(); let live = !stopped && !revoked.contains(s.owner) && sessions[s.id] === s; gate.unlock()
         guard live, let (policy,data) = try? loadPolicy(), data == s.policyBytes,
               (try? target(s.target.pid,s.target.window,policy:policy,owner:s.owner)) == s.target else { return false }
-        if mutation && NSWorkspace.shared.frontmostApplication?.processIdentifier == s.target.pid { return false }
+        if mutation && !guestMode {
+            guard let foreground = NSWorkspace.shared.frontmostApplication, foreground.processIdentifier != s.target.pid else { return false }
+        }
         return true
     }
     private func sweep() {
-        gate.lock(); let all = Array(sessions.values); gate.unlock()
+        gate.lock(); let all = Array(sessions.values); let extended = Array(extensions.values); gate.unlock()
+        for ext in extended {
+            gate.lock(); let expired = !ext.busy && ProcessInfo.processInfo.systemUptime - ext.last > 300; gate.unlock()
+            if expired || !extensionAllowed(ext) { retireExtension(ext.id) }
+        }
         for s in all {
-            gate.lock(); let expired = !s.busy && Date().timeIntervalSince(s.last) > 300; gate.unlock()
+            gate.lock(); let expired = !s.busy && ProcessInfo.processInfo.systemUptime - s.last > 300; gate.unlock()
             if expired || !stillAllowed(s,mutation:false) { retire(s.id) }
         }
     }
     private func retire(_ id: String) {
-        gate.lock(); let s = sessions.removeValue(forKey:id); gate.unlock()
-        s?.worker.close()
+        gate.lock(); let s = sessions[id]; s?.worker.close(); sessions.removeValue(forKey:id); gate.unlock()
     }
     func revoke(owner: String) {
-        gate.lock(); revoked.insert(owner); let ids = sessions.values.filter { $0.owner == owner }.map(\.id); gate.unlock()
+        gate.lock(); revoked.insert(owner); let ids = sessions.values.filter { $0.owner == owner }.map(\.id); let ext = extensions.values.filter { $0.owner == owner }.map(\.id); let workers = launchWorkers.values.filter { $0.owner == owner }.map(\.worker); gate.unlock()
+        for worker in workers { worker.close() }
+        for id in ext { retireExtension(id) }
         for id in ids { retire(id) }
     }
     func stop() {
-        gate.lock(); stopped = true; let all = Array(sessions.values); sessions.removeAll(); gate.unlock()
+        gate.lock(); stopped = true; let all = Array(sessions.values); let workers = launchWorkers.values.map(\.worker); let ext = Array(extensions.values); extensions.removeAll(); sessions.removeAll(); gate.unlock()
+        for e in ext { e.worker.close() }
+        for worker in workers { worker.close() }
         for s in all { s.worker.close() }
     }
     private func int(_ raw: Any?, max: Int64) throws -> Int64 {
@@ -369,6 +469,14 @@ final class CUAService {
               JSONSerialization.isValidJSONObject(args),
               try JSONSerialization.data(withJSONObject:args).count <= 32768 else {
             throw CUAFailure("cua_invalid_action_arguments")
+        }
+        if name == "set_window_frame" {
+            guard Set(args.keys) == ["x","y","width","height"] else { throw CUAFailure("cua_invalid_window_frame") }
+            for (key,raw) in args {
+                guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite,
+                    (key == "width" || key == "height" ? (1...32768).contains(n.doubleValue) : (-32768...32768).contains(n.doubleValue)) else { throw CUAFailure("cua_invalid_window_frame") }
+            }
+            return
         }
         for (key,value) in args {
             switch key {
@@ -422,19 +530,137 @@ final class CUAService {
         }
         return predicates
     }
-    func call(_ name: String, args: [String:Any], owner: String?) throws -> ([[String:Any]],[String:Any]) {
+    private func extensionAllowed(_ e: ExtensionSession) -> Bool {
+        gate.lock(); let live = !stopped && !revoked.contains(e.owner) && extensions[e.id] === e; gate.unlock()
+        return live && (try? loadPolicy().1) == e.policyBytes
+    }
+    private func retireExtension(_ id: String) {
+        gate.lock(); let e = extensions[id]; gate.unlock()
+        e?.worker.close()
+        gate.lock(); extensions.removeValue(forKey:id); gate.unlock()
+    }
+    private func checkFile(_ path: String, hash: String, executable: Bool) throws {
+        let url = URL(fileURLWithPath:path)
+        guard canonicalRegularFile(path), (!executable || FileManager.default.isExecutableFile(atPath:path)),
+              let size = try? url.resourceValues(forKeys:[.fileSizeKey]).fileSize, size > 0, size <= 200_000_000,
+              SHA256.hash(data:try Data(contentsOf:url,options:.mappedIfSafe)).map({String(format:"%02x",$0)}).joined() == hash.lowercased()
+        else { throw CUAFailure("cua_extension_integrity_mismatch") }
+    }
+    private func extensionResult(_ reply: [String:Any], id: String) throws -> ([[String:Any]],[String:Any]) {
+        guard reply["isError"] as? Bool != true else {
+            throw CUAFailure("cua_extension_refused: " + (((reply["content"] as? [[String:Any]])?.first?["text"] as? String ?? "unknown").prefix(1000)))
+        }
+        guard let content = reply["content"] as? [[String:Any]], let structured = reply["structuredContent"] as? [String:Any],
+              try JSONSerialization.data(withJSONObject:structured).count <= 2_000_000 else { throw CUAFailure("invalid_extension_response") }
+        var safe: [[String:Any]] = []
+        for block in content {
+            if block["type"] as? String == "text", let text = block["text"] as? String, text.utf8.count <= 2_000_000 {
+                safe.append(["type":"text","text":text])
+            } else if block["type"] as? String == "image", let mime = block["mimeType"] as? String, ["image/png","image/jpeg"].contains(mime),
+                      let data = block["data"] as? String, data.utf8.count <= 8_000_000, Data(base64Encoded:data) != nil {
+                safe.append(["type":"image","mimeType":mime,"data":data])
+            }
+        }
+        guard !safe.isEmpty else { throw CUAFailure("invalid_extension_content") }
+        let outer: [String:Any] = ["session_id":id,"result":structured]
+        let encoded = try JSONSerialization.data(withJSONObject:outer)
+        return ([["type":"text","text":String(decoding:encoded,as:UTF8.self)]] + safe,outer)
+    }
+    private func extensionCall(_ name: String,args:[String:Any],owner:String,requestAlive:()->Bool) throws -> ([[String:Any]],[String:Any]) {
+        if name == "cua_extension_close" {
+            guard let id = args["session_id"] as? String else { throw CUAFailure("invalid_extension_session") }
+            gate.lock(); let owns = extensions[id]?.owner == owner; gate.unlock()
+            guard owns else { throw CUAFailure("unknown_extension_session") }
+            retireExtension(id)
+            return try output(["closed":true])
+        }
+        let (policy,bytes) = try loadPolicy()
+        let profiles = (policy.profiles ?? []).filter { $0.clients.contains(owner) }
+        if name == "cua_extension_list" {
+            return try output(["profiles":profiles.map { ["id":$0.id,"kind":$0.kind,"origins":$0.origins ?? []] as [String:Any] }])
+        }
+        if name == "cua_extension_open" {
+            guard let profileID = args["profile_id"] as? String, let p = profiles.first(where:{$0.id == profileID}),
+                  ["browser","guest"].contains(p.kind), let runtime = policy.extensionRuntime else { throw CUAFailure("extension_profile_not_approved") }
+            if p.kind == "guest" {
+                var info = stat()
+                guard let file = p.tokenFile, canonicalRegularFile(file), lstat(file,&info) == 0,
+                      info.st_uid == getuid(), info.st_mode & 0o077 == 0, info.st_size == 65 else {
+                    throw CUAFailure("guest_private_credential_required")
+                }
+            }
+            try checkFile(runtime.node,hash:runtime.nodeSHA256,executable:true)
+            try checkFile(runtime.worker,hash:runtime.workerSHA256,executable:false)
+            let request=try Self.requestID(args["request_id"]), receipt=try ledger()
+            sweep()
+            gate.lock()
+            guard !stopped, !revoked.contains(owner), sessions.count + extensions.count + launching.count < 8,
+                  p.kind != "guest" || !extensions.values.contains(where:{$0.profile.kind == "guest" && $0.profile.port == p.port}) else {
+                gate.unlock(); throw CUAFailure("extension_capacity_or_guest_busy")
+            }
+            let worker: CUAWorker
+            do {
+                try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+                worker = try CUAWorker(driver:runtime.node,application:"",extensionRuntime:runtime,extensionProfile:p)
+            } catch { gate.unlock(); throw error }
+            let e=ExtensionSession(owner:owner,profile:p,policyBytes:bytes,worker:worker)
+            extensions[e.id]=e; gate.unlock()
+            do {
+                let reply=try worker.call("extension_open",[:],allowed:{requestAlive() && self.extensionAllowed(e)})
+                guard requestAlive(), extensionAllowed(e) else { throw CUAFailure("extension_open_interrupted") }
+                let out=try extensionResult(reply,id:e.id)
+                try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil)
+                gate.lock(); e.busy=false; e.last=ProcessInfo.processInfo.systemUptime; gate.unlock()
+                return out
+            } catch { retireExtension(e.id); throw error }
+        }
+        guard name == "cua_extension_call",let id=args["session_id"] as? String,let op=args["operation"] as? String,
+              let params=args["parameters"] as? [String:Any], try JSONSerialization.data(withJSONObject:params).count <= 32768 else { throw CUAFailure("invalid_extension_call") }
+        gate.lock()
+        guard let e=extensions[id],e.owner == owner,!e.busy,ProcessInfo.processInfo.systemUptime-e.last<=300 else {
+            gate.unlock();throw CUAFailure("unknown_or_busy_extension_session")
+        }
+        e.busy=true;gate.unlock()
+        defer {gate.lock();e.busy=false;e.last=ProcessInfo.processInfo.systemUptime;gate.unlock()}
+        let browserOps=Set(["observe","navigate","click","fill","press","select","scroll","verify","back","forward","hover"])
+        let guestOps=Set(["cua_capabilities","cua_list_apps","cua_list_windows","cua_launch_app","cua_create_session","cua_observe","cua_act","cua_verify","cua_stop_session","cua_receipt_status"])
+        guard (e.profile.kind == "browser" ? browserOps : guestOps).contains(op), extensionAllowed(e),requestAlive() else {throw CUAFailure("extension_operation_not_allowed")}
+        let readOnly=Set(["observe","verify","cua_capabilities","cua_list_apps","cua_list_windows","cua_observe","cua_verify","cua_receipt_status"])
+        let request=try Self.requestID(args["request_id"]),receipt=try ledger()
+        if !readOnly.contains(op) {try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)}
+        var recoverable = false
+        do {
+            let reply=try e.worker.call("extension_call",["operation":op,"parameters":params],allowed:{requestAlive() && self.extensionAllowed(e)})
+            guard requestAlive(),extensionAllowed(e) else {throw CUAFailure("extension_action_outcome_unknown")}
+            if reply["isError"] as? Bool == true, (reply["structuredContent"] as? [String:Any])?["recoverable"] as? Bool == true {
+                recoverable = true
+                if !readOnly.contains(op) {try receipt.finish(scopeID:"cua",requestID:request,state:"launch_failed",exitCode:nil)}
+            }
+            let result=try extensionResult(reply,id:id)
+            if !readOnly.contains(op) {try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil)}
+            return result
+        }catch{if !recoverable {retireExtension(id)};throw error}
+    }
+    func call(_ name: String, args: [String:Any], owner: String?, requestAlive: () -> Bool = { true }) throws -> ([[String:Any]],[String:Any]) {
         let owner = owner ?? CUAPolicy.sharedOwner
         gate.lock(); let allowedOwner = !stopped && !revoked.contains(owner); gate.unlock()
-        guard allowedOwner else { throw CUAFailure("cua_service_stopped_or_revoked") }
+        guard allowedOwner, requestAlive() else { throw CUAFailure("cua_service_stopped_or_revoked") }
         guard let def = Self.definitions().first(where: { $0["name"] as? String == name }),
               let schema = def["inputSchema"] as? [String:Any], let props = schema["properties"] as? [String:Any],
               let required = schema["required"] as? [String],
               Set(args.keys).isSubset(of:Set(props.keys)), required.allSatisfy({ args[$0] != nil }) else { throw CUAFailure("cua_invalid_arguments") }
         if name == "cua_capabilities" {
             let policy = try? loadPolicy().0
-            let enabled = policy?.grants.contains(where: { $0.clients.contains(owner) }) == true
+            let enabled = policy?.grants.contains(where: { $0.clients.contains(owner) }) == true || (!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true)
             return try output(["enabled":enabled,"background_only":true,"driver":"cua-driver","driver_version":"0.61.0","driver_mode":"bounded_direct","identity":owner == CUAPolicy.sharedOwner ? "shared_connection_not_chat_identity" : "verified_oauth_client",
-                "operations":Self.actions.keys.sorted(),"requires_local_grant":true])
+                "operations":Self.actions.keys.sorted(),"requires_local_grant":true,"accessibility":AXIsProcessTrusted(),"screen_recording":CGPreflightScreenCaptureAccess(),"snapshot_ttl_seconds":30,"guest_mode":guestMode,"extension_profiles_enabled":!guestMode && policy?.profiles?.contains(where: { $0.clients.contains(owner) }) == true])
+        }
+        if name.hasPrefix("cua_extension_") {
+            guard !guestMode else { throw CUAFailure("nested_guest_extensions_disabled") }
+            return try extensionCall(name,args:args,owner:owner,requestAlive:requestAlive)
+        }
+        if name == "cua_receipt_status" {
+            return try output(try ledger().ownReceipt(scopeID:"cua",requestID:Self.requestID(args["request_id"]),ownerID:owner))
         }
         if name == "cua_stop_session" {
             guard let id = args["session_id"] as? String else { throw CUAFailure("cua_invalid_session") }
@@ -445,12 +671,43 @@ final class CUAService {
         }
         let (policy,bytes) = try loadPolicy()
         guard policy.grants.contains(where: { $0.clients.contains(owner) }) else { throw CUAFailure("cua_client_not_approved") }
+        if name == "cua_launch_app" {
+            guard let application = args["application"] as? String, Self.allowedApplication(application),
+                  policy.permitsLaunch(application,owner:owner) else { throw CUAFailure("cua_launch_not_approved") }
+            let request = try Self.requestID(args["request_id"])
+            let receipt = try ledger()
+            let driver = try checkedDriver(policy)
+            gate.lock()
+            guard !stopped, !revoked.contains(owner), !launching.contains(application), sessions.count + extensions.count + launching.count < 8,
+                  !sessions.values.contains(where:{ $0.target.application == application }) else {
+                gate.unlock(); throw CUAFailure("cua_target_busy_or_capacity")
+            }
+            launching.insert(application); gate.unlock()
+            defer { gate.lock(); launching.remove(application); launchWorkers.removeValue(forKey:application); gate.unlock() }
+            try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+            let worker = try CUAWorker(driver:driver,application:application,launch:true)
+            defer { worker.close() }
+            gate.lock(); launchWorkers[application] = (owner,worker); gate.unlock()
+            func allowed() -> Bool {
+                gate.lock(); let live = !stopped && !revoked.contains(owner); gate.unlock()
+                return live && requestAlive() && (try? loadPolicy().1) == bytes
+            }
+            let result = try worker.call("launch_app",["bundle_id":application],allowed:allowed)
+            guard allowed(), result["isError"] as? Bool != true,
+                  let details = result["structuredContent"] as? [String:Any],
+                  let pid = details["pid"] as? Int32,
+                  (try? approvedApp(pid,policy:policy,owner:owner).0) == application else {
+                throw CUAFailure("cua_launch_unverified_or_refused: inspect actual state; do not replay")
+            }
+            try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil)
+            return try output(["pid":pid,"application":application,"windows":windows(pid),"request_id":request,"background_only":true])
+        }
         if name == "cua_list_apps" {
             let apps = NSWorkspace.shared.runningApplications.compactMap { app -> [String:Any]? in
                 guard let (bundle,_) = try? approvedApp(app.processIdentifier,policy:policy,owner:owner) else { return nil }
                 return ["pid":app.processIdentifier,"application":bundle,"name":app.localizedName ?? bundle]
             }
-            return try output(["apps":apps])
+            return try output(["apps":apps,"approved_launch_applications":policy.grants.filter { ($0.launchClients ?? []).contains(owner) && Self.allowedApplication($0.application) }.map(\.application)])
         }
         if name == "cua_list_windows" {
             let pid = Int32(try int(args["pid"],max:Int64(Int32.max)))
@@ -471,38 +728,37 @@ final class CUAService {
             let t = try target(pid,window,policy:policy,owner:owner)
             sweep()
             gate.lock(); defer { gate.unlock() }
-            guard !stopped, !revoked.contains(owner), sessions.count < 8, !sessions.values.contains(where: { $0.target.pid == pid }) else { throw CUAFailure("cua_target_busy_or_capacity") }
-            let driverURL = URL(fileURLWithPath:policy.driver).resolvingSymlinksInPath()
-            guard driverURL.path == policy.driver, FileManager.default.isExecutableFile(atPath:policy.driver),
-                  let fileSize = try? driverURL.resourceValues(forKeys:[.fileSizeKey]).fileSize,
-                  fileSize > 0, fileSize <= 200_000_000 else { throw CUAFailure("cua_driver_unavailable") }
-            let hash = SHA256.hash(data:try Data(contentsOf:driverURL,options:.mappedIfSafe)).map { String(format:"%02x",$0) }.joined()
-            guard hash == policy.driverSHA256.lowercased() else { throw CUAFailure("cua_driver_integrity_mismatch") }
-            let worker = try CUAWorker(driver:policy.driver,application:t.application)
+            guard !stopped, !revoked.contains(owner), sessions.count + extensions.count + launching.count < 8, !launching.contains(t.application), !sessions.values.contains(where: { $0.target.pid == pid }) else { throw CUAFailure("cua_target_busy_or_capacity") }
+            let worker = try CUAWorker(driver:checkedDriver(policy),application:t.application)
             let s = Session(owner:owner,target:t,policyBytes:bytes,worker:worker)
             sessions[s.id] = s
             return try output(["session_id":s.id,"pid":pid,"window_id":window,"background_only":true,"idle_timeout_seconds":300])
         }
         guard let id = args["session_id"] as? String else { throw CUAFailure("cua_invalid_session") }
         gate.lock()
-        guard let s = sessions[id], s.owner == owner, !s.busy, !stopped, Date().timeIntervalSince(s.last) <= 300 else {
+        guard let s = sessions[id], s.owner == owner, !s.busy, !stopped, ProcessInfo.processInfo.systemUptime - s.last <= 300 else {
             gate.unlock(); throw CUAFailure("cua_unknown_unauthorized_or_busy_session")
         }
         s.busy = true; gate.unlock()
-        defer { gate.lock(); s.busy = false; s.last = Date(); gate.unlock() }
+        defer { gate.lock(); s.busy = false; s.last = ProcessInfo.processInfo.systemUptime; gate.unlock() }
         let mutation = name == "cua_act"
-        guard stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_target_unavailable_or_user_active") }
+        guard stillAllowed(s,mutation:mutation), requestAlive() else { s.snapshot = nil; throw CUAFailure("cua_target_unavailable_or_user_active") }
         var driverArgs: [String:Any] = ["pid":s.target.pid,"window_id":s.target.window]
         let driverTool: String
+        var actionReceipt: (CommandReceiptLedger,String)?
         if mutation {
             guard let snapshot = s.snapshot, let operation = args["operation"] as? String,
                   let parameters = args["parameters"] as? [String:Any] else { throw CUAFailure("cua_observe_before_action") }
             try Self.validateAction(operation,parameters)
-            try snapshot.validate(parameters)
+            if operation != "set_window_frame" { try snapshot.validate(parameters) } else { try snapshot.validate([:]) }
+            let request = try Self.requestID(args["request_id"])
+            let receipt = try ledger()
+            try receipt.reserve(scopeID:"cua",requestID:request,ownerID:owner)
+            actionReceipt = (receipt,request)
             for (key,value) in parameters where key != "capture_id" || operation == "click" { driverArgs[key] = value }
-            if operation != "invoke_menu", let revision = snapshot.revision { driverArgs["ui_tree_revision"] = revision }
-            if operation != "set_value" { driverArgs["delivery_mode"] = "background" }
-            if operation != "set_value" && operation != "invoke_menu" { driverArgs["scope"] = "window" }
+            if operation != "invoke_menu" && operation != "set_window_frame", let revision = snapshot.revision { driverArgs["ui_tree_revision"] = revision }
+            if operation != "set_value" && operation != "set_window_frame" { driverArgs["delivery_mode"] = "background" }
+            if operation != "set_value" && operation != "invoke_menu" && operation != "set_window_frame" { driverArgs["scope"] = "window" }
             driverTool = operation
             s.snapshot = nil
         } else if name == "cua_verify" {
@@ -529,8 +785,8 @@ final class CUAService {
             s.snapshot = nil
         }
         do {
-            let reply = try s.worker.call(driverTool,driverArgs,allowed:{ self.stillAllowed(s,mutation:mutation) })
-            guard self.stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_action_outcome_unknown") }
+            let reply = try s.worker.call(driverTool,driverArgs,allowed:{ requestAlive() && self.stillAllowed(s,mutation:mutation) })
+            guard requestAlive(), self.stillAllowed(s,mutation:mutation) else { throw CUAFailure("cua_action_outcome_unknown") }
             guard reply["isError"] as? Bool != true else { throw CUAFailure("cua_driver_rejected: " + ((reply["content"] as? [[String:Any]])?.first?["text"] as? String ?? "background unavailable").prefix(2000)) }
             guard let blocks = reply["content"] as? [[String:Any]], !blocks.isEmpty else { throw CUAFailure("cua_driver_invalid_content") }
             var safe: [[String:Any]] = []
@@ -551,6 +807,7 @@ final class CUAService {
             // Images are only returned as MCP image blocks, not duplicated in JSON.
             let metadata = structured.filter { !["screenshot","screenshot_base64","image","image_data","screenshot_file_path"].contains($0.key) }
             guard try JSONSerialization.data(withJSONObject:metadata).count <= 2_000_000 else { throw CUAFailure("cua_driver_metadata_too_large") }
+            if let (receipt,request) = actionReceipt { try receipt.finish(scopeID:"cua",requestID:request,state:"exited",exitCode:nil) }
             return (safe,["session_id":id,"operation":driverTool,"background_only":true,"verification_required":mutation,"driver_result":metadata])
         } catch {
             // Do not replay actions after timeout, loss of transport or

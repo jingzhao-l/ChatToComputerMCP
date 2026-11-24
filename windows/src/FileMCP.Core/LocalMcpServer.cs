@@ -28,7 +28,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
     private readonly LocalTools _tools;
     private readonly WindowsOAuthServer? _oauth;
     private readonly string? _publicHost;
-    private readonly CuaService _cua = new();
+    private readonly CuaService _cua;
+    private readonly bool _cuaGuest;
     private readonly object _ownerGate = new();
     private readonly SemaphoreSlim _ownerAdmission = new(1, 1);
     private readonly Dictionary<string, string> _ownerBySession = new(StringComparer.Ordinal);
@@ -44,9 +45,12 @@ public sealed class LocalMcpServer : IAsyncDisposable
         IReadOnlyList<ApprovedWorkspace>? additionalWorkspaces = null, int maxConcurrentCommands = 8,
         CommandReceiptLedger? receiptLedger = null,
         WindowsOAuthServer? oauth = null, string? publicHost = null,
-        bool enableGitPush = false, bool enableCodexHistory = false)
+        bool enableGitPush = false, bool enableCodexHistory = false, bool cuaGuest = false, string? cuaPolicyPath = null)
     {
         if (Encoding.UTF8.GetByteCount(localAuthToken) < 32) throw new FileMcpException("Local MCP authentication token is too short");
+        if(cuaGuest&&(enableCommands||enableGitPush||enableCodexHistory||additionalWorkspaces?.Count>0||oauth is not null||publicHost is not null))
+            throw new FileMcpException("Isolated guest gateway is CUA-only and loopback-only");
+        _cuaGuest=cuaGuest;_cua=new CuaService(policyPath:cuaPolicyPath,guestMode:cuaGuest);
         _port = port; _localAuthToken = localAuthToken; _log = log;
         _oauth = oauth;
         _publicHost = publicHost;
@@ -92,6 +96,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
 
     private JsonArray PublishedToolDefinitions(WindowsOAuthServer.VerifiedClient? verified = null)
     {
+        if(_cuaGuest)return new JsonArray(CuaService.Definitions().Where(d=>d?["name"]?.GetValue<string>()?.StartsWith("cua_extension_",StringComparison.Ordinal)==false).Select(d=>d!.DeepClone()).ToArray());
         var tools = _tools.ToolDefinitions;
         foreach (var definition in CuaService.Definitions()) tools.Add(definition!.DeepClone());
         if (_approved.Count == 0) return tools;
@@ -259,7 +264,17 @@ public sealed class LocalMcpServer : IAsyncDisposable
                     byte[] response;
                     try
                     {
-                        response = await ProcessAsync(parsed.Request!, cancellationToken).ConfigureAwait(false);
+                        if(IsCuaRequest(parsed.Request!))
+                        {
+                            using var request = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            using var monitor = new Timer(_ =>
+                            {
+                                try { if(client.Client.Poll(0, SelectMode.SelectRead) && client.Client.Available == 0) request.Cancel(); }
+                                catch { try { request.Cancel(); } catch { } }
+                            },null,0,100);
+                            response = await ProcessAsync(parsed.Request!, request.Token).ConfigureAwait(false);
+                        }
+                        else response = await ProcessAsync(parsed.Request!, cancellationToken).ConfigureAwait(false);
                     }
                     catch
                     {
@@ -349,6 +364,16 @@ public sealed class LocalMcpServer : IAsyncDisposable
         return new(HttpParseStatus.Request, new HttpRequestData(method, path, headers, body, query));
     }
 
+    private static bool IsCuaRequest(HttpRequestData request)
+    {
+        try
+        {
+            var message=JsonNode.Parse(request.Body);
+            return message?["method"]?.GetValue<string>()=="tools/call" &&
+                message?["params"]?["name"]?.GetValue<string>()?.StartsWith("cua_",StringComparison.Ordinal)==true;
+        }
+        catch{return false;}
+    }
     private async Task<byte[]> ProcessAsync(HttpRequestData request, CancellationToken cancellationToken)
     {
         if (_oauth is not null)
@@ -425,7 +450,8 @@ public sealed class LocalMcpServer : IAsyncDisposable
         CancellationToken cancellationToken, WindowsOAuthServer.VerifiedClient? verified = null)
     {
         if (parameters["name"] is not JsonValue nameNode || !nameNode.TryGetValue<string>(out var name)) return JsonRpcError(id, -32602, "Missing tool name", status: modern ? 400 : 200);
-        if (!_tools.HasTool(name) && !CuaService.Definitions().Any(d => d?["name"]?.GetValue<string>() == name) && !(_approved.Count > 0 && name is ("list_workspaces" or "workspace_call")))
+        if (_cuaGuest ? !PublishedToolDefinitions().Any(d=>d?["name"]?.GetValue<string>()==name) :
+            !_tools.HasTool(name) && !CuaService.Definitions().Any(d => d?["name"]?.GetValue<string>() == name) && !(_approved.Count > 0 && name is ("list_workspaces" or "workspace_call")))
             return JsonRpcError(id, -32602, $"Unknown tool: {name}");
         JsonObject arguments;
         if (parameters["arguments"] is null) arguments = new JsonObject();

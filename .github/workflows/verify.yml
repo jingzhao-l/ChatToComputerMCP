@@ -81,6 +81,7 @@ jobs:
             -framework SystemConfiguration \
             macos/ProcessRunner.swift \
             macos/Ripgrep.swift \
+            macos/CUA.swift \
             macos/LocalMCPServer.swift \
             macos/CodexHistory.swift \
             macos/CommandReceiptLedger.swift \
@@ -127,6 +128,12 @@ jobs:
 
       - name: CUA security and transport regression
         run: bash tests/test_swift_cua.sh
+
+      - name: Real headless browser and native guest transport regression
+        run: |
+          npm ci --prefix cua-runtime --ignore-scripts --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/cua-runtime/browsers" node cua-runtime/node_modules/playwright/cli.js install --only-shell chromium
+          bash tests/test_swift_cua_p4.sh
 
       - name: Build app
         run: ./build_macos_app.sh
@@ -204,6 +211,18 @@ jobs:
       - name: Windows integration tests
         shell: pwsh
         run: ./tests/test_windows_runtime.ps1
+
+      - name: Real headless browser and native guest transport regression
+        shell: pwsh
+        run: |
+          npm ci --prefix cua-runtime --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "Playwright install failed" }
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $PWD 'cua-runtime/browsers'
+          node cua-runtime/node_modules/playwright/cli.js install --only-shell chromium
+          if ($LASTEXITCODE -ne 0) { throw "Chromium install failed" }
+          $env:CTCMCP_CUA_TEST_SERVER = (Resolve-Path 'windows/tests/FileMCP.Core.Tests/bin/Release/net8.0-windows/FileMCP.Core.Tests.exe').Path
+          node tests/test_cua_p4.mjs
+          if ($LASTEXITCODE -ne 0) { throw "CUA P4 regression failed" }
 
       - name: Build Windows x64 release
         shell: pwsh

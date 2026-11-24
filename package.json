@@ -24,6 +24,9 @@
   },
   "files": [
     "bin/",
+    "cua-runtime/package.json",
+    "cua-runtime/package-lock.json",
+    "cua-runtime/worker.mjs",
     "macos/",
     "vendor/",
     "assets/branding/chat-to-computer-mcp/",

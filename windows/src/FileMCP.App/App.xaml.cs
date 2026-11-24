@@ -24,6 +24,21 @@ public partial class App : System.Windows.Application
             Shutdown(1);
             return;
         }
+        if (e.Args.SequenceEqual(new[] {"--cua-guest-server"},StringComparer.Ordinal))
+        {
+            ShutdownMode=ShutdownMode.OnExplicitShutdown;
+            var guestCancellation=new CancellationTokenSource();
+            Exit+=(_,_)=>guestCancellation.Cancel();
+            SessionEnding+=(_,_)=>guestCancellation.Cancel();
+            _=Task.Run(async()=>{
+                int code=0;
+                try{await FileMCP.Core.CuaGuestHost.RunAsync(guestCancellation.Token);}
+                catch(OperationCanceledException)when(guestCancellation.IsCancellationRequested){}
+                catch{code=1;}
+                try{await Dispatcher.InvokeAsync(()=>Shutdown(code));}catch{}
+            });
+            return;
+        }
         if (e.Args.Contains("--selftest-startup", StringComparer.Ordinal))
         {
             try { WindowsStartup.SelfTestIsolatedPolicy(); Shutdown(0); }

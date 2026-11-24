@@ -488,7 +488,14 @@ function main() {
         return;
       }
     case 'status':return status();
-    case 'cua':return cuaCommand(subcommand,rest);
+    case 'cua':
+      if(subcommand==='guest-serve'){
+        if(rest.length)throw Error('cua guest-serve takes no arguments');
+        const native=selectedApp();
+        const exe=platform==='darwin'?path.join(native,'Contents','MacOS',name):native;
+        return run(exe,['--cua-guest-server'],{timeout:undefined,windowsHide:true});
+      }
+      return cuaCommand(subcommand,rest);
     case 'update':return update(subcommand,rest);
     case 'launchagent':return launchagent(subcommand,rest);
     case 'startup':return startup(subcommand,rest);

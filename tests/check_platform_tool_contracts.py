@@ -33,7 +33,7 @@ required = {
 mac_cua = set(re.findall(r'\("(cua_[a-z_]+)",', (root / 'macos/CUA.swift').read_text()))
 win_cua = set(re.findall(r'\bDef\("(cua_[a-z_]+)",', (root / 'windows/src/FileMCP.Core/CuaService.cs').read_text()))
 cua = {'cua_capabilities','cua_list_apps','cua_list_windows','cua_create_session','cua_list_sessions',
-       'cua_observe','cua_act','cua_verify','cua_stop_session'}
+       'cua_observe','cua_act','cua_verify','cua_stop_session','cua_launch_app','cua_receipt_status','cua_extension_list','cua_extension_open','cua_extension_call','cua_extension_close'}
 assert mac_cua == win_cua == cua, (mac_cua, win_cua, cua)
 if mac_names != windows_names or mac_names != required:
     raise SystemExit(
