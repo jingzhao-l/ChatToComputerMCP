@@ -232,6 +232,12 @@ do {
     precondition(error is ProcessRunnerError, "unexpected spawn failure: \(error)")
 }
 print("process-posix-cwd-action: ok")
+let cancelledMarker = cwdFixture.appendingPathComponent("cancelled-child").path
+let cancelled = try ProcessRunner.run(executable: "/usr/bin/touch", arguments: [cancelledMarker],
+    cwd: cwdFixture.path, timeoutSeconds: 3, shouldCancel: { true })
+precondition(cancelled.exitCode == 130 && !FileManager.default.fileExists(atPath: cancelledMarker),
+    "already-cancelled process must never launch")
+print("process-pre-spawn-cancellation: ok")
 SWIFT
 
 swiftc -o "$TMP_DIR/process-test" \
@@ -645,10 +651,23 @@ let immediateStopConfig = LocalMCPConfiguration(
     allowedDirectory: root.path, healthAddress: "127.0.0.1:0",
     gitUserName: "", gitUserEmail: "", enableCommands: false
 )
+let immediateStopStart = Date()
+immediateStopRuntime.start(immediateStopConfig)
+// All queued starts from before this Stop must be cancelled.
 immediateStopRuntime.start(immediateStopConfig)
 immediateStopRuntime.stop()
-Thread.sleep(forTimeInterval: 0.5)
-precondition(immediateStopRuntime.state == .stopped, "immediate stop after start must cancel the queued startup")
+let immediateStopDrained = DispatchSemaphore(value: 0)
+DispatchQueue.global().async {
+    // A queue barrier excludes the initial .stopped state before startup
+    // ran, and permits bounded subprocess cleanup if startup had begun.
+    _ = immediateStopRuntime.cloudHealthSnapshot
+    immediateStopDrained.signal()
+}
+precondition(immediateStopDrained.wait(timeout: .now() + 2.5) == .success,
+    "immediate stop must drain queued startup within the cancellation bound")
+waitFor({ immediateStopRuntime.state == .stopped }, timeout: 2.5, label: "immediate stop cleanup")
+precondition(Date().timeIntervalSince(immediateStopStart) < 3.0,
+    "immediate stop must cancel rather than complete the slow startup")
 print("runtime-immediate-stop: ok")
 
 let slowRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
@@ -671,6 +690,13 @@ unsetenv("LOG_HTTP_RAW_UNSAFE")
 precondition(slowRuntime.state == .stopped, "cancelled bootstrap must end stopped")
 precondition(shutdownElapsed < 2.5, "bootstrap shutdown took too long: \(shutdownElapsed)s")
 print("runtime-bootstrap-cancel: ok")
+// Restart the same cancelled runtime, profile and port. This requires
+// cleanup of the listener, process and profile lock, not just a state flag.
+immediateStopRuntime.start(immediateStopConfig)
+waitFor({ immediateStopRuntime.state == .running }, timeout: 5, label: "restart after immediate stop")
+immediateStopRuntime.stop()
+waitFor({ immediateStopRuntime.state == .stopped }, timeout: 3, label: "restart cleanup")
+print("runtime-immediate-stop-restart: ok")
 
 let cloudflareRuntime = LocalMCPRuntime(profileDirectory: profileDirectory, dataDirectory: root.appendingPathComponent("isolated-runtime-data"))
 var cloudflareLog = ""

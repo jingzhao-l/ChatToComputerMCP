@@ -157,6 +157,7 @@ final class LocalMCPRuntime {
     private var profileLock: ProfileLock?
     private var sleepActivity: NSObjectProtocol?
     private var requestedStop = false
+    private var stopGeneration: UInt64 = 0
     private let recentOutputLock = NSLock()
     private var recentOutputLines: [String] = []
     private var cloudflaredTokenFile: String?
@@ -193,8 +194,12 @@ final class LocalMCPRuntime {
     }
 
     func start(_ configuration: LocalMCPConfiguration) {
+        stopRequestLock.lock()
+        let generation = stopGeneration
+        stopRequestLock.unlock()
         queue.async { [weak self] in
-            self?.startOnQueue(configuration)
+            guard let self, self.canStart(generation: generation) else { return }
+            self.startOnQueue(configuration)
         }
     }
 
@@ -397,10 +402,9 @@ final class LocalMCPRuntime {
 
     private func startOnQueue(_ configuration: LocalMCPConfiguration) {
         guard state == .stopped || isFailedState(state) else { return }
-        if isStopRequested {
-            setStopRequested(false)
-            return
-        }
+        // Only the stop/cleanup path may clear the cancellation flag. A
+        // queued start cannot consume a stop requested for another start.
+        guard !isStopRequested else { return }
         tunnelAttempt = UUID()
         transportRecoveryID = UUID()
         transportStarted = false
@@ -422,6 +426,10 @@ final class LocalMCPRuntime {
             let lock = ProfileLock(profile: configuration.profile)
             try lock.acquire()
             profileLock = lock
+            if isStopRequested {
+                finishStop()
+                return
+            }
 
             let localAuthToken = try makeLocalAuthToken()
             let isCloudflare = configuration.provider == .cloudflare
@@ -485,8 +493,18 @@ final class LocalMCPRuntime {
                 oauth: oauth,
                 log: { [weak self] text in self?.emitLog(text) }
             )
-            try server.start()
+            // Own the constructed server before any startup failure, so
+            // cancellation and errors share the same cleanup path.
             self.server = server
+            if isStopRequested {
+                finishStop()
+                return
+            }
+            try server.start()
+            if isStopRequested {
+                finishStop()
+                return
+            }
 
             if isCloudflare {
                 restartTransport = { [weak self] in try self?.startCloudflared(configuration) }
@@ -515,6 +533,10 @@ final class LocalMCPRuntime {
                 "--mcp-server-url", "http://127.0.0.1:\(configuration.port)/mcp",
                 "--health-listen-addr", healthAddress,
             ]
+            if isStopRequested {
+                finishStop()
+                return
+            }
             emitLog("Configuring Secure MCP Tunnel…\n")
             let initResult = try ProcessRunner.run(
                 executable: tunnelClient,
@@ -580,6 +602,10 @@ final class LocalMCPRuntime {
     private func launchOpenAITransport(executable: String, configuration: LocalMCPConfiguration,
                                        profileDirectory: String, healthAddress: String,
                                        environment: [String: String], sensitiveValues: [String]) throws {
+        if isStopRequested {
+            finishStop()
+            return
+        }
         // The tunnel-client health command reads this private, per-run
         // locator to report actual successful OpenAI control-plane polls.
         tunnelAttempt = UUID()
@@ -613,6 +639,11 @@ final class LocalMCPRuntime {
             }
         )
         tunnelProcess = managed
+        if isStopRequested {
+            managed.stopSynchronously()
+            finishStop()
+            return
+        }
         transportStarted = true
         setState(.running)
         notifyCloudHealth(.awaitingPoll)
@@ -621,6 +652,10 @@ final class LocalMCPRuntime {
     }
 
     private func startCloudflared(_ configuration: LocalMCPConfiguration) throws {
+        if isStopRequested {
+            finishStop()
+            return
+        }
         tunnelAttempt = UUID()
         healthCheckGeneration = UUID()
         let cloudflared = try CloudflareCLI.locate()
@@ -680,6 +715,11 @@ final class LocalMCPRuntime {
             }
         )
         tunnelProcess = managed
+        if isStopRequested {
+            managed.stopSynchronously()
+            finishStop()
+            return
+        }
         emitLog("Waiting for Cloudflare to register the tunnel connection. Public hostname \(configuration.cloudflareHostname) must route to this tunnel and, for token tunnels, point at http://127.0.0.1:\(configuration.port) in the Cloudflare dashboard. Command execution: \(configuration.enableCommands ? "enabled" : "disabled").\n")
     }
 
@@ -917,8 +957,15 @@ final class LocalMCPRuntime {
         return requestedStop
     }
 
+    private func canStart(generation: UInt64) -> Bool {
+        stopRequestLock.lock()
+        defer { stopRequestLock.unlock() }
+        return generation == stopGeneration && !requestedStop
+    }
+
     private func setStopRequested(_ value: Bool) {
         stopRequestLock.lock()
+        if value { stopGeneration &+= 1 }
         requestedStop = value
         stopRequestLock.unlock()
     }

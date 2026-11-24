@@ -14,7 +14,7 @@ Native test results and unverified external steps are kept distinct.
 | OpenAI Secure MCP Tunnel | Implemented | Implemented | Requires user Platform credentials |
 | Cloudflare remotely managed tunnel token | Implemented | Implemented in main | Windows token-file process tests, not live Cloudflare account verification |
 | Cloudflare named tunnel management | Implemented | Implemented in main | Fake Cloudflare CLI process integration; real account test still needed |
-| Cloudflare OAuth PKCE and per-client permissions | Implemented | Implemented in main | Real Windows HTTP test with two OAuth clients, not WAN provider E2E |
+| Cloudflare OAuth PKCE and per-client permissions | Implemented | Implemented in main | Real Windows HTTP test with two OAuth clients, OAuth discovery metadata/challenge and response security headers; not WAN provider E2E |
 | Credentials | macOS Keychain | Windows Credential Manager | Windows product namespace is independent; Mac still uses legacy identity for credential continuity |
 | Login start, auto-connect, crash recovery, always-on | launchd user LaunchAgent | HKCU user startup supervisor | Explicit opt-in; not pre-login Windows system services |
 | npm local source installer and updater | Implemented | Implemented | Shared CLI and local native compile |
@@ -25,9 +25,9 @@ Native test results and unverified external steps are kept distinct.
 | Restricted Linux container shell | Implemented | Implemented | Docker Desktop and approved image required; actual engine validation pending |
 | Seven-area native GUI | Implemented | Implemented | 210 Mac layout cases, native x64 WPF smoke; manual device acceptance pending |
 | Per-ChatGPT-conversation cryptographic identity in shared OpenAI Tunnel | NOT available | NOT available | Shared tunnel credential is not a per-conversation principal |
-| Bounded HTTP connections and absolute read/write deadlines | 32 / 15s / 15s | 32 / 15s / 15s | Windows C# real loopback regression on Mac; native CI gate |
-| CPU-specific base tool packaging | Apple Silicon / Intel | x64 / ARM64 | Official pinned vendor binaries; Intel Rosetta version checks and native CI gate; native architecture acceptance separate |
-| Windows ARM64 native execution | N/A | Native hosted CI added; result pending | Native base runtime, app and installer checks; physical-device and CUA acceptance remain separate |
+| Bounded HTTP connections and absolute read/write deadlines | 32 / 15s / 15s | 32 / 15s / 15s | Windows C# real loopback and blocked OS write regression on Mac and Windows x64/ARM64; native CI gate |
+| CPU-specific base tool packaging | Apple Silicon / Intel | x64 / ARM64 | Official pinned vendor binaries; Intel Rosetta version checks and native Intel hosted build/runtime gate passed at 9743769; physical-device acceptance separate |
+| Windows ARM64 native execution | N/A | Native hosted CI passed at 9743769 | Native base runtime, app and installer checks; physical-device and CUA acceptance remain separate |
 | Signed/native notarized public installers | NOT completed | NOT completed | Source-only npm distribution is not signed native distribution |
 
 ## Windows parity implementation — 2026-11-24

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix Intel SDK process working-directory compatibility without changing gateway cwd; reject already-cancelled subprocesses before spawn.
+- Prevent stale queued Mac starts from surviving an explicit stop, cancel bootstrap safely, and verify restart of the same profile and listener.
+- Preserve Windows early HTTP rejection delivery when requests are fragmented; add OAuth protected-resource discovery and security response headers.
+- Gate stable publication on native Windows ARM64 base runtime and installation as well as Apple Silicon/Intel Mac and Windows x64.
+
 - Bound Windows HTTP concurrency and absolute request/response deadlines to the macOS limits; close tracked sockets on shutdown and test resource exhaustion with real loopback connections.
 - Add verified Intel macOS vendor binaries and native build gate, sealing unsigned vendor copies in the app without changing upstream files.
 - Check native base MCP schemas, security annotations and permission profiles against a shared contract; generate and validate the inventory and bilingual desktop navigation docs.

@@ -93,6 +93,11 @@ final class ProcessRunner {
         shouldCancel: (() -> Bool)? = nil,
         onOutput: ((Data, Bool) -> Void)? = nil
     ) throws -> ProcessResult {
+        // Cancellation can arrive during setup, before a child exists. Do
+        // not start a subprocess that is already known to be cancelled.
+        if shouldCancel?() == true {
+            return ProcessResult(exitCode: 130, stdout: "", stderr: "", timedOut: false)
+        }
         let handles = try spawn(
             executable: executable,
             arguments: arguments,
