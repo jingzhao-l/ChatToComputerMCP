@@ -327,7 +327,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             scope.CancelOwnedCommands(id);
     }
 
-    internal bool HasActiveCommands(){lock(_workspaceGate)return _commandBudget.HasActiveCommands()||_activeCuaCalls>0||_cua.HasLiveWork();}
+    internal bool HasActiveCommands(){lock(_workspaceGate)return _workspaceLeases.Count != 0 || _commandBudget.HasActiveCommands()||_activeCuaCalls>0||_cua.HasLiveWork();}
 
     internal void FreezeForIdleActivation(Action schedule)
     {
@@ -374,7 +374,9 @@ public sealed class LocalMcpServer : IAsyncDisposable
             throw new FileMcpException("Unknown approved workspace");
     }
 
-    public bool IsReady { get; private set; }
+    private bool _ready;
+    public bool IsReady { get { lock (_connectionGate) return _ready; } }
+    internal bool IsOperational { get { lock (_connectionGate) return _acceptingConnections; } }
 
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -384,7 +386,7 @@ public sealed class LocalMcpServer : IAsyncDisposable
             _listener = new TcpListener(IPAddress.Loopback, _port) { ExclusiveAddressUse = true };
             _listener.Start();
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            lock (_connectionGate) { _acceptingConnections = true; IsReady = true; }
+            lock (_connectionGate) { _acceptingConnections = true; _ready = true; }
             _acceptLoop = AcceptLoopAsync(_listener, _cts.Token);
             _log($"MCP server listening on http://127.0.0.1:{_port}/mcp\n");
             return Task.CompletedTask;
@@ -399,22 +401,24 @@ public sealed class LocalMcpServer : IAsyncDisposable
     public void Stop(bool preserveSupervised = false)
     {
         TcpClient[] connections;
+        TcpListener? retired;
         lock (_connectionGate)
         {
             _acceptingConnections = false;
-            IsReady = false;
+            _ready = false;
+            retired = _listener;
+            _listener = null;
             connections = _activeConnections.ToArray();
             _activeConnections.Clear();
         }
         try { _cts?.Cancel(); } catch { }
-        try { _listener?.Stop(); } catch { }
+        try { retired?.Stop(); } catch { }
         foreach (var client in connections) client.Dispose();
         _cua.Stop();
         LocalTools[] scopes;
         lock (_workspaceGate) { _catalogStopped = true; scopes = _catalog.Values.Select(item => item.Tools).ToArray(); }
         _tools.StopCommandSessions(preserveSupervised);
         foreach (var scoped in scopes) scoped.StopCommandSessions(preserveSupervised);
-        _listener = null;
     }
 
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken cancellationToken)
@@ -424,8 +428,15 @@ public sealed class LocalMcpServer : IAsyncDisposable
             TcpClient client;
             try { client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
-            catch (ObjectDisposedException) { return; }
-            catch (SocketException) when (cancellationToken.IsCancellationRequested) { return; }
+            catch (Exception error) when (error is SocketException or ObjectDisposedException or InvalidOperationException)
+            {
+                if (cancellationToken.IsCancellationRequested) return;
+                var recovered = await RecoverListenerAsync(listener, cancellationToken).ConfigureAwait(false);
+                if (recovered is null) return;
+                listener = recovered;
+                _log("Local MCP listener recovered.\n");
+                continue;
+            }
             lock (_connectionGate)
             {
                 if (!_acceptingConnections || cancellationToken.IsCancellationRequested || _activeConnections.Count >= _maxConnections)
@@ -439,6 +450,45 @@ public sealed class LocalMcpServer : IAsyncDisposable
             deadline.CancelAfter(_requestTimeout);
             _ = Task.Run(() => HandleTrackedClientAsync(client, cancellationToken, deadline), CancellationToken.None);
         }
+    }
+
+    private async Task<TcpListener?> RecoverListenerAsync(TcpListener failed, CancellationToken cancellationToken)
+    {
+        lock (_connectionGate)
+        {
+            if (!_acceptingConnections || cancellationToken.IsCancellationRequested || !ReferenceEquals(_listener, failed))
+                return null;
+            _ready = false;
+            try { failed.Stop(); } catch { }
+        }
+        var delay = 1;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            _log($"Local MCP listener unavailable; retrying in {delay} seconds, retaining command state.\n");
+            try { await Task.Delay(TimeSpan.FromSeconds(delay), cancellationToken).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return null; }
+            lock (_connectionGate)
+            {
+                if (!_acceptingConnections || cancellationToken.IsCancellationRequested || !ReferenceEquals(_listener, failed))
+                    return null;
+                var candidate = new TcpListener(IPAddress.Loopback, _port) { ExclusiveAddressUse = true };
+                try
+                {
+                    candidate.Start();
+                    _listener = candidate;
+                    _ready = true;
+                    return candidate;
+                }
+                catch (SocketException) { candidate.Stop(); }
+            }
+            delay = Math.Min(30, delay * 2);
+        }
+        return null;
+    }
+
+    internal void CancelListenerForTest()
+    {
+        lock (_connectionGate) _listener?.Stop();
     }
 
     private async Task HandleTrackedClientAsync(TcpClient client, CancellationToken cancellationToken, CancellationTokenSource deadline)

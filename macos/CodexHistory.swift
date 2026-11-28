@@ -505,7 +505,7 @@ private final class CodexAppServerClient {
         let result = try request(
             method: "initialize",
             params: [
-                "clientInfo": ["name": "chat-to-computer-mcp", "version": "0.7.0"],
+                "clientInfo": ["name": "chat-to-computer-mcp", "version": "0.7.1"],
                 "capabilities": ["experimentalApi": true],
             ],
             timeoutSeconds: 15
@@ -583,21 +583,14 @@ private final class CodexAppServerClient {
         var data = try JSONSerialization.data(withJSONObject: object, options: [])
         data.append(0x0A)
 
-        let fd = stdinPipe.fileHandleForWriting.fileDescriptor
-        var written = 0
-        while written < data.count {
-            let count = data.withUnsafeBytes { buffer -> Int in
-                guard let base = buffer.baseAddress else { return -1 }
-                return Darwin.write(fd, base.advanced(by: written), data.count - written)
-            }
-            if count > 0 {
-                written += count
-                continue
-            }
-            if count < 0 && errno == EINTR { continue }
-            throw CodexHistoryError.protocolFailure(
-                "Could not write to Codex app-server: \(String(cString: strerror(errno)))"
-            )
+        guard !closed else {
+            throw CodexHistoryError.protocolFailure("Codex app-server is closed.")
+        }
+        do {
+            try ProcessRunner.writePipe(stdinPipe.fileHandleForWriting, data: data, timeoutSeconds: 10,
+                onProgress: { self.drainStderr() })
+        } catch {
+            throw CodexHistoryError.protocolFailure("Could not write to Codex app-server: \(error.localizedDescription)")
         }
     }
 
@@ -631,6 +624,9 @@ private final class CodexAppServerClient {
             var bytes = [UInt8](repeating: 0, count: 16_384)
             let count = Darwin.read(stdoutFD, &bytes, bytes.count)
             if count > 0 {
+                guard stdoutBuffer.count + count <= 16_000_000 else {
+                    throw CodexHistoryError.protocolFailure("Codex response exceeded the output limit.")
+                }
                 stdoutBuffer.append(bytes, count: count)
                 try parseBufferedResponses()
                 return
@@ -667,19 +663,25 @@ private final class CodexAppServerClient {
                 )
             }
             guard let id = object["id"] as? NSNumber else { continue }
+            guard responses.count < 64 || responses[id.intValue] != nil else {
+                throw CodexHistoryError.protocolFailure("Too many unmatched Codex responses.")
+            }
             responses[id.intValue] = object
         }
     }
 
     private func drainStderr() {
         let fd = stderrPipe.fileHandleForReading.fileDescriptor
-        while stderrData.count < 32_000 {
-            var bytes = [UInt8](repeating: 0, count: min(8_192, 32_000 - stderrData.count))
+        // Continue draining after the retained diagnostic buffer is full,
+        // otherwise a noisy child can deadlock before producing its reply.
+        for _ in 0..<8 {
+            var bytes = [UInt8](repeating: 0, count: 8_192)
             let count = Darwin.read(fd, &bytes, bytes.count)
             if count > 0 {
-                stderrData.append(bytes, count: count)
+                stderrData.append(bytes, count: min(count, max(0, 32_000 - stderrData.count)))
                 continue
             }
+            if count < 0 && errno == EINTR { continue }
             break
         }
     }

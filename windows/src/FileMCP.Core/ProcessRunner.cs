@@ -15,6 +15,7 @@ internal sealed class BoundedTextBuffer
     private readonly StringBuilder _text = new();
     private int _keptBytes;
     private long _omittedBytes;
+    private bool _sealed, _incomplete;
 
     public BoundedTextBuffer(int limitBytes) => _limitBytes = Math.Max(1, limitBytes);
 
@@ -24,12 +25,12 @@ internal sealed class BoundedTextBuffer
         {
             lock (_gate)
             {
-                return _omittedBytes > 0;
+                return _omittedBytes > 0 || _incomplete;
             }
         }
     }
 
-    public void Append(ReadOnlySpan<char> chars)
+    public void Append(ReadOnlySpan<char> chars, Action<string>? onOutput = null)
     {
         if (chars.IsEmpty)
         {
@@ -38,6 +39,7 @@ internal sealed class BoundedTextBuffer
 
         lock (_gate)
         {
+            if (_sealed) return;
             var raw = chars.ToString();
             var bytes = Encoding.UTF8.GetByteCount(raw);
             var remaining = Math.Max(0, _limitBytes - _keptBytes);
@@ -52,16 +54,23 @@ internal sealed class BoundedTextBuffer
             {
                 _omittedBytes += bytes;
             }
+            onOutput?.Invoke(raw);
         }
+    }
+
+    public void Seal(bool incomplete)
+    {
+        lock (_gate) { _incomplete |= incomplete; _sealed = true; }
     }
 
     public override string ToString()
     {
         lock (_gate)
         {
-            return _omittedBytes > 0
-                ? _text + $"\n\n[...truncated {_omittedBytes} bytes...]"
-                : _text.ToString();
+            var value = _text.ToString();
+            if (_omittedBytes > 0) value += $"\n\n[...truncated {_omittedBytes} bytes...]";
+            if (_incomplete) value += "\n\n[...output drain ended before EOF...]";
+            return value;
         }
     }
 
@@ -108,12 +117,13 @@ public static class ProcessRunner
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateProcessStrings(executable, arguments, cwd, environment);
-        var process = StartProcess(executable, arguments, cwd, environment, utf8Output);
-        using var job = WindowsJob.CreateAndAssign(process);
+        using var process = StartProcess(executable, arguments, cwd, environment, utf8Output);
+        using var job = AssignJobOrStop(process);
         var stdout = new BoundedTextBuffer(outputLimitBytes);
         var stderr = new BoundedTextBuffer(outputLimitBytes);
-        var stdoutTask = DrainAsync(process.StandardOutput, stdout, text => onOutput?.Invoke(text, false));
-        var stderrTask = DrainAsync(process.StandardError, stderr, text => onOutput?.Invoke(text, true));
+        using var readerStop = new CancellationTokenSource();
+        var stdoutTask = DrainAsync(process.StandardOutput, stdout, readerStop.Token, text => onOutput?.Invoke(text, false));
+        var stderrTask = DrainAsync(process.StandardError, stderr, readerStop.Token, text => onOutput?.Invoke(text, true));
 
         var timeout = Math.Max(1, Math.Min(timeoutSeconds, Math.Clamp(maxTimeoutSeconds, 1, 600)));
         var timedOut = false;
@@ -150,7 +160,12 @@ public static class ProcessRunner
         }
         finally
         {
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            try { await FinishReadersAsync(Task.WhenAll(stdoutTask, stderrTask), readerStop, TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            finally
+            {
+                stdout.Seal(!stdoutTask.IsCompletedSuccessfully || !stdoutTask.Result);
+                stderr.Seal(!stderrTask.IsCompletedSuccessfully || !stderrTask.Result);
+            }
         }
 
         return new ProcessResult(
@@ -173,7 +188,26 @@ public static class ProcessRunner
     {
         ValidateProcessStrings(executable, arguments, cwd, environment);
         var process = StartProcess(executable, arguments, cwd, environment, utf8Output: false);
-        return new ManagedProcess(process, WindowsJob.CreateAndAssign(process), onOutput, onExit, sensitiveValues ?? []);
+        try
+        {
+            return new ManagedProcess(process, AssignJobOrStop(process), onOutput, onExit, sensitiveValues ?? []);
+        }
+        catch
+        {
+            KillProcessTree(process);
+            process.Dispose();
+            throw;
+        }
+    }
+
+    private static WindowsJob? AssignJobOrStop(Process process)
+    {
+        try { return WindowsJob.CreateAndAssign(process); }
+        catch
+        {
+            KillProcessTree(process);
+            throw;
+        }
     }
 
     internal static void KillProcessTree(Process process)
@@ -240,24 +274,54 @@ public static class ProcessRunner
         }
         catch (Win32Exception ex)
         {
+            KillProcessTree(process);
             process.Dispose();
             throw new FileMcpException($"Could not launch {executable}: {ex.Message}");
         }
+        catch
+        {
+            KillProcessTree(process);
+            process.Dispose();
+            throw;
+        }
     }
 
-    private static async Task DrainAsync(StreamReader reader, BoundedTextBuffer buffer, Action<string>? onOutput = null)
+    private static async Task<bool> DrainAsync(StreamReader reader, BoundedTextBuffer buffer,
+        CancellationToken cancellation, Action<string>? onOutput = null)
     {
         var chars = new char[8192];
-        while (true)
+        try
         {
-            var read = await reader.ReadAsync(chars.AsMemory(0, chars.Length)).ConfigureAwait(false);
-            if (read <= 0)
+            while (!cancellation.IsCancellationRequested)
             {
+                var read = await reader.ReadAsync(chars.AsMemory(0, chars.Length), cancellation).ConfigureAwait(false);
+                if (read <= 0) return true;
+                if (cancellation.IsCancellationRequested) break;
+                buffer.Append(chars.AsSpan(0, read), onOutput);
+            }
+        }
+        catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
+        { /* A retired pipe is incomplete, never a gateway-wide failure. */ }
+        return false;
+    }
+
+    // Anonymous redirected pipes may outlive their child process (for example
+    // an escaped descendant inherited the writer). Never hold a gateway
+    // request or managed exit callback indefinitely waiting for EOF. The
+    // caller seals delivery before disposing its process and pipe handles.
+    internal static async Task FinishReadersAsync(Task readers, CancellationTokenSource cancellation, TimeSpan grace)
+    {
+        if (await Task.WhenAny(readers, Task.Delay(grace)).ConfigureAwait(false) != readers)
+        {
+            try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
+            if (await Task.WhenAny(readers, Task.Delay(250)).ConfigureAwait(false) != readers)
+            {
+                _ = readers.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 return;
             }
-            buffer.Append(chars.AsSpan(0, read));
-            onOutput?.Invoke(new string(chars, 0, read));
         }
+        await readers.ConfigureAwait(false);
     }
 
     private static void ValidateProcessStrings(
@@ -303,7 +367,10 @@ public sealed class ManagedProcess : IDisposable
     private readonly Action<string> _onOutput;
     private readonly Action<int> _onExit;
     private readonly CancellationTokenSource _disposeCts = new();
-    private int _exitReported;
+    private readonly CancellationToken _disposeToken;
+    private readonly object _outputGate = new();
+    private bool _outputClosed;
+    private int _exitReported, _disposed;
     private readonly IReadOnlyList<string> _sensitiveValues;
 
     internal ManagedProcess(Process process, WindowsJob? job, Action<string> onOutput, Action<int> onExit,
@@ -314,6 +381,7 @@ public sealed class ManagedProcess : IDisposable
         _onOutput = onOutput;
         _onExit = onExit;
         _sensitiveValues = sensitiveValues;
+        _disposeToken = _disposeCts.Token;
         _ = PumpAsync();
     }
 
@@ -367,20 +435,26 @@ public sealed class ManagedProcess : IDisposable
         int exitCode;
         try
         {
-            await _process.WaitForExitAsync(_disposeCts.Token).ConfigureAwait(false);
+            await _process.WaitForExitAsync(_disposeToken).ConfigureAwait(false);
             exitCode = _process.ExitCode;
             _job?.Terminate(1);
         }
-        catch (OperationCanceledException)
+        catch (Exception error) when (error is OperationCanceledException or InvalidOperationException)
         {
             return;
         }
         finally
         {
-            try { await Task.WhenAll(stdout, stderr).ConfigureAwait(false); } catch { }
+            try
+            {
+                await ProcessRunner.FinishReadersAsync(Task.WhenAll(stdout, stderr),
+                    _disposeCts, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            }
+            catch { }
+            lock (_outputGate) _outputClosed = true;
         }
 
-        if (Interlocked.Exchange(ref _exitReported, 1) == 0)
+        if (Volatile.Read(ref _disposed) == 0 && Interlocked.Exchange(ref _exitReported, 1) == 0)
         {
             _onExit(exitCode);
         }
@@ -390,30 +464,39 @@ public sealed class ManagedProcess : IDisposable
     {
         var chars = new char[4096];
         var redactor = new StreamingSecretRedactor(_sensitiveValues);
-        while (!_disposeCts.IsCancellationRequested)
+        while (!_disposeToken.IsCancellationRequested)
         {
             int read;
             try
             {
-                read = await reader.ReadAsync(chars.AsMemory(0, chars.Length), _disposeCts.Token).ConfigureAwait(false);
+                read = await reader.ReadAsync(chars.AsMemory(0, chars.Length), _disposeToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
             {
                 return;
             }
             if (read <= 0)
             {
                 var tail = redactor.Append("", final: true);
-                if (tail.Length != 0) _onOutput(tail);
+                if (tail.Length != 0) PublishOutput(tail);
                 return;
             }
             var safe = redactor.Append(new string(chars, 0, read));
-            if (safe.Length != 0) _onOutput(safe);
+            if (safe.Length != 0 && !_disposeToken.IsCancellationRequested) PublishOutput(safe);
+        }
+    }
+
+    private void PublishOutput(string text)
+    {
+        lock (_outputGate)
+        {
+            if (!_outputClosed && Volatile.Read(ref _disposed) == 0) _onOutput(text);
         }
     }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _disposeCts.Cancel();
         StopSynchronously();
         _job?.Dispose();

@@ -13,7 +13,7 @@ private let mcpModernProtocolVersion = "2026-07-28"
 private let mcpLegacySupportedVersions = ["2025-03-26", "2025-06-18", "2025-11-25"]
 private let mcpAllSupportedVersions = [mcpModernProtocolVersion] + mcpLegacySupportedVersions.reversed()
 private let mcpServerName = "chat-to-computer-mcp"
-private let mcpServerVersion = "0.7.0-swift"
+private let mcpServerVersion = "0.7.1-swift"
 private let maxFileBytes = 5_000_000
 private let maxWriteBytes = 5_000_000
 private let maxPatchAggregateBytes = 32_000_000
@@ -3463,6 +3463,38 @@ final class LocalMCPServer {
     private var listener: NWListener?
     private let stateLock = NSLock()
     private var ready = false
+    private var listenerEnabled = false
+    private var listenerGeneration = UUID()
+    private var listenerRetryDelay: TimeInterval = 1
+
+    private final class ListenerStartup {
+        private let lock = NSLock()
+        private let semaphore = DispatchSemaphore(value: 0)
+        private var result: Result<Void, Error>?
+
+        @discardableResult
+        func complete(_ value: Result<Void, Error>) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard result == nil else { return false }
+            result = value
+            semaphore.signal()
+            return true
+        }
+
+        var pending: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return result == nil
+        }
+
+        func wait(seconds: TimeInterval) throws {
+            guard semaphore.wait(timeout: .now() + seconds) == .success else {
+                throw MCPServerError.operationFailed("MCP listener startup timed out")
+            }
+            lock.lock(); defer { lock.unlock() }
+            try result?.get()
+        }
+    }
     private let requestTimeoutSeconds: TimeInterval
     private let responseTimeoutSeconds: TimeInterval
     private let maxConnections: Int
@@ -3715,7 +3747,7 @@ final class LocalMCPServer {
     /// Never restart the tunnel supervisor while user work is in flight.
     func hasActiveCommands() -> Bool {
         workspaceGate.lock(); defer { workspaceGate.unlock() }
-        return commandBudget.hasActiveCommands() || activeCUACalls > 0 || cua.hasLiveWork()
+        return !workspaceLeases.isEmpty || commandBudget.hasActiveCommands() || activeCUACalls > 0 || cua.hasLiveWork()
     }
 
     func desktopCommandSnapshots() -> [DesktopCommandSnapshot] {
@@ -3778,66 +3810,161 @@ final class LocalMCPServer {
     }
 
     var isReady: Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
+        stateLock.lock(); defer { stateLock.unlock() }
         return ready
     }
 
-    func start(timeoutSeconds: TimeInterval = 5) throws {
+    // The transport can exit while the local listener is recovering. Keep
+    // workspace/command state alive until an explicit gateway shutdown.
+    var isOperational: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return listenerEnabled
+    }
+
+    private func makeListener() throws -> NWListener {
         guard port > 0, let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw MCPServerError.invalidArguments("Invalid port: \(port)")
         }
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = false
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: nwPort)
-        let listener = try NWListener(using: parameters)
-        self.listener = listener
+        return try NWListener(using: parameters)
+    }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var startError: Error?
-        listener.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                self?.stateLock.lock()
-                self?.ready = true
-                self?.stateLock.unlock()
-                semaphore.signal()
-            case let .failed(error):
-                startError = error
-                semaphore.signal()
-            default:
-                break
-            }
+    func start(timeoutSeconds: TimeInterval = 5) throws {
+        let candidate = try makeListener()
+        let startup = ListenerStartup()
+        stateLock.lock()
+        guard !listenerEnabled else {
+            stateLock.unlock()
+            candidate.cancel()
+            throw MCPServerError.operationFailed("MCP listener already started")
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.handle(connection)
-        }
-        listener.start(queue: listenerQueue)
-
-        if semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
+        listenerEnabled = true
+        ready = false
+        listenerRetryDelay = 1
+        let generation = UUID()
+        listenerGeneration = generation
+        stateLock.unlock()
+        installListener(candidate, generation: generation, startup: startup)
+        do {
+            try startup.wait(seconds: timeoutSeconds)
+        } catch {
             stop()
-            throw MCPServerError.operationFailed("MCP server did not start on 127.0.0.1:\(port)")
-        }
-        if let startError {
-            stop()
-            throw MCPServerError.operationFailed("Cannot listen on port \(port): \(startError.localizedDescription)")
+            throw MCPServerError.operationFailed("Cannot listen on port \(port): \(error.localizedDescription)")
         }
         log("MCP server listening on http://127.0.0.1:\(port)/mcp\n")
     }
 
-    func stop(preserveSupervised: Bool = false) {
-        cua.stop()
-        listener?.cancel()
-        listener = nil
+    private func installListener(_ candidate: NWListener, generation: UUID,
+                                 startup: ListenerStartup? = nil) {
+        candidate.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            self.stateLock.lock()
+            guard self.listenerEnabled, self.listenerGeneration == generation else {
+                self.stateLock.unlock()
+                return
+            }
+            switch state {
+            case .ready:
+                self.ready = true
+                self.listenerRetryDelay = 1
+                self.stateLock.unlock()
+                if startup == nil { self.log("Local MCP listener recovered.\n") }
+                startup?.complete(.success(()))
+            case .failed(let error):
+                self.ready = false
+                self.stateLock.unlock()
+                if startup?.complete(.failure(error)) != true {
+                    self.scheduleListenerRecovery(generation: generation, reason: "failed")
+                }
+            case .cancelled:
+                self.ready = false
+                self.stateLock.unlock()
+                if startup?.complete(.failure(MCPServerError.operationFailed("MCP listener cancelled"))) != true {
+                    self.scheduleListenerRecovery(generation: generation, reason: "cancelled")
+                }
+            case .waiting:
+                self.ready = false
+                self.stateLock.unlock()
+                if startup?.pending != true {
+                    self.scheduleListenerRecovery(generation: generation, reason: "waiting")
+                }
+            default:
+                self.stateLock.unlock()
+            }
+        }
+        candidate.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            self.handle(connection, generation: generation)
+        }
         stateLock.lock()
+        guard listenerEnabled, listenerGeneration == generation else {
+            stateLock.unlock()
+            candidate.cancel()
+            startup?.complete(.failure(MCPServerError.operationFailed("MCP listener startup cancelled")))
+            return
+        }
+        listener = candidate
+        candidate.start(queue: listenerQueue)
+        stateLock.unlock()
+    }
+
+    private func scheduleListenerRecovery(generation: UUID, reason: String) {
+        stateLock.lock()
+        guard listenerEnabled, listenerGeneration == generation else {
+            stateLock.unlock(); return
+        }
+        ready = false
+        let retired = listener
+        listener = nil
+        let next = UUID()
+        listenerGeneration = next
+        let delay = listenerRetryDelay
+        listenerRetryDelay = min(30, delay * 2)
+        stateLock.unlock()
+        retired?.cancel()
+        log("Local MCP listener \(reason); retrying in \(Int(delay)) seconds, retaining command state.\n")
+        listenerQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.stateLock.lock()
+            let current = self.listenerEnabled && self.listenerGeneration == next
+            self.stateLock.unlock()
+            guard current else { return }
+            do {
+                let candidate = try self.makeListener()
+                self.installListener(candidate, generation: next)
+            } catch {
+                self.scheduleListenerRecovery(generation: next, reason: "bind_failed")
+            }
+        }
+    }
+
+    #if CTCMCP_TESTING
+    func cancelListenerForTest() {
+        stateLock.lock()
+        let target = listener
+        stateLock.unlock()
+        target?.cancel()
+    }
+    #endif
+
+    func stop(preserveSupervised: Bool = false) {
+        stateLock.lock()
+        listenerEnabled = false
+        listenerGeneration = UUID()
+        let retired = listener
+        listener = nil
         ready = false
         let connections = Array(activeConnections.values)
         activeConnections.removeAll()
         stateLock.unlock()
+        retired?.cancel()
         for record in connections {
             record.deadline?.cancel()
             record.connection.cancel()
         }
+        cua.stop()
         workspaceGate.lock()
         catalogStopped = true
         let scopes = Array(catalogTools.values)
@@ -3879,9 +4006,10 @@ final class LocalMCPServer {
         stateLock.unlock()
     }
 
-    private func handle(_ connection: NWConnection) {
+    private func handle(_ connection: NWConnection, generation: UUID) {
         stateLock.lock()
-        guard ready, activeConnections.count < maxConnections else {
+        guard ready, listenerEnabled, listenerGeneration == generation,
+              activeConnections.count < maxConnections else {
             stateLock.unlock()
             connection.cancel()
             return
@@ -3920,12 +4048,12 @@ final class LocalMCPServer {
                 }
                 self.workQueue.async {
                     self.stateLock.lock()
-                    let isActive = self.ready && self.activeConnections[ObjectIdentifier(connection)] != nil
+                    let isActive = self.listenerEnabled && self.activeConnections[ObjectIdentifier(connection)] != nil
                     self.stateLock.unlock()
                     guard isActive else { return }
                     let response = self.process(request, requestAlive: {
                         self.stateLock.lock(); defer { self.stateLock.unlock() }
-                        return self.ready && self.activeConnections[ObjectIdentifier(connection)] != nil
+                        return self.listenerEnabled && self.activeConnections[ObjectIdentifier(connection)] != nil
                     })
                     self.send(response, on: connection)
                 }

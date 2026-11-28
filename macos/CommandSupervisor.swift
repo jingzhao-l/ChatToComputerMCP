@@ -120,10 +120,16 @@ final class SupervisedCommandJob {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        pipe.fileHandleForReading.closeFile()
-        do { try pipe.fileHandleForWriting.write(contentsOf: Data(command.utf8)) }
-        catch { try? pipe.fileHandleForWriting.close(); throw error }
-        try pipe.fileHandleForWriting.close()
+        try? pipe.fileHandleForReading.close()
+        do {
+            try ProcessRunner.writePipe(pipe.fileHandleForWriting, data: Data(command.utf8), timeoutSeconds: 8)
+            try pipe.fileHandleForWriting.close()
+        } catch {
+            try? pipe.fileHandleForWriting.close()
+            try? requestCancel()
+            if process.isRunning { process.terminate() }
+            throw error
+        }
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline {
             let status = try readStatus()

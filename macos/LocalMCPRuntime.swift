@@ -368,6 +368,7 @@ final class LocalMCPRuntime {
             default:
                 break
             }
+            Self.transportDiagnostics.notice("explicit_stop attempt=\(self.tunnelAttempt.uuidString, privacy: .public)")
             self.setState(.stopping)
             self.tunnelProcess?.stop()
             if self.tunnelProcess == nil {
@@ -393,6 +394,7 @@ final class LocalMCPRuntime {
                     throw NSError(domain: "ChatToComputerMCP", code: 1,
                         userInfo: [NSLocalizedDescriptionKey: "Wait until connection startup or shutdown finishes."])
                 }
+                Self.transportDiagnostics.notice("update_activation_stop attempt=\(self.tunnelAttempt.uuidString, privacy: .public)")
                 self.setStopRequested(true)
                 self.setState(.stopping)
                 self.shutdownOnQueue()
@@ -429,6 +431,7 @@ final class LocalMCPRuntime {
         // queued start cannot consume a stop requested for another start.
         guard !isStopRequested else { return }
         tunnelAttempt = UUID()
+        Self.transportDiagnostics.notice("gateway_start attempt=\(self.tunnelAttempt.uuidString, privacy: .public)")
         transportRecoveryID = UUID()
         transportStarted = false
         transportRetryDelay = 2
@@ -807,13 +810,14 @@ final class LocalMCPRuntime {
                    maxTimeoutSeconds: 5,
                    shouldCancel: { [weak self] in self?.isStopRequested ?? true }
                ),
+               !result.timedOut, !result.stdoutTruncated,
                let data = result.stdout.data(using: .utf8) {
                 probeData = data
             }
             let status = TunnelCloudHealth.evaluateProbe(
                 data: probeData, startedAt: self.tunnelStartedAt,
                 now: Date().timeIntervalSince1970)
-            self.notifyCloudHealth(status)
+            self.notifyCloudHealth(self.server?.isReady == true ? status : .awaitingPoll)
             self.scheduleControlPlaneHealthCheck(for: attempt, after: 30)
         }
     }
@@ -908,7 +912,7 @@ final class LocalMCPRuntime {
             finishStop()
             return
         }
-        if transportStarted, server?.isReady == true, restartTransport != nil {
+        if transportStarted, server?.isOperational == true, restartTransport != nil {
             emitLog("Tunnel exited (status \(exitCode)); retaining the local gateway and command sessions.\n")
             scheduleTransportRecovery()
             return
@@ -925,7 +929,7 @@ final class LocalMCPRuntime {
     }
 
     private func scheduleTransportRecovery() {
-        guard !isStopRequested, server?.isReady == true, restartTransport != nil else { return }
+        guard !isStopRequested, server?.isOperational == true, restartTransport != nil else { return }
         transportRecoveryID = UUID()
         let recovery = transportRecoveryID
         let delay = transportRetryDelay
@@ -935,7 +939,7 @@ final class LocalMCPRuntime {
         emitLog("Reconnecting transport in \(Int(delay)) seconds; local commands continue.\n")
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.transportRecoveryID == recovery, !self.isStopRequested,
-                  self.server?.isReady == true, let restart = self.restartTransport else { return }
+                  self.server?.isOperational == true, let restart = self.restartTransport else { return }
             do { try restart() }
             catch {
                 self.removeCloudflaredTokenFile(); self.removeTunnelHealthURLFile()
