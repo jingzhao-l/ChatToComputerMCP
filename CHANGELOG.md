@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Prevent macOS gateway aborts caused by command or managed-process pipe readers racing a forced FileHandle close. Readers exclusively own their handles, stop on a bounded poll, and report incomplete synchronous output rather than crashing the service.
+- Record credential-free macOS transport lifecycle transitions, watchdog decisions, exits and recovery delays in the native system log for outage diagnosis.
+
 ## [0.7.0] — 2026-11-24
 
 - Add native background CUA visual-only observations, independent window geometry/DPI checks, same-process window handoff, bounded complex control actions and safe typed refusal recovery.
