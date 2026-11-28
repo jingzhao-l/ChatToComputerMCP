@@ -57,6 +57,14 @@ On Mac the installer switches a validated, atomic `releases/current` symlink
 only after a complete build. Its dedicated optional LaunchAgent can target
 that stable link at the **next login**. An already loaded service is NOT
 restarted. Existing launch settings are preserved for the next login.
+After an explicit rollback, `update install` can reselect a retained newer
+bundle without rebuilding it, only after validating its identity, version,
+signature, executable and signing-team continuity. A missing or incomplete
+target of an existing `current` symlink is an error, not permission to
+silently select another release. Restore the verified target or explicitly
+repair the pointer while the service is idle; the updater does not guess.
+Neither reselecting a retained release nor installing a new one restarts
+the running service.
 
 On Windows the CLI selects the highest successfully installed release.
 

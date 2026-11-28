@@ -121,7 +121,6 @@ export function installedVersions(parent,platform) {
 }
 export function installedVersion(parent,platform) {
   const versions=installedVersions(parent,platform);
-  if(!versions.length)return null;
   if(platform==='darwin') {
     const current=path.join(parent,'current');
     try {
@@ -130,17 +129,22 @@ export function installedVersion(parent,platform) {
         throw Error('Refusing non-symlink current release pointer');
       const link=fs.readlinkSync(current);
       if(!validVersion(link))throw Error('Unsafe current release pointer');
-      if(versions.includes(link))return link;
+      if(!versions.includes(link))
+        throw Error('Current Mac release is missing or incomplete: '+link+
+          '. Restore the previously verified release or repair the pointer explicitly; no automatic fallback.');
+      return link;
     } catch(e) {
       if(e.code!=='ENOENT')throw e;
     }
   }
   // Windows and older installations without a current pointer use the
   // highest successfully built version, never an unrelated FileMCP app.
-  return versions.at(-1);
+  return versions.at(-1)??null;
 }
 export function activateMacRelease(parent,version) {
   if(!validVersion(version))throw Error('Invalid release version');
+  if(!installedVersions(parent,'darwin').includes(version))
+    throw Error('Cannot activate a missing or incomplete Mac release: '+version);
   const current=path.join(parent,'current');
   try {
     const existing=fs.lstatSync(current);
