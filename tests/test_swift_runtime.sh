@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 
-TMP_DIR="$(mktemp -d)"
+TMP_DIR="$(cd "$(mktemp -d)" && pwd -P)"
+export MCP_TEST_FIXTURE_DIR="$TMP_DIR"
 SERVER_PID=""
 stop_server() {
     [ -n "$SERVER_PID" ] || return 0
@@ -21,9 +22,9 @@ stop_server() {
 }
 cleanup() {
     stop_server
-    if [ -n "${TMPDIR:-}" ]; then
-        TEST_ROOT="${TMPDIR%/}/filemcp-server-test"
-        TEST_OUTSIDE="${TMPDIR%/}/filemcp-server-outside"
+    if [ -n "$TMP_DIR" ]; then
+        TEST_ROOT="$TMP_DIR/filemcp-server-test"
+        TEST_OUTSIDE="$TMP_DIR/filemcp-server-outside"
         chmod 700 "$TEST_ROOT/enumeration-error/locked" 2>/dev/null || true
         chmod 600 "$TEST_ROOT/unreadable-file/secret.txt" 2>/dev/null || true
         rm -rf "$TEST_ROOT" "$TEST_OUTSIDE" 2>/dev/null || true
@@ -129,7 +130,7 @@ func waitForProcessExit(_ pid: pid_t, timeoutSeconds: TimeInterval = 2.0) -> Boo
     return kill(pid, 0) != 0 && errno == ESRCH
 }
 
-let pidFile = FileManager.default.temporaryDirectory.appendingPathComponent("filemcp-test-child.pid").path
+let pidFile = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MCP_TEST_FIXTURE_DIR"]!, isDirectory: true).appendingPathComponent("filemcp-test-child.pid").path
 try? FileManager.default.removeItem(atPath: pidFile)
 let command = "sh -c 'sleep 20 & echo $! > \(pidFile); wait'"
 let timed = try ProcessRunner.run(
@@ -143,7 +144,7 @@ let childPID = pid_t(Int(childText) ?? 0)
 precondition(waitForProcessExit(childPID), "timed-out child process survived")
 print("process-tree-timeout: ok")
 
-let backgroundPIDFile = FileManager.default.temporaryDirectory.appendingPathComponent("filemcp-test-background-child.pid").path
+let backgroundPIDFile = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MCP_TEST_FIXTURE_DIR"]!, isDirectory: true).appendingPathComponent("filemcp-test-background-child.pid").path
 try? FileManager.default.removeItem(atPath: backgroundPIDFile)
 let background = try ProcessRunner.run(
     executable: "/bin/sh",
@@ -170,7 +171,7 @@ for index in 0..<12 {
 }
 print("managed-reader-stop-race: ok")
 
-let managedChildPIDFile = FileManager.default.temporaryDirectory.appendingPathComponent("filemcp-managed-background-child.pid").path
+let managedChildPIDFile = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MCP_TEST_FIXTURE_DIR"]!, isDirectory: true).appendingPathComponent("filemcp-managed-background-child.pid").path
 try? FileManager.default.removeItem(atPath: managedChildPIDFile)
 let managedExited = DispatchSemaphore(value: 0)
 let managedBackground = try ProcessRunner.startManaged(
@@ -287,7 +288,11 @@ case "$1" in
     doctor) echo "doctor-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"; exit 0 ;;
     health)
         [ "$2" = "--url-file" ] && [ -f "$3" ] && [ "$4" = "--require-control-plane-poll" ] && [ "$5" = "--json" ] || { echo invalid-health-probe >&2; exit 3; }
-        printf '{"control_plane_poll":{"value":%s,"ok":true}}\n' "$(date +%s)"
+        if [ -n "${MCP_TEST_POLL_FILE:-}" ] && [ -f "$MCP_TEST_POLL_FILE" ]; then
+            cat "$MCP_TEST_POLL_FILE"
+        else
+            printf '{"control_plane_poll":{"value":%s,"ok":true}}\n' "$(date +%s)"
+        fi
         exit 0 ;;
     run)
         echo "run-ok ${CONTROL_PLANE_API_KEY:-} ${FILEMCP_LOCAL_AUTH_TOKEN:-}"
@@ -444,6 +449,21 @@ precondition(TunnelCloudHealth.evaluate(lastPoll: nil, startedAt: now - 90, now:
 precondition(TunnelCloudHealth.evaluate(lastPoll: nil, startedAt: now - 190, now: now) == .stalled)
 precondition(TunnelCloudHealth.evaluate(lastPoll: now + 60, startedAt: now - 190, now: now) == .stalled)
 precondition(TunnelCloudHealth.evaluate(lastPoll: now - 600, startedAt: now - 190, now: now) == .stalled)
+// A failed probe after a previously healthy response must not manufacture
+// a stall, and a bad future metric must not poison a subsequent valid one.
+let probeStart = now - 300
+func probe(_ json: String) -> TunnelCloudHealth {
+    TunnelCloudHealth.evaluateProbe(data: Data(json.utf8), startedAt: probeStart, now: now)
+}
+precondition(probe(#"{"control_plane_poll":{"value":1795421420}}"#) == .connected)
+precondition(probe("{}") == .awaitingPoll)
+precondition(probe(#"{"control_plane_poll":{"value":true}}"#) == .awaitingPoll)
+precondition(probe(#"{"control_plane_poll":{"value":-1}}"#) == .awaitingPoll)
+precondition(probe(#"{"control_plane_poll":{"value":1795421550}}"#) == .awaitingPoll)
+precondition(probe(#"{"control_plane_poll":{"value":1795421420}}"#) == .connected)
+precondition(probe(#"{"control_plane_poll":{"value":1795421250}}"#) == .stalled)
+precondition(probe(#"{"control_plane_poll":{"value":0}}"#) == .stalled)
+precondition(TunnelCloudHealth.evaluateProbe(data: nil, startedAt: probeStart, now: now) == .awaitingPoll)
 print("runtime-cloud-poll-staleness: ok")
 
 func waitFor(_ predicate: () -> Bool, timeout: TimeInterval, label: String) {
@@ -520,6 +540,23 @@ waitFor({ first.state == .running }, timeout: 5, label: "first runtime")
 first.checkCloudHealthNow()
 waitFor({ first.cloudHealthSnapshot == .connected }, timeout: 8,
         label: "first verified control-plane polling health")
+let pollFixture = root.appendingPathComponent("poll-fixture.json")
+setenv("MCP_TEST_POLL_FILE", pollFixture.path, 1)
+try "{}".write(to: pollFixture, atomically: true, encoding: .utf8)
+first.checkCloudHealthNow()
+waitFor({ first.cloudHealthSnapshot == .awaitingPoll }, timeout: 8, label: "missing live probe returns to unverified")
+unsetenv("MCP_TEST_POLL_FILE")
+first.checkCloudHealthNow()
+waitFor({ first.cloudHealthSnapshot == .connected }, timeout: 8, label: "fresh live probe after missing observation")
+try #"{"control_plane_poll":{"value":9999999999}}"#.write(to: pollFixture, atomically: true, encoding: .utf8)
+setenv("MCP_TEST_POLL_FILE", pollFixture.path, 1)
+first.checkCloudHealthNow()
+waitFor({ first.cloudHealthSnapshot == .awaitingPoll }, timeout: 8, label: "future live probe returns to unverified")
+precondition(first.state == .running)
+unsetenv("MCP_TEST_POLL_FILE")
+first.checkCloudHealthNow()
+waitFor({ first.cloudHealthSnapshot == .connected }, timeout: 8, label: "fresh live probe after future observation")
+print("runtime-cloud-poll-current-evidence: ok")
 waitFor({ holdsIdleSleepAssertion() }, timeout: 2, label: "idle sleep assertion while running")
 let authLines = try String(contentsOf: authCapture, encoding: .utf8)
     .split(whereSeparator: { $0.isNewline })
@@ -880,7 +917,7 @@ swiftc -framework Network -framework Security -framework SystemConfiguration -o 
 cat >"$TMP_DIR/main.swift" <<'SWIFT'
 import Foundation
 
-let root = FileManager.default.temporaryDirectory.appendingPathComponent("filemcp-server-test")
+let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MCP_TEST_FIXTURE_DIR"]!, isDirectory: true).appendingPathComponent("filemcp-server-test")
 try? FileManager.default.removeItem(at: root)
 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 try "hello swift".write(to: root.appendingPathComponent("hello.txt"), atomically: true, encoding: .utf8)
@@ -1119,7 +1156,7 @@ try "case-hidden\n".write(
     encoding: .utf8
 )
 
-let outside = FileManager.default.temporaryDirectory.appendingPathComponent("filemcp-server-outside")
+let outside = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MCP_TEST_FIXTURE_DIR"]!, isDirectory: true).appendingPathComponent("filemcp-server-outside")
 try? FileManager.default.removeItem(at: outside)
 try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
 try "must stay private".write(to: outside.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
@@ -1271,7 +1308,7 @@ PYREADY
 
 BASE_URL="http://127.0.0.1:18088/mcp"
 SAFE_BASE_URL="http://127.0.0.1:18089/mcp"
-SERVER_ROOT="${TMPDIR%/}/filemcp-server-test"
+SERVER_ROOT="$TMP_DIR/filemcp-server-test"
 LOCAL_AUTH_TOKEN="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 python3 - "$SERVER_ROOT" <<'PYSEC'
@@ -2183,7 +2220,7 @@ DELETE_OUTSIDE_LINK="$(curl -fsS -X POST "$BASE_URL" \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":324,"method":"tools/call","params":{"name":"delete_file","arguments":{"relative_path":"delete-outside-link"}}}')"
 printf '%s' "$DELETE_OUTSIDE_LINK" | plutil -extract result.isError raw -expect bool -o - - | grep -qx 'false'
-[ -f "${TMPDIR%/}/filemcp-server-outside/secret.txt" ]
+[ -f "$TMP_DIR/filemcp-server-outside/secret.txt" ]
 [ ! -L "$SERVER_ROOT/delete-outside-link" ]
 
 echo "symlink-delete-semantics: ok"

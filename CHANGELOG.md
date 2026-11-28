@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require current valid control-plane health evidence on macOS and Windows; missing/malformed/future poll metrics no longer cause false stall recovery or poison subsequent valid observations.
+
 ## [0.7.0] — 2026-11-24
 
 - Add native background CUA visual-only observations, independent window geometry/DPI checks, same-process window handoff, bounded complex control actions and safe typed refusal recovery.

@@ -26,6 +26,15 @@ internal static partial class Program
         Assert(TunnelCloudHealthPolicy.Evaluate(1010, start, start.AddSeconds(190)) == TunnelCloudHealth.Stalled, "stale poll stalls");
         Assert(!TunnelCloudHealthPolicy.ValidTimestamp(989, start, start), "old tunnel timestamp rejected");
         Assert(!TunnelCloudHealthPolicy.ValidTimestamp(1031, start, start), "future timestamp rejected");
+        var probeNow = start.AddSeconds(300);
+        Assert(TunnelCloudHealthPolicy.EvaluateProbe((true, 1270), start, probeNow) == TunnelCloudHealth.Connected, "fresh current probe");
+        Assert(TunnelCloudHealthPolicy.EvaluateProbe((false, null), start, probeNow) == TunnelCloudHealth.AwaitingPoll, "missing probe is not a stall");
+        Assert(TunnelCloudHealthPolicy.Parse("{\"control_plane_poll\":{\"value\":true}}") == (false, null), "boolean metric rejected");
+        Assert(TunnelCloudHealthPolicy.Parse("{\"control_plane_poll\":{\"value\":-1}}") == (false, null), "negative metric rejected");
+        Assert(TunnelCloudHealthPolicy.EvaluateProbe((true, 1400), start, probeNow) == TunnelCloudHealth.AwaitingPoll, "future metric is not stall evidence");
+        Assert(TunnelCloudHealthPolicy.EvaluateProbe((true, 1270), start, probeNow) == TunnelCloudHealth.Connected, "valid probe after invalid future observation");
+        Assert(TunnelCloudHealthPolicy.EvaluateProbe((true, 1100), start, probeNow) == TunnelCloudHealth.Stalled, "current stale metric stalls");
+        Assert(TunnelCloudHealthPolicy.EvaluateProbe((true, null), start, probeNow) == TunnelCloudHealth.Stalled, "explicit no-poll metric stalls after grace");
         Assert(WindowsTunnelProxy.ParseManual("http=localhost:8080;https=127.0.0.1:8443") == "http://127.0.0.1:8443", "HTTPS proxy selected");
         Assert(WindowsTunnelProxy.ParseManual("proxy.example:3128") == "http://proxy.example:3128", "manual proxy parsed");
         Assert(WindowsTunnelProxy.ParseManual("socks=127.0.0.1:1080") is null, "unsupported SOCKS not guessed");
