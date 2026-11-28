@@ -188,6 +188,56 @@ let managedChildPID = pid_t(Int(managedChildText) ?? 0)
 precondition(waitForProcessExit(managedChildPID), "managed background child survived parent exit")
 print("managed-process-descendant-cleanup: ok")
 
+// Force a reader to still be using its FileHandle after the old two-second
+// drain deadline. A delayed callback is deterministic even when Darwin
+// wakes a blocked read immediately on close.
+let slowCallback = try ProcessRunner.run(executable: "/bin/echo",
+    arguments: ["slow-callback"], timeoutSeconds: 5,
+    onOutput: { _, _ in Thread.sleep(forTimeInterval: 3) })
+precondition(slowCallback.exitCode == 0 && slowCallback.stdout.contains("slow-callback"))
+Thread.sleep(forTimeInterval: 1.5)
+print("slow-pipe-reader-callback: ok")
+// A detached descendant can hold both pipe writers beyond the parent's
+// exit and the drain deadline. The old waiter closed a FileHandle while
+// its reader was blocked in read(), causing SIGABRT on the next iteration.
+let detachedWriter = """
+import subprocess, sys
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5); print('late', flush=True)"], start_new_session=True)
+print("parent-out", flush=True)
+print("parent-err", file=sys.stderr, flush=True)
+"""
+let detachedStart = Date()
+let detached = try ProcessRunner.run(executable: "/usr/bin/python3",
+    arguments: ["-c", detachedWriter], timeoutSeconds: 5)
+precondition(detached.exitCode == 0 && !detached.timedOut)
+precondition(detached.stdout.contains("parent-out") && detached.stderr.contains("parent-err"))
+precondition(detached.stdoutTruncated && detached.stderrTruncated, "incomplete pipe output must be disclosed")
+precondition(Date().timeIntervalSince(detachedStart) < 4.5, "pipe drain did not stop within its budget")
+Thread.sleep(forTimeInterval: 3.5)
+let afterDetached = try ProcessRunner.run(executable: "/bin/echo", arguments: ["still-alive"],
+    timeoutSeconds: 3)
+precondition(afterDetached.stdout == "still-alive\n", "runner unusable after detached writer")
+
+let detachedManagedExited = DispatchSemaphore(value: 0)
+let detachedManagedLock = NSLock()
+var detachedManagedOutput = ""
+let detachedManaged = try ProcessRunner.startManaged(executable: "/usr/bin/python3",
+    arguments: ["-c", detachedWriter],
+    onOutput: { text in
+        detachedManagedLock.lock(); defer { detachedManagedLock.unlock() }
+        detachedManagedOutput += text
+    }, onExit: { _ in detachedManagedExited.signal() })
+precondition(detachedManagedExited.wait(timeout: .now() + 3) == .success,
+    "managed reader did not stop within its budget")
+Thread.sleep(forTimeInterval: 4.5)
+detachedManagedLock.lock()
+let detachedManagedResult = detachedManagedOutput
+detachedManagedLock.unlock()
+precondition(detachedManagedResult.contains("parent-out") && detachedManagedResult.contains("parent-err"))
+precondition(!detachedManagedResult.contains("late"), "output arrived after terminal completion")
+withExtendedLifetime(detachedManaged) {}
+print("detached-pipe-writer-close-race: ok")
+
 do {
     _ = try ProcessRunner.run(
         executable: "/bin/echo",

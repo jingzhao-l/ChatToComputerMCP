@@ -29,6 +29,7 @@ private final class BoundedDataBuffer {
     private let lock = NSLock()
     private var data = Data()
     private var omittedBytes = 0
+    private var incomplete = false
 
     init(limit: Int) {
         self.limit = max(1, limit)
@@ -47,10 +48,16 @@ private final class BoundedDataBuffer {
         }
     }
 
+    func markIncomplete() {
+        lock.lock()
+        incomplete = true
+        lock.unlock()
+    }
+
     var truncated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return omittedBytes > 0
+        return omittedBytes > 0 || incomplete
     }
 
     func string() -> String {
@@ -61,7 +68,26 @@ private final class BoundedDataBuffer {
         if omittedBytes > 0 {
             text += "\n\n[...truncated \(omittedBytes) bytes...]"
         }
+        if incomplete {
+            text += "\n\n[...output drain ended before EOF...]"
+        }
         return text
+    }
+}
+
+// A waiter may ask readers to stop, but it must never close a pipe that
+// another thread is reading. Each reader owns its handle until it exits.
+fileprivate final class PipeDrainControl {
+    private let lock = NSLock()
+    private var stopped = false
+
+    var isStopped: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return stopped
+    }
+
+    func stop() {
+        lock.lock(); stopped = true; lock.unlock()
     }
 }
 
@@ -108,8 +134,9 @@ final class ProcessRunner {
         let stdoutBuffer = BoundedDataBuffer(limit: outputLimitBytes)
         let stderrBuffer = BoundedDataBuffer(limit: outputLimitBytes)
         let readers = DispatchGroup()
-        drain(handles.stdoutRead, into: stdoutBuffer, group: readers, onOutput: { onOutput?($0, false) })
-        drain(handles.stderrRead, into: stderrBuffer, group: readers, onOutput: { onOutput?($0, true) })
+        let drainControl = PipeDrainControl()
+        drain(handles.stdoutRead, into: stdoutBuffer, group: readers, control: drainControl, onOutput: { onOutput?($0, false) })
+        drain(handles.stderrRead, into: stderrBuffer, group: readers, control: drainControl, onOutput: { onOutput?($0, true) })
 
         let timeout = max(1, min(timeoutSeconds, maxTimeoutSeconds))
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
@@ -155,9 +182,7 @@ final class ProcessRunner {
             terminateProcessGroup(handles.pid, graceSeconds: 0.25)
         }
 
-        _ = readers.wait(timeout: .now() + 2)
-        handles.stdoutRead.closeFile()
-        handles.stderrRead.closeFile()
+        finishReaders(readers, control: drainControl, graceSeconds: 2)
 
         return ProcessResult(
             exitCode: decodeExitCode(status),
@@ -330,26 +355,60 @@ final class ProcessRunner {
         }
     }
 
+    /// Polling gives a reader with an inherited writer a bounded opportunity
+    /// to observe cancellation, even if EOF never arrives. Only this function
+    /// accesses or closes the handle, so neither a Foundation exception nor
+    /// a POSIX descriptor-reuse race can arise from a concurrent close.
+    fileprivate static func readPipe(_ handle: FileHandle, control: PipeDrainControl,
+                                     onChunk: (Data) -> Void) -> Bool {
+        defer { try? handle.close() }
+        let fd = handle.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { return false }
+        var bytes = [UInt8](repeating: 0, count: 16_384)
+        while !control.isStopped {
+            var event = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&event, 1, 100)
+            if ready < 0 && errno == EINTR { continue }
+            if ready < 0 { return false }
+            if ready == 0 { continue }
+            if control.isStopped { break }
+            if event.revents & Int16(POLLNVAL) != 0 { return false }
+            let count = Darwin.read(fd, &bytes, bytes.count)
+            if count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            if count < 0 { return false }
+            if count == 0 { return true }
+            onChunk(Data(bytes.prefix(count)))
+        }
+        return false
+    }
+
+    fileprivate static func finishReaders(_ readers: DispatchGroup, control: PipeDrainControl,
+                                         graceSeconds: TimeInterval) {
+        if readers.wait(timeout: .now() + graceSeconds) == .timedOut {
+            control.stop()
+            // The poll interval bounds idle-pipe cancellation. Let an already
+            // entered internal output callback finish before terminal delivery.
+            // Callbacks must not synchronously wait on process completion.
+            readers.wait()
+        }
+    }
+
     private static func drain(
         _ handle: FileHandle,
         into buffer: BoundedDataBuffer,
         group: DispatchGroup,
+        control: PipeDrainControl,
         onOutput: ((Data) -> Void)? = nil
     ) {
         group.enter()
         readerQueue.async {
             defer { group.leave() }
-            // POSIX read delivers available bytes without waiting for a full
-            // Foundation read buffer, so short commands stream immediately.
-            var bytes = [UInt8](repeating: 0, count: 16_384)
-            while true {
-                let count = Darwin.read(handle.fileDescriptor, &bytes, bytes.count)
-                if count < 0 && errno == EINTR { continue }
-                if count <= 0 { break }
-                let chunk = Data(bytes.prefix(count))
+            let complete = readPipe(handle, control: control) { chunk in
                 buffer.append(chunk)
                 onOutput?(chunk)
             }
+            if !complete { buffer.markIncomplete() }
         }
     }
 
@@ -384,6 +443,7 @@ final class ManagedProcess {
     private let stderrRead: FileHandle
     private let stateLock = NSLock()
     private let readerGroup = DispatchGroup()
+    private let drainControl = PipeDrainControl()
     private var running = true
     private let sensitiveValues: [String]
     private let onOutput: (String) -> Void
@@ -434,18 +494,12 @@ final class ManagedProcess {
     private func startReaders() {
         for handle in [stdoutRead, stderrRead] {
             readerGroup.enter()
-            ProcessRunner.readerQueue.async { [readerGroup, onOutput, sensitiveValues] in
+            ProcessRunner.readerQueue.async { [readerGroup, drainControl, onOutput, sensitiveValues] in
                 defer { readerGroup.leave() }
-                var buffer = [UInt8](repeating: 0, count: 16_384)
                 var pending = Data()
                 let redactor = StreamingSecretRedactor(secrets: sensitiveValues)
-                while true {
-                    // POSIX read returns available pipe bytes immediately. Foundation's
-                    // read(upToCount:) can wait to fill the requested size on a pipe.
-                    let count = Darwin.read(handle.fileDescriptor, &buffer, buffer.count)
-                    if count < 0 && errno == EINTR { continue }
-                    if count <= 0 { break }
-                    pending.append(contentsOf: buffer.prefix(count))
+                let complete = ProcessRunner.readPipe(handle, control: drainControl) { chunk in
+                    pending.append(chunk)
                     // Hold an incomplete UTF-8 suffix for the next chunk. Invalid
                     // sequences elsewhere still use the normal replacement character.
                     var end = pending.count
@@ -461,8 +515,12 @@ final class ManagedProcess {
                         pending = Data(pending.dropFirst(end))
                     }
                 }
-                let tail = redactor.append(String(decoding: pending, as: UTF8.self), final: true)
-                if !tail.isEmpty { onOutput(tail) }
+                // Only a genuine EOF can flush an incomplete UTF-8 suffix or
+                // potential secret prefix. A cancelled drain discards that tail.
+                if complete {
+                    let tail = redactor.append(String(decoding: pending, as: UTF8.self), final: true)
+                    if !tail.isEmpty { onOutput(tail) }
+                }
             }
         }
     }
@@ -486,9 +544,7 @@ final class ManagedProcess {
             // descriptors. End the whole process group, give readers a chance to
             // observe EOF, then close any remaining descriptors.
             ProcessRunner.terminateProcessGroup(targetPID, graceSeconds: 0.25)
-            _ = self.readerGroup.wait(timeout: .now() + 1)
-            self.stdoutRead.closeFile()
-            self.stderrRead.closeFile()
+            ProcessRunner.finishReaders(self.readerGroup, control: self.drainControl, graceSeconds: 1)
             self.stateLock.lock()
             self.running = false
             self.stateLock.unlock()

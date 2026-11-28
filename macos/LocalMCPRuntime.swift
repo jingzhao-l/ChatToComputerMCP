@@ -3,6 +3,7 @@ import CoreFoundation
 import SystemConfiguration
 import Darwin
 import Security
+import os
 
 enum TunnelProvider: String {
     case openAI = "openai"
@@ -161,6 +162,10 @@ private final class ProfileLock {
 }
 
 final class LocalMCPRuntime {
+    // Only lifecycle classifications, attempt IDs and numeric exit/backoff
+    // information are persisted in the OS log. Never log endpoint URLs,
+    // tunnel credentials, shell commands, or raw subprocess output here.
+    private static let transportDiagnostics = Logger(subsystem: "local.chat-to-computer-mcp", category: "transport")
     private let queue = DispatchQueue(label: "com.filemcp.runtime", qos: .userInitiated)
     private var workspaceOAuthPolicy: (([WorkspaceDefinition]) throws -> (String, String))?
     private let queueSpecificKey = DispatchSpecificKey<Void>()
@@ -243,6 +248,7 @@ final class LocalMCPRuntime {
                 DispatchQueue.main.async { completion(false) }
                 return
             }
+            Self.transportDiagnostics.notice("watchdog_restart attempt=\(self.tunnelAttempt.uuidString, privacy: .public)")
             self.emitLog("Control plane has been unavailable; restarting the transport without stopping the local gateway.\n")
             self.setState(.starting)
             if let process = self.tunnelProcess { process.stop() }
@@ -658,6 +664,7 @@ final class LocalMCPRuntime {
             return
         }
         transportStarted = true
+        Self.transportDiagnostics.notice("openai_transport_started attempt=\(attempt.uuidString, privacy: .public)")
         setState(.running)
         notifyCloudHealth(.awaitingPoll)
         scheduleControlPlaneHealthCheck(for: tunnelAttempt, after: 5)
@@ -715,6 +722,7 @@ final class LocalMCPRuntime {
                         guard self.tunnelAttempt == attempt, self.state == .starting, !self.isStopRequested else { return }
                         self.removeCloudflaredTokenFile()
                         self.transportStarted = true
+                        Self.transportDiagnostics.notice("cloudflare_transport_connected attempt=\(attempt.uuidString, privacy: .public)")
                         self.transportRetryDelay = 2
                         self.setState(.running)
                         self.emitLog("Cloudflare Tunnel connected.\n")
@@ -758,6 +766,7 @@ final class LocalMCPRuntime {
         let previous = cloudHealth
         cloudHealth = status
         if status != previous {
+            Self.transportDiagnostics.notice("cloud_health attempt=\(self.tunnelAttempt.uuidString, privacy: .public) previous=\(String(describing: previous), privacy: .public) current=\(String(describing: status), privacy: .public)")
             switch status {
             case .connected:
                 transportRetryDelay = 2
@@ -891,6 +900,7 @@ final class LocalMCPRuntime {
 
     private func tunnelDidExit(exitCode: Int32, attempt: UUID) {
         guard attempt == tunnelAttempt else { return }
+        Self.transportDiagnostics.notice("transport_exit attempt=\(attempt.uuidString, privacy: .public) code=\(exitCode, privacy: .public) requested_stop=\(self.isStopRequested, privacy: .public)")
         tunnelProcess = nil
         removeCloudflaredTokenFile()
         removeTunnelHealthURLFile()
@@ -920,6 +930,7 @@ final class LocalMCPRuntime {
         let recovery = transportRecoveryID
         let delay = transportRetryDelay
         transportRetryDelay = min(60, delay * 2)
+        Self.transportDiagnostics.notice("transport_recovery delay_seconds=\(Int(delay), privacy: .public)")
         setState(.starting)
         emitLog("Reconnecting transport in \(Int(delay)) seconds; local commands continue.\n")
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -928,6 +939,7 @@ final class LocalMCPRuntime {
             do { try restart() }
             catch {
                 self.removeCloudflaredTokenFile(); self.removeTunnelHealthURLFile()
+                Self.transportDiagnostics.notice("transport_recovery_failed")
                 self.emitLog("Transport restart failed; local tasks retained.\n")
                 self.scheduleTransportRecovery()
             }

@@ -69,6 +69,24 @@ macOS may prompt again after a code-signing identity change. Review and approve 
 
 Check whether the original `local.filemcp` LaunchAgent is loaded. The new installation refuses potentially competing profiles by default. Configure a genuinely distinct profile and perform a deliberate migration before enabling automatic connections.
 
+### macOS intermittent disconnection
+
+When the gateway is available again, inspect the gateway crash reports in
+`~/Library/Logs/DiagnosticReports` and the OS transport lifecycle log:
+
+```sh
+/usr/bin/log show --last 2h --style compact \
+  --predicate 'subsystem == "local.chat-to-computer-mcp" AND category == "transport"'
+```
+
+The lifecycle events distinguish cloud health changes, watchdog-requested
+transport restarts, actual child exits and scheduled recoveries. They contain
+only event classifications, ephemeral attempt IDs and numeric status/backoff
+information, not raw tunnel output, URLs or credentials. A child restart does
+not itself prove an upstream outage; correlate the reason and exit event
+before diagnosing it. A crash report showing SIGABRT in the command-output
+reader is a gateway failure, not a cloud connectivity failure.
+
 ## Workspaces and commands
 
 **`workspace_call` says a workspace is unknown**
