@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import SystemConfiguration
 import Darwin
 import Security
@@ -52,19 +53,37 @@ enum TunnelCloudHealth: Equatable {
     case connected
     case stalled
 
+    // A numeric zero means the process reports no successful poll yet.
+    // Missing/malformed metrics (including JSON booleans) are not evidence
+    // that the cloud transport stalled.
+    private static func pollMetric(fromJSON data: Data) -> TimeInterval? {
+        guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let poll = value["control_plane_poll"] as? [String: Any],
+              let timestamp = poll["value"] as? NSNumber,
+              CFGetTypeID(timestamp) != CFBooleanGetTypeID() else { return nil }
+        let seconds = timestamp.doubleValue
+        return seconds.isFinite && seconds >= 0 ? seconds : nil
+    }
+
     static func hasPollComponent(fromJSON data: Data) -> Bool {
-        guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return false
-        }
-        return value["control_plane_poll"] is [String: Any]
+        pollMetric(fromJSON: data) != nil
     }
 
     static func successfulPollTimestamp(fromJSON data: Data) -> TimeInterval? {
-        guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let poll = value["control_plane_poll"] as? [String: Any],
-              let timestamp = poll["value"] as? NSNumber else { return nil }
-        let seconds = timestamp.doubleValue
-        return seconds.isFinite && seconds > 0 ? seconds : nil
+        guard let seconds = pollMetric(fromJSON: data), seconds > 0 else { return nil }
+        return seconds
+    }
+
+    // Each probe must provide its own evidence. An old cached timestamp must
+    // never turn a broken probe into a stalled/restart decision, or mask a
+    // valid poll after a bogus future timestamp or a wall-clock correction.
+    static func evaluateProbe(data: Data?, startedAt: TimeInterval,
+                              now: TimeInterval) -> TunnelCloudHealth {
+        guard let data, let metric = pollMetric(fromJSON: data) else { return .awaitingPoll }
+        guard metric == 0 || (metric >= startedAt - 10 && metric <= now + 30) else {
+            return .awaitingPoll
+        }
+        return evaluate(lastPoll: metric == 0 ? nil : metric, startedAt: startedAt, now: now)
     }
 
     static func evaluate(lastPoll: TimeInterval?, startedAt: TimeInterval,
@@ -169,8 +188,6 @@ final class LocalMCPRuntime {
     private var tunnelAttempt = UUID()
     private var tunnelHealthURLFile: URL?
     private var tunnelStartedAt: TimeInterval = 0
-    private var lastSuccessfulControlPlanePoll: TimeInterval?
-    private var hasObservedPollHealth = false
     private var cloudHealth: TunnelCloudHealth = .awaitingPoll
     private var healthCheckGeneration = UUID()
     private let profileDirectoryOverride: URL?
@@ -418,8 +435,6 @@ final class LocalMCPRuntime {
         restartTransport = nil
         healthCheckGeneration = UUID()
         cloudHealth = .awaitingPoll
-        lastSuccessfulControlPlanePoll = nil
-        hasObservedPollHealth = false
         tunnelStartedAt = Date().timeIntervalSince1970
         removeTunnelHealthURLFile()
         setState(.starting)
@@ -618,8 +633,6 @@ final class LocalMCPRuntime {
         healthCheckGeneration = UUID()
         let attempt = tunnelAttempt
         tunnelStartedAt = Date().timeIntervalSince1970
-        lastSuccessfulControlPlanePoll = nil
-        hasObservedPollHealth = false
         let healthURLFile = try makeTunnelHealthURLFile()
         let managed = try ProcessRunner.startManaged(
             executable: executable,
@@ -783,7 +796,7 @@ final class LocalMCPRuntime {
                   self.healthCheckGeneration == generation,
                   self.state == .running,
                   let file = self.tunnelHealthURLFile else { return }
-            var observed: TimeInterval?
+            var probeData: Data?
             if let executable = try? self.tunnelClientPath(),
                let result = try? ProcessRunner.run(
                    executable: executable,
@@ -795,24 +808,11 @@ final class LocalMCPRuntime {
                    shouldCancel: { [weak self] in self?.isStopRequested ?? true }
                ),
                let data = result.stdout.data(using: .utf8) {
-                if TunnelCloudHealth.hasPollComponent(fromJSON: data) {
-                    self.hasObservedPollHealth = true
-                }
-                observed = TunnelCloudHealth.successfulPollTimestamp(fromJSON: data)
+                probeData = data
             }
-            if let observed, observed >= self.tunnelStartedAt - 10 {
-                self.lastSuccessfulControlPlanePoll = max(
-                    self.lastSuccessfulControlPlanePoll ?? 0, observed)
-            }
-            // A broken/unsupported local health probe is not evidence that
-            // a healthy cloud connection has stopped polling. Never restart
-            // based solely on a health CLI failure.
-            let status: TunnelCloudHealth = self.hasObservedPollHealth
-                ? TunnelCloudHealth.evaluate(
-                    lastPoll: self.lastSuccessfulControlPlanePoll,
-                    startedAt: self.tunnelStartedAt,
-                    now: Date().timeIntervalSince1970)
-                : .awaitingPoll
+            let status = TunnelCloudHealth.evaluateProbe(
+                data: probeData, startedAt: self.tunnelStartedAt,
+                now: Date().timeIntervalSince1970)
             self.notifyCloudHealth(status)
             self.scheduleControlPlaneHealthCheck(for: attempt, after: 30)
         }

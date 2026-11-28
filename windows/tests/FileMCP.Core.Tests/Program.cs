@@ -807,6 +807,13 @@ internal static partial class Program
             await WaitHealthAsync(runtime, TunnelCloudHealth.Connected);
             clock.Advance(TimeSpan.FromSeconds(181));
             await WaitHealthAsync(runtime, TunnelCloudHealth.Stalled);
+            // The child is alive, but the diagnostic has become unavailable.
+            // A failed health command must not reuse prior stall evidence.
+            File.WriteAllText(pollFile, "{}");
+            await WaitHealthAsync(runtime, TunnelCloudHealth.AwaitingPoll);
+            Assert(runtime.State.Status == LocalMcpRuntimeStatus.Running, "missing metric cannot justify restart");
+            File.WriteAllText(pollFile, System.Text.Json.JsonSerializer.Serialize(new { control_plane_poll = new { value = stamp } }));
+            await WaitHealthAsync(runtime, TunnelCloudHealth.Stalled);
             Assert(runtime.State.Status == LocalMcpRuntimeStatus.Running, "stale polling alone does not restart without opt-in");
             runtime.AutomaticHealthRecovery = true;
             clock.Advance(TimeSpan.FromSeconds(61));

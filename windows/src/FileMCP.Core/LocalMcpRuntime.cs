@@ -361,13 +361,12 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
     private async Task MonitorCloudHealthAsync(Guid attempt, string executable, string locator,
         DateTimeOffset started, CancellationToken cancellation)
     {
-        double? lastPoll = null;
-        bool observedMetric = false;
         try
         {
             await _healthWake.WaitAsync(TimeSpan.FromSeconds(5), cancellation).ConfigureAwait(false);
             while (!cancellation.IsCancellationRequested)
             {
+                (bool HasMetric, double? Timestamp) observation = (false, null);
                 try
                 {
                     var env = TunnelClientEnvironment("", "");
@@ -376,11 +375,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                         ["health", "--url-file", locator, "--require-control-plane-poll", "--json"],
                         environment: env, timeoutSeconds: 5, outputLimitBytes: 16_384,
                         cancellationToken: cancellation).ConfigureAwait(false);
-                    var observation = TunnelCloudHealthPolicy.Parse(result.Stdout);
-                    observedMetric |= observation.HasMetric;
-                    if (observation.Timestamp is double stamp &&
-                        TunnelCloudHealthPolicy.ValidTimestamp(stamp, started, HealthClock.GetUtcNow()))
-                        lastPoll = Math.Max(lastPoll ?? 0, stamp);
+                    observation = TunnelCloudHealthPolicy.Parse(result.Stdout);
                 }
                 catch (OperationCanceledException) { return; }
                 catch { /* Broken local probe is not proof of cloud failure. */ }
@@ -390,7 +385,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     if (attempt != _transportAttempt || cancellation.IsCancellationRequested || _requestedStop ||
                         State.Status != LocalMcpRuntimeStatus.Running) return;
                     var now = HealthClock.GetUtcNow();
-                    var health = observedMetric ? TunnelCloudHealthPolicy.Evaluate(lastPoll, started, now) : TunnelCloudHealth.AwaitingPoll;
+                    var health = TunnelCloudHealthPolicy.EvaluateProbe(observation, started, now);
                     if (health != CloudHealth)
                     {
                         if (health == TunnelCloudHealth.Connected) EmitLog("OpenAI control-plane polling verified.\n");

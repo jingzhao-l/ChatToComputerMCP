@@ -4,6 +4,7 @@
 
 - Prevent macOS gateway aborts caused by command or managed-process pipe readers racing a forced FileHandle close. Readers exclusively own their handles, stop on a bounded poll, and report incomplete synchronous output rather than crashing the service.
 - Record credential-free macOS transport lifecycle transitions, watchdog decisions, exits and recovery delays in the native system log for outage diagnosis.
+- Require current valid control-plane health evidence on macOS and Windows; missing/malformed/future poll metrics no longer cause false stall recovery or poison subsequent valid observations.
 
 ## [0.7.0] — 2026-11-24
 

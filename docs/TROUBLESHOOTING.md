@@ -55,6 +55,10 @@ control-plane endpoint while running the real vendored tunnel-client, and
 verifies successful polling resumes without a process restart. This does not
 interrupt production ChatGPT connections. A healthy poll is not a
 substitute for a real ChatGPT tool invocation or permanent network uptime.
+On both platforms, a missing, malformed or implausible poll metric returns to
+Connecting (unverified), not Reconnecting: a failed local diagnostic is not
+proof of a stalled cloud transport. Automatic recovery requires a current
+valid stale-poll observation; a later valid probe can restore Connected.
 Physical lid-close/sleep is not forced on a user machine during automated tests.
 
 **A new signed Mac app is waiting for Keychain access**
