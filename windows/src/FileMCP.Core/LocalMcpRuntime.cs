@@ -375,7 +375,8 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                         ["health", "--url-file", locator, "--require-control-plane-poll", "--json"],
                         environment: env, timeoutSeconds: 5, outputLimitBytes: 16_384,
                         cancellationToken: cancellation).ConfigureAwait(false);
-                    observation = TunnelCloudHealthPolicy.Parse(result.Stdout);
+                    if (!result.TimedOut && !result.StdoutTruncated)
+                        observation = TunnelCloudHealthPolicy.Parse(result.Stdout);
                 }
                 catch (OperationCanceledException) { return; }
                 catch { /* Broken local probe is not proof of cloud failure. */ }
@@ -385,7 +386,9 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
                     if (attempt != _transportAttempt || cancellation.IsCancellationRequested || _requestedStop ||
                         State.Status != LocalMcpRuntimeStatus.Running) return;
                     var now = HealthClock.GetUtcNow();
-                    var health = TunnelCloudHealthPolicy.EvaluateProbe(observation, started, now);
+                    var health = _server?.IsReady == true
+                        ? TunnelCloudHealthPolicy.EvaluateProbe(observation, started, now)
+                        : TunnelCloudHealth.AwaitingPoll;
                     if (health != CloudHealth)
                     {
                         if (health == TunnelCloudHealth.Connected) EmitLog("OpenAI control-plane polling verified.\n");
@@ -473,7 +476,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             if (attempt != _transportAttempt) return;
             CleanupTransport();
             if (_requestedStop) { FinishStop(); return; }
-            if (_transportStarted && _server?.IsReady == true && _activeConfiguration is not null)
+            if (_transportStarted && _server?.IsOperational == true && _activeConfiguration is not null)
             {
                 EmitLog($"Tunnel exited (status {exitCode}); retaining the local gateway and command sessions.\n");
                 ScheduleTransportRecovery();
@@ -488,7 +491,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
 
     private void ScheduleTransportRecovery()
     {
-        if (_requestedStop || _server?.IsReady != true || _startupCts is null) return;
+        if (_requestedStop || _server?.IsOperational != true || _startupCts is null) return;
         _recoveryGeneration = Guid.NewGuid();
         var generation = _recoveryGeneration;
         var delay = _transportRetryDelay;
@@ -507,7 +510,7 @@ public sealed class LocalMcpRuntime : IAsyncDisposable
             try
             {
                 if (generation != _recoveryGeneration || _requestedStop ||
-                    _server?.IsReady != true || _activeConfiguration is null ||
+                    _server?.IsOperational != true || _activeConfiguration is null ||
                     _localAuthToken is null || _activeHealthAddress is null) return;
                 try {
                     await LaunchTransportAsync(_activeConfiguration, _localAuthToken,

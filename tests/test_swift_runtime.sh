@@ -289,6 +289,61 @@ let cancelled = try ProcessRunner.run(executable: "/usr/bin/touch", arguments: [
 precondition(cancelled.exitCode == 130 && !FileManager.default.fileExists(atPath: cancelledMarker),
     "already-cancelled process must never launch")
 print("process-pre-spawn-cancellation: ok")
+
+// Child stdin disappearing or never draining must be a tool error,
+// never a SIGPIPE or an indefinitely blocked gateway request.
+let deadPipe = Pipe()
+try deadPipe.fileHandleForReading.close()
+do {
+    try ProcessRunner.writePipe(deadPipe.fileHandleForWriting, data: Data("probe".utf8), timeoutSeconds: 1)
+    preconditionFailure("closed reader accepted a write")
+} catch {
+    precondition(error is ProcessRunnerError)
+}
+try deadPipe.fileHandleForWriting.close()
+
+let fullPipe = Pipe()
+let writeStarted = ProcessInfo.processInfo.systemUptime
+do {
+    try ProcessRunner.writePipe(fullPipe.fileHandleForWriting,
+        data: Data(repeating: 65, count: 1_000_000), timeoutSeconds: 0.3)
+    preconditionFailure("undrained pipe accepted all bytes")
+} catch ProcessRunnerError.pipeWriteTimeout {}
+precondition(ProcessInfo.processInfo.systemUptime - writeStarted < 2, "pipe write ignored its deadline")
+try fullPipe.fileHandleForWriting.close()
+try fullPipe.fileHandleForReading.close()
+print("dead-and-undrained-pipe-writes: ok")
+
+// Concurrency must not leave other commands holding an inherited writer.
+let heldFD = open("/dev/null", O_RDONLY)
+precondition(heldFD >= 3)
+defer { close(heldFD) }
+let isolated = try ProcessRunner.run(executable: "/bin/sh",
+    arguments: ["-c", "if [ -e /dev/fd/\(heldFD) ]; then exit 5; fi"],
+    timeoutSeconds: 3)
+precondition(isolated.exitCode == 0, "gateway descriptor leaked into child")
+let parallel = DispatchGroup()
+final class ParallelFailures: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func add() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+let failures = ParallelFailures()
+for index in 0..<12 {
+    parallel.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+        defer { parallel.leave() }
+        let result = try? ProcessRunner.run(executable: "/bin/echo",
+            arguments: ["parallel-\(index)"], timeoutSeconds: 5)
+        if result?.exitCode != 0 || result?.stdout != "parallel-\(index)\n" {
+            failures.add()
+        }
+    }
+}
+precondition(parallel.wait(timeout: .now() + 15) == .success)
+precondition(failures.value == 0, "parallel child isolation or output failed")
+print("parallel-process-descriptor-isolation: ok")
 SWIFT
 
 swiftc -o "$TMP_DIR/process-test" \
@@ -607,6 +662,42 @@ unsetenv("MCP_TEST_POLL_FILE")
 first.checkCloudHealthNow()
 waitFor({ first.cloudHealthSnapshot == .connected }, timeout: 8, label: "fresh live probe after future observation")
 print("runtime-cloud-poll-current-evidence: ok")
+
+// Exercise an actual NWListener cancellation with the same authenticated
+// gateway instance. Rebinding must not destroy workspace/catalog state or
+// resurrect a listener after an explicit stop.
+let rebindServer = try LocalMCPServer(port: 18097, allowedDirectory: root.path,
+    gitUserName: "", gitUserEmail: "", enableCommands: false,
+    localAuthToken: String(repeating: "a", count: 64), log: { _ in })
+try rebindServer.start()
+precondition(rebindServer.isReady && rebindServer.isOperational)
+rebindServer.cancelListenerForTest()
+waitFor({ !rebindServer.isReady }, timeout: 2, label: "listener readiness invalidated")
+precondition(rebindServer.isOperational, "listener failure retired the gateway")
+waitFor({ rebindServer.isReady }, timeout: 8, label: "listener rebound")
+let rebindHTTP = try ProcessRunner.run(executable: "/usr/bin/curl",
+    arguments: ["--noproxy", "*", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+                "http://127.0.0.1:18097/mcp"], timeoutSeconds: 3)
+precondition(rebindHTTP.exitCode == 0 && rebindHTTP.stdout == "401",
+    "rebound listener lost its authentication gate")
+let rebindTools = try ProcessRunner.run(executable: "/usr/bin/curl",
+    arguments: ["--noproxy", "*", "-sS", "-H", "Content-Type: application/json",
+        "-H", "\(fileMCPLocalAuthHeaderName): \(String(repeating: "a", count: 64))",
+        "-d", #"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+        "http://127.0.0.1:18097/mcp"], timeoutSeconds: 3)
+precondition(rebindTools.exitCode == 0 && rebindTools.stdout.contains("list_files"),
+    "rebound listener lost its tool catalog")
+rebindServer.cancelListenerForTest()
+waitFor({ !rebindServer.isReady }, timeout: 2, label: "second listener cancellation")
+rebindServer.stop()
+Thread.sleep(forTimeInterval: 1.5)
+precondition(!rebindServer.isReady && !rebindServer.isOperational,
+    "explicit stop must cancel listener recovery")
+let stoppedHTTP = try ProcessRunner.run(executable: "/usr/bin/curl",
+    arguments: ["--noproxy", "*", "-sS", "--max-time", "1",
+                "http://127.0.0.1:18097/mcp"], timeoutSeconds: 2)
+precondition(stoppedHTTP.exitCode != 0, "stopped listener resurrected")
+print("runtime-local-listener-rebind: ok")
 waitFor({ holdsIdleSleepAssertion() }, timeout: 2, label: "idle sleep assertion while running")
 let authLines = try String(contentsOf: authCapture, encoding: .utf8)
     .split(whereSeparator: { $0.isNewline })
@@ -954,7 +1045,7 @@ print("cloudflare-cli-management: ok")
 print("runtime-cloudflare-provider: ok")
 SWIFT
 
-swiftc -framework Network -framework Security -framework SystemConfiguration -o "$TMP_DIR/runtime-test" \
+swiftc -D CTCMCP_TESTING -framework Network -framework Security -framework SystemConfiguration -o "$TMP_DIR/runtime-test" \
     macos/ProcessRunner.swift \
     macos/Ripgrep.swift \
     macos/CUA.swift macos/LocalMCPServer.swift \

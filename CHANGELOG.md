@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.1] — 2026-11-28
+
+- Bound Windows pipe-drain completion, seal terminal output, cancel stalled readers, and dispose process handles on both successful and failed launches.
+
+- Recover a failed or cancelled local MCP listener with bounded rebind backoff on macOS and Windows without dropping the gateway's workspace and command state; invalidate stale readiness and prevent listener resurrection after explicit shutdown.
+
+- Harden subprocess descriptor ownership, failure handling, bounded stdin writes and Windows process-handle cleanup; block watchdog restarts while accepted workspace requests remain and reject incomplete health probes.
+
 - Prevent macOS gateway aborts caused by command or managed-process pipe readers racing a forced FileHandle close. Readers exclusively own their handles, stop on a bounded poll, and report incomplete synchronous output rather than crashing the service.
 - Record credential-free macOS transport lifecycle transitions, watchdog decisions, exits and recovery delays in the native system log for outage diagnosis.
 - Require current valid control-plane health evidence on macOS and Windows; missing/malformed/future poll metrics no longer cause false stall recovery or poison subsequent valid observations.

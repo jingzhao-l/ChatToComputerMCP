@@ -84,7 +84,7 @@ transport restarts, actual child exits and scheduled recoveries. They contain
 only event classifications, ephemeral attempt IDs and numeric status/backoff
 information, not raw tunnel output, URLs or credentials. A child restart does
 not itself prove an upstream outage; correlate the reason and exit event
-before diagnosing it. A crash report showing SIGABRT in the command-output
+before diagnosing it. A local listener failure now invalidates readiness and retries its loopback bind independently, retaining the gateway state. A crash report showing SIGABRT in the command-output
 reader is a gateway failure, not a cloud connectivity failure.
 
 ## Workspaces and commands

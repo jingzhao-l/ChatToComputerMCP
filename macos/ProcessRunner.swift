@@ -13,6 +13,8 @@ struct ProcessResult {
 enum ProcessRunnerError: LocalizedError {
     case invalidInput(String)
     case spawnFailed(String, Int32)
+    case pipeFailed(Int32)
+    case pipeWriteTimeout
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +22,10 @@ enum ProcessRunnerError: LocalizedError {
             return message
         case let .spawnFailed(executable, code):
             return "Could not launch \(executable) (errno \(code): \(String(cString: strerror(code))))."
+        case let .pipeFailed(code):
+            return "Process pipe failed (errno \(code): \(String(cString: strerror(code))))."
+        case .pipeWriteTimeout:
+            return "Process pipe write timed out."
         }
     }
 }
@@ -220,24 +226,31 @@ final class ProcessRunner {
     ) throws -> SpawnHandles {
         try validatePOSIXStrings(executable: executable, arguments: arguments, cwd: cwd, environment: environment)
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        let stdoutReadFD = stdoutPipe.fileHandleForReading.fileDescriptor
-        let stdoutWriteFD = stdoutPipe.fileHandleForWriting.fileDescriptor
-        let stderrReadFD = stderrPipe.fileHandleForReading.fileDescriptor
-        let stderrWriteFD = stderrPipe.fileHandleForWriting.fileDescriptor
+        let stdoutPipe = try makePipe()
+        let stderrPipe = try makePipe()
+        let stdoutReadFD = stdoutPipe.read.fileDescriptor
+        let stdoutWriteFD = stdoutPipe.write.fileDescriptor
+        let stderrReadFD = stderrPipe.read.fileDescriptor
+        let stderrWriteFD = stderrPipe.write.fileDescriptor
+        defer {
+            try? stdoutPipe.write.close()
+            try? stderrPipe.write.close()
+        }
 
+        func requireSpawnAction(_ code: Int32) throws {
+            guard code == 0 else { throw ProcessRunnerError.spawnFailed(executable, code) }
+        }
         var actions: posix_spawn_file_actions_t? = nil
-        posix_spawn_file_actions_init(&actions)
+        try requireSpawnAction(posix_spawn_file_actions_init(&actions))
         defer { posix_spawn_file_actions_destroy(&actions) }
 
-        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_adddup2(&actions, stdoutWriteFD, STDOUT_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, stderrWriteFD, STDERR_FILENO)
-        posix_spawn_file_actions_addclose(&actions, stdoutReadFD)
-        posix_spawn_file_actions_addclose(&actions, stderrReadFD)
-        posix_spawn_file_actions_addclose(&actions, stdoutWriteFD)
-        posix_spawn_file_actions_addclose(&actions, stderrWriteFD)
+        try requireSpawnAction(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0))
+        try requireSpawnAction(posix_spawn_file_actions_adddup2(&actions, stdoutWriteFD, STDOUT_FILENO))
+        try requireSpawnAction(posix_spawn_file_actions_adddup2(&actions, stderrWriteFD, STDERR_FILENO))
+        try requireSpawnAction(posix_spawn_file_actions_addclose(&actions, stdoutReadFD))
+        try requireSpawnAction(posix_spawn_file_actions_addclose(&actions, stderrReadFD))
+        try requireSpawnAction(posix_spawn_file_actions_addclose(&actions, stdoutWriteFD))
+        try requireSpawnAction(posix_spawn_file_actions_addclose(&actions, stderrWriteFD))
         if let cwd, !cwd.isEmpty {
             let result = addWorkingDirectoryAction(&actions, cwd: cwd)
             guard result == 0 else {
@@ -246,11 +259,13 @@ final class ProcessRunner {
         }
 
         var attributes: posix_spawnattr_t? = nil
-        posix_spawnattr_init(&attributes)
+        try requireSpawnAction(posix_spawnattr_init(&attributes))
         defer { posix_spawnattr_destroy(&attributes) }
-        let flags = Int16(POSIX_SPAWN_SETPGROUP)
-        posix_spawnattr_setflags(&attributes, flags)
-        posix_spawnattr_setpgroup(&attributes, 0)
+        // Never inherit unrelated gateway sockets or other commands' pipes,
+        // even when another thread is between pipe() and setting CLOEXEC.
+        let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
+        try requireSpawnAction(posix_spawnattr_setflags(&attributes, flags))
+        try requireSpawnAction(posix_spawnattr_setpgroup(&attributes, 0))
 
         var argv: [UnsafeMutablePointer<CChar>?] = ([executable] + arguments).map { strdup($0) }
         argv.append(nil)
@@ -285,20 +300,60 @@ final class ProcessRunner {
             }
         }
 
-        stdoutPipe.fileHandleForWriting.closeFile()
-        stderrPipe.fileHandleForWriting.closeFile()
-
         guard result == 0 else {
-            stdoutPipe.fileHandleForReading.closeFile()
-            stderrPipe.fileHandleForReading.closeFile()
             throw ProcessRunnerError.spawnFailed(executable, result)
         }
 
-        return SpawnHandles(
-            pid: pid,
-            stdoutRead: stdoutPipe.fileHandleForReading,
-            stderrRead: stderrPipe.fileHandleForReading
-        )
+        return SpawnHandles(pid: pid, stdoutRead: stdoutPipe.read, stderrRead: stderrPipe.read)
+    }
+
+    private static func makePipe() throws -> (read: FileHandle, write: FileHandle) {
+        var descriptors: [Int32] = [-1, -1]
+        guard pipe(&descriptors) == 0 else { throw ProcessRunnerError.pipeFailed(errno) }
+        // Unlike Foundation Pipe(), an exhausted descriptor table is a
+        // recoverable tool error. Own both FDs immediately on success.
+        let read = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
+        let write = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+        for fd in descriptors {
+            guard fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else {
+                throw ProcessRunnerError.pipeFailed(errno)
+            }
+        }
+        return (read, write)
+    }
+
+    /// A child that exits before reading stdin must fail the request, not
+    /// deliver SIGPIPE to the gateway. A nonreading child gets a deadline.
+    static func writePipe(_ handle: FileHandle, data: Data, timeoutSeconds: TimeInterval,
+                          onProgress: () -> Void = {}) throws {
+        let fd = handle.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETNOSIGPIPE, 1) == 0,
+              fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw ProcessRunnerError.pipeFailed(errno)
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + timeoutSeconds
+        var offset = 0
+        while offset < data.count {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw ProcessRunnerError.pipeWriteTimeout
+            }
+            onProgress()
+            var event = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            let ready = poll(&event, 1, 50)
+            if ready < 0 && errno == EINTR { continue }
+            if ready < 0 { throw ProcessRunnerError.pipeFailed(errno) }
+            if ready == 0 { continue }
+            if event.revents & Int16(POLLERR | POLLHUP | POLLNVAL) != 0 {
+                throw ProcessRunnerError.pipeFailed(EPIPE)
+            }
+            let count = data.withUnsafeBytes { bytes in
+                Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), data.count - offset)
+            }
+            if count > 0 { offset += count; continue }
+            if count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            throw ProcessRunnerError.pipeFailed(count == 0 ? EPIPE : errno)
+        }
     }
 
     // The standardized symbol arrived with macOS 26 SDK. Resolving it at

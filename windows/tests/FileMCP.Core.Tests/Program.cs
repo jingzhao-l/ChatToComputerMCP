@@ -163,6 +163,31 @@ internal static partial class Program
         var childAlive = false;
         try { using var child = Process.GetProcessById(childPid); childAlive = !child.HasExited; } catch (ArgumentException) { }
         Assert(!childAlive, "job object descendant cleanup");
+        // Simulate a reader whose inherited writer never reaches EOF.
+        // Cancellation must be requested within a fixed drain budget.
+        using var stuckReaderStop = new CancellationTokenSource();
+        var stuckReader = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var drainWatch = Stopwatch.StartNew();
+        await ProcessRunner.FinishReadersAsync(stuckReader.Task, stuckReaderStop, TimeSpan.FromMilliseconds(100));
+        Assert(stuckReaderStop.IsCancellationRequested && drainWatch.Elapsed < TimeSpan.FromSeconds(3),
+            "pipe reader deadline must not wait indefinitely for EOF");
+        stuckReader.TrySetResult();
+        var sealedBuffer = new BoundedTextBuffer(1024);
+        sealedBuffer.Append("before".AsSpan());
+        sealedBuffer.Seal(incomplete: true);
+        sealedBuffer.Append("late".AsSpan());
+        Assert(sealedBuffer.Truncated && sealedBuffer.ToString().Contains("before", StringComparison.Ordinal)
+            && !sealedBuffer.ToString().Contains("late", StringComparison.Ordinal),
+            "incomplete output must be reported, late data must not mutate terminal output");
+        var managedDone = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var managedText = new System.Text.StringBuilder();
+        using (var child = ProcessRunner.StartManaged("cmd.exe", ["/d", "/c", "echo managed-output"],
+            null, null, text => managedText.Append(text), code => managedDone.TrySetResult(code)))
+        {
+            Assert(await managedDone.Task.WaitAsync(TimeSpan.FromSeconds(8)) == 0
+                && managedText.ToString().Contains("managed-output", StringComparison.Ordinal),
+                "managed output and exit callback must complete in order");
+        }
         Console.WriteLine("windows-process-runner: ok");
     }
 
@@ -662,6 +687,17 @@ internal static partial class Program
         var port = FreePort(); var token = new string('a', 64);
         await using var server = new LocalMcpServer((ushort)port, workspace, "", "", false, token, _ => { });
         await server.StartAsync();
+
+        server.CancelListenerForTest();
+        var rebindDeadline = DateTime.UtcNow.AddSeconds(3);
+        while (server.IsReady && DateTime.UtcNow < rebindDeadline) await Task.Delay(25);
+        Assert(!server.IsReady && server.IsOperational, "listener failure must invalidate readiness without retiring gateway");
+        rebindDeadline = DateTime.UtcNow.AddSeconds(8);
+        while (!server.IsReady && DateTime.UtcNow < rebindDeadline) await Task.Delay(25);
+        Assert(server.IsReady, "listener must rebind after unexpected cancellation");
+        var rebound = await SendHttpAsync(port, "POST", "/mcp", AuthHeaders(token),
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}");
+        Assert(rebound.Contains("list_files", StringComparison.Ordinal), "listener rebind retains tool catalog and authentication");
 
         var fuzzIterations = int.TryParse(Environment.GetEnvironmentVariable("MCP_HTTP_FUZZ_ITERATIONS"), out var configuredFuzz) ? Math.Max(1, configuredFuzz) : 160;
         var random = new Random(0xF11E);
