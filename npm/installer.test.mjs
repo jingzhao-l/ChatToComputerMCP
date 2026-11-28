@@ -121,15 +121,15 @@ test('macOS local build places a real app bundle under versioned release and can
     'printf "#!/bin/sh\\nexit 0\\n" > dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP',
     'chmod +x dist/ChatToComputerMCP.app/Contents/MacOS/ChatToComputerMCP',
     "cat > dist/ChatToComputerMCP.app/Contents/Info.plist <<'PLIST'",
-    '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.chat-to-computer-mcp.fixture</string><key>CFBundleExecutable</key><string>ChatToComputerMCP</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>',
+    '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.localfilesmcp.app</string><key>CFBundleShortVersionString</key><string>'+version+'</string><key>CFBundleExecutable</key><string>ChatToComputerMCP</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>',
     'PLIST',
     '/usr/bin/codesign --force --sign - --timestamp=none dist/ChatToComputerMCP.app',
     ''
   ].join('\n'));
-  function cli(args) {
+  function cli(args,extraEnv={}) {
     return cp.spawnSync(process.execPath,
       [path.join(src,'bin','chat-to-computer-mcp.mjs'),...args],
-      {encoding:'utf8',env:{...process.env,HOME:fakeHome},timeout:10000});
+      {encoding:'utf8',env:{...process.env,HOME:fakeHome,...extraEnv},timeout:10000});
   }
   const result=cli(['install']);
   assert.equal(result.status,0,result.stdout+'\n'+result.stderr);
@@ -155,6 +155,29 @@ test('macOS local build places a real app bundle under versioned release and can
   const duplicate=cli(['install']);
   assert.equal(duplicate.status,0,duplicate.stderr);
   assert.match(duplicate.stdout,/Already installed/);
+  const releases=path.join(fakeHome,'.local','share','chat-to-computer-mcp','releases');
+  const retained=path.join(releases,version);
+  // Simulate a rollback retaining both signed bundles. The fixture's old
+  // bundle is used only for signing-team continuity; it is never launched.
+  const older='0.0.1';
+  fs.cpSync(retained,path.join(releases,older),{recursive:true});
+  activateMacRelease(releases,older);
+  const fakeBin=path.join(temp,'npm-fixture');
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(path.join(fakeBin,'npm'),'#!/bin/sh\nprintf "%s\\n" '+version+'\n',{mode:0o700});
+  const reactivated=cli(['update','install'],{PATH:fakeBin+path.delimiter+process.env.PATH});
+  assert.equal(reactivated.status,0,reactivated.stderr);
+  assert.match(reactivated.stdout,/Selected verified retained release/);
+  assert.equal(installedVersion(releases,'darwin'),version);
+  assert.match(reactivated.stdout,/Version .* installed/);
+  // The retained release must not have been rebuilt or the old one removed.
+  assert.equal(fs.existsSync(path.join(releases,older,'ChatToComputerMCP.app')),true);
+  activateMacRelease(releases,older);
+  fs.appendFileSync(expected,'# changed after signing\n');
+  const damaged=cli(['install']);
+  assert.notEqual(damaged.status,0);
+  assert.match(damaged.stderr,/codesign exited/);
+  assert.equal(installedVersion(releases,'darwin'),older);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });
 
@@ -259,10 +282,20 @@ test('macOS stable active symlink is atomic, validates targets and avoids old Fi
   activateMacRelease(temp,'0.2.1');
   assert.equal(installedVersion(temp,'darwin'),'0.2.1');
   assert.equal(fs.readlinkSync(path.join(temp,'current')),'0.2.1');
+  assert.throws(()=>activateMacRelease(temp,'0.9.0'),/missing or incomplete/);
+  fs.rmSync(path.join(temp,'current'));
+  fs.symlinkSync('0.9.0',path.join(temp,'current'));
+  assert.throws(()=>installedVersion(temp,'darwin'),/Current Mac release is missing or incomplete/);
   fs.rmSync(path.join(temp,'current'));
   fs.symlinkSync('../../outside',path.join(temp,'current'));
   assert.throws(()=>installedVersion(temp,'darwin'),/Unsafe current release pointer/);
   assert.throws(()=>activateMacRelease(temp,'0.2.1'),/Unsafe current release pointer/);
+  fs.rmSync(path.join(temp,'0.1.0'),{recursive:true});
+  fs.rmSync(path.join(temp,'0.2.1'),{recursive:true});
+  assert.throws(()=>installedVersion(temp,'darwin'),/Unsafe current release pointer/);
+  fs.rmSync(path.join(temp,'current'));
+  assert.equal(installedVersion(temp,'darwin'),null);
+  assert.equal(installedVersion(temp,'win32'),null);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });
 

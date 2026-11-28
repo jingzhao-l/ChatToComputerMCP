@@ -42,3 +42,17 @@ The [changelog](../CHANGELOG.md) preserves historical milestones.
 
 Implementation checks are not blanket certifications. Native hardware,
 external providers and OS security boundaries must be verified independently.
+
+### Maintenance checkpoint — 2026-11-28 (post-v0.7.1)
+
+- v0.7.1 protected four-architecture release: [workflow 46115469252](https://github.com/jingzhao-l/ChatToComputerMCP/actions/runs/46115469252).
+  Local Mac cutover succeeded and an actual cloud MCP call was verified.
+  Historical intermittent disconnect [issue #17](https://github.com/jingzhao-l/ChatToComputerMCP/issues/17) stays open pending longer real transport evidence.
+- Next patch: CLI rollback/reinstallation regression; retained newer app must
+  pass identity/version/signature/team validation before next-launch selection.
+  Broken current pointers must fail closed. Isolated signed fixture and npm
+  suite passed locally; no production service change. GUI activation after
+  rollback and native Windows/Intel acceptance are distinct follow-up checks.
+- Resume from the retained-release-reactivation PR: wait for native Verify,
+  then review exact head, merge only on success and use a previously unused
+  stable tag with protected OIDC publication. No automatic live takeover.

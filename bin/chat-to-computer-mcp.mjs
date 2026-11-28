@@ -137,14 +137,46 @@ function windowsBuild(stage) {
   if(!fs.existsSync(path.join(built,name+'.exe'))) throw new Error('Windows executable missing after build');
   return built;
 }
+// Reusing a retained release after rollback is an activation decision,
+// not just a directory-exists check. Never trust an unsigned, linked or
+// mislabelled bundle, or silently cross the previous signing team.
+function verifyRetainedMacRelease(previousVersion) {
+  const executable=path.join(app,'Contents','MacOS',name);
+  const info=path.join(app,'Contents','Info.plist');
+  for(const item of [versionDir,app,path.join(app,'Contents'),
+    path.join(app,'Contents','MacOS'),executable,info]) {
+    if(fs.lstatSync(item).isSymbolicLink())
+      throw Error('Refusing linked retained Mac release component: '+path.basename(item));
+  }
+  fs.accessSync(executable,fs.constants.X_OK);
+  const read=(key)=>cp.spawnSync('/usr/libexec/PlistBuddy',
+    ['-c','Print :'+key,info],{encoding:'utf8',timeout:10000});
+  const identity=read('CFBundleIdentifier'), bundleVersion=read('CFBundleShortVersionString');
+  if(identity.status!==0 || identity.stdout.trim()!=='com.localfilesmcp.app' ||
+     bundleVersion.status!==0 || bundleVersion.stdout.trim()!==version)
+    throw Error('Retained Mac app identity or version does not match the requested release');
+  run('/usr/bin/codesign',['--verify','--deep','--strict',app],{stdio:'ignore',timeout:20000});
+  if(previousVersion)
+    assertMacSigningTeamCompatible(macSigningTeam(path.join(releaseParent,previousVersion,name+'.app')),
+      macSigningTeam(app));
+}
 function install(args) {
   if(!['darwin','win32'].includes(platform)) throw new Error('macOS and Windows are supported');
   if(fs.existsSync(app) && !args.includes('--rebuild')) {
-    // A first post-upgrade invocation can migrate an old installation to
-    // the stable, version-independent LaunchAgent target without rebuilding.
-    if(platform==='darwin' && selectedVersion()===version &&
-       !fs.existsSync(path.join(releaseParent,'current')))
-      activateMacRelease(releaseParent,version);
+    // A retained newer release can be reused after rollback without
+    // rebuilding. Older CLI versions must not change the selected release.
+    if(platform==='darwin') {
+      const active=selectedVersion();
+      const pointer=path.join(releaseParent,'current');
+      if(!active || compareVersions(version,active)>0 ||
+         (active===version && !fs.existsSync(pointer))) {
+        verifyRetainedMacRelease(active);
+        activateMacRelease(releaseParent,version);
+        migrateExistingAgentPlist();
+        console.log('Selected verified retained release '+version+
+          ' for the next launch; running service not restarted.');
+      }
+    }
     console.log('Already installed at ' + app + '. Use install --rebuild for a new local build.');
     return;
   }
@@ -218,9 +250,11 @@ function selectedApp() {
 }
 function target() {
   if(platform!=='darwin')return selectedApp();
+  // Validate the selected release even when the stable symlink exists.
+  const selected=selectedApp();
   const pointer=path.join(releaseParent,'current');
   const isLink=fs.existsSync(pointer) && fs.lstatSync(pointer).isSymbolicLink();
-  return path.join(isLink?pointer:selectedApp(),
+  return path.join(isLink?pointer:selected,
     ...(isLink?[name+'.app']:[]),'Contents','MacOS',name);
 }
 function domain() { return 'gui/'+process.getuid(); }

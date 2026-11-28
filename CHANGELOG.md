@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Repair macOS update installation after rollback: verify and reselect a retained newer signed bundle without rebuilding or restarting the running service. Refuse broken or unsafe active-release pointers instead of silently reporting another version.
+
 ## [0.7.1] — 2026-11-28
 
 - Bound Windows pipe-drain completion, seal terminal output, cancel stalled readers, and dispose process handles on both successful and failed launches.
